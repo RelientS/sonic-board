@@ -1,5 +1,6 @@
 import { makeAmpCabConfig } from '../amps/catalog.ts';
 import {
+  getGuitarVoice,
   makeSourceConfig,
   type ChordProgressionId,
   type GuitarVoiceId,
@@ -121,7 +122,7 @@ export function planToneRequest(input: string): ToneAgentPlan {
 
   const decisions = [
     wide ? '使用双路并联，并把空间与动态分到左右通道。' : '保持串联，让各级效果按顺序彼此推动。',
-    `清音输入选择${source.guitar === 'humbucker' ? '双线圈' : source.guitar === 'single-bridge' ? '单线圈琴桥' : source.guitar === 'hollowbody' ? '空心爵士' : '单线圈琴颈'}。`,
+    `清音输入选择 ${getGuitarVoice(source.guitar).name} 真实采样。`,
     source.performance === 'arpeggio' ? '使用分解和弦检查尾音清晰度。' : source.performance === 'lead' ? '使用单音旋律检查延音和门限。' : '使用扫弦和弦检查音墙密度。',
   ];
 

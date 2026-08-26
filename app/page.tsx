@@ -265,6 +265,11 @@ function SourcePickerDialog({ open, source, onChange, onClose }: {
               </button>
             ))}
           </div>
+          <p className="sample-license-note">
+            真实采样 · CC0 · <a href="https://freepats.zenvoid.org/ElectricGuitar/clean-electric-guitar.html" target="_blank" rel="noreferrer">FreePats</a>
+            {' / '}
+            <a href="https://github.com/sfzinstruments/karoryfer.black-and-green-guitars" target="_blank" rel="noreferrer">{'Black & Green Guitars'}</a>
+          </p>
         </section>
         <section>
           <h3>演奏方式</h3>
@@ -447,7 +452,7 @@ export default function Home() {
   useEffect(() => {
     if (!playing || !audio.current) return;
     const timer = window.setTimeout(() => {
-      if (audio.current) refreshLiveSession(audio.current, audioConfig);
+      if (audio.current) void refreshLiveSession(audio.current, audioConfig);
     }, 140);
     return () => window.clearTimeout(timer);
   }, [audioConfig, playing]);

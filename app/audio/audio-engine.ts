@@ -12,6 +12,7 @@ import {
   type SourceConfig,
 } from './audio-core.ts';
 import { sourceConfigKey } from './source-catalog.ts';
+import { renderSampledSourceBuffer } from './sample-renderer.ts';
 import { getEffectSpec, mapControlValue } from '../effects/catalog.ts';
 import { AMP_SPECS, CAB_SPECS, getAmpSpec, getCabSpec, type AmpCabConfig } from '../amps/catalog.ts';
 import { computeLaneMix, partitionChain } from './routing.ts';
@@ -45,6 +46,7 @@ export type LiveAudioSession = {
   startedAt: number;
   duration: number;
   sourceKey: string;
+  revision: number;
 };
 
 function parameter(values: Record<string, number>, id: string, fallback: number) {
@@ -69,11 +71,15 @@ function seededRandom(seed: number) {
   };
 }
 
-function makeAudioBuffer(context: BaseAudioContext, source: SourceConfig) {
-  const channels = synthesizeSourceChannels(source, context.sampleRate);
-  const buffer = context.createBuffer(channels.length, channels[0].length, context.sampleRate);
-  channels.forEach((channel, index) => buffer.copyToChannel(channel, index));
-  return buffer;
+async function makeAudioBuffer(context: BaseAudioContext, source: SourceConfig) {
+  try {
+    return await renderSampledSourceBuffer(context, source);
+  } catch {
+    const channels = synthesizeSourceChannels(source, context.sampleRate);
+    const buffer = context.createBuffer(channels.length, channels[0].length, context.sampleRate);
+    channels.forEach((channel, index) => buffer.copyToChannel(channel, index));
+    return buffer;
+  }
 }
 
 function makeImpulse(
@@ -582,14 +588,10 @@ function startLiveGraph(
   session: LiveAudioSession,
   config: BoardAudioConfig,
   offsetSeconds: number,
+  buffer: AudioBuffer,
 ) {
   stopScheduled(session);
   const key = sourceConfigKey(config.source);
-  let buffer = session.buffers.get(key);
-  if (!buffer) {
-    buffer = makeAudioBuffer(session.context, config.source);
-    session.buffers.set(key, buffer);
-  }
   const source = session.context.createBufferSource();
   const input = session.context.createGain();
   source.buffer = buffer;
@@ -621,20 +623,33 @@ export async function createLiveSession(config: BoardAudioConfig) {
     startedAt: 0,
     duration: SOURCE_DURATION_SECONDS,
     sourceKey: sourceConfigKey(config.source),
+    revision: 0,
   };
-  startLiveGraph(session, config, 0);
+  const buffer = await makeAudioBuffer(context, config.source);
+  session.buffers.set(session.sourceKey, buffer);
+  startLiveGraph(session, config, 0, buffer);
   return session;
 }
 
-export function refreshLiveSession(session: LiveAudioSession, config: BoardAudioConfig) {
+export async function refreshLiveSession(session: LiveAudioSession, config: BoardAudioConfig) {
+  if (session.context.state === 'closed') return;
+  const revision = ++session.revision;
+  const key = sourceConfigKey(config.source);
   const offset = sourceConfigKey(config.source) === session.sourceKey
     ? (session.context.currentTime - session.startedAt) % session.duration
     : 0;
-  startLiveGraph(session, config, offset);
+  let buffer = session.buffers.get(key);
+  if (!buffer) {
+    buffer = await makeAudioBuffer(session.context, config.source);
+    session.buffers.set(key, buffer);
+  }
+  if (session.revision !== revision || session.context.state === 'closed') return;
+  startLiveGraph(session, config, offset, buffer);
 }
 
 export async function disposeLiveSession(session: LiveAudioSession | null) {
   if (!session) return;
+  session.revision += 1;
   stopScheduled(session);
   await session.context.close();
 }
@@ -647,7 +662,7 @@ export async function renderBoardToWav(config: BoardAudioConfig) {
   const source = offline.createBufferSource();
   const input = offline.createGain();
   const scheduled: AudioScheduledSourceNode[] = [];
-  source.buffer = makeAudioBuffer(offline, config.source);
+  source.buffer = await makeAudioBuffer(offline, config.source);
   source.connect(input);
   const effected = connectBoardGraph(offline, input, config, scheduled);
   connectMaster(offline, effected, config.output).connect(offline.destination);

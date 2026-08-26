@@ -9,10 +9,10 @@ export type SourceConfig = {
 };
 
 export const GUITAR_VOICES: Array<{ id: GuitarVoiceId; name: string; description: string }> = [
-  { id: 'single-neck', name: '单线圈琴颈', description: '圆润、有空气感，适合合唱和长混响。' },
-  { id: 'single-bridge', name: '单线圈琴桥', description: '明亮、拨弦清楚，延迟重复更容易听清。' },
-  { id: 'humbucker', name: '双线圈', description: '厚实、输出更饱满，适合推动失真和法兹。' },
-  { id: 'hollowbody', name: '空心爵士', description: '温暖、柔和，适合复古和低饱和度清音。' },
+  { id: 'single-neck', name: 'Gretsch Anniversary', description: '真实采样，清亮带木质感，适合合唱和长混响。' },
+  { id: 'single-bridge', name: 'Fender Bridge Clean', description: '真实采样，明亮、拨弦清楚，延迟重复更容易听清。' },
+  { id: 'humbucker', name: 'Höfner Club', description: '真实采样，温暖厚实，适合推动失真和法兹。' },
+  { id: 'hollowbody', name: 'Fender Bridge Jazz', description: '真实采样，柔和收敛，适合复古和低饱和度清音。' },
 ];
 
 export const PERFORMANCE_SPECS: Array<{ id: SourceKind; name: string }> = [
