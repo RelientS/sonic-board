@@ -31,6 +31,7 @@ import {
   type EffectSpec,
   type InstantiatedPreset,
 } from './effects/catalog';
+import { getControlHelp, type ControlOwnerKind } from './effects/control-help';
 import {
   captureUserPreset,
   instantiateUserPreset,
@@ -41,6 +42,12 @@ import {
 type ChainItem = AudioChainItem;
 type Values = Record<string, Record<string, number>>;
 type LibraryMode = 'effects' | 'presets' | 'output';
+type HelpTarget = {
+  kind: ControlOwnerKind;
+  modelId: string;
+  ownerName: string;
+  control: ControlSpec;
+};
 
 const categoryNames: Record<'All' | EffectCategory, string> = {
   All: '全部',
@@ -74,17 +81,29 @@ function makeSnapshots(board: InstantiatedPreset) {
   return { A: a, B: b };
 }
 
-function KnobControl({ control, value, disabled, onChange }: {
+function KnobControl({ control, value, disabled, tutorialEnabled, ownerKind, modelId, ownerName, onChange, onHelp }: {
   control: ControlSpec;
   value: number;
   disabled: boolean;
+  tutorialEnabled: boolean;
+  ownerKind: ControlOwnerKind;
+  modelId: string;
+  ownerName: string;
   onChange: (value: number) => void;
+  onHelp: (target: HelpTarget) => void;
 }) {
   const style = { '--angle': String(-138 + value * 2.76) + 'deg' } as CSSProperties;
   return (
-    <label className="knob-control">
-      <span className="knob-label">{control.label}</span>
-      <span className="knob-hit">
+    <div className={'knob-control' + (tutorialEnabled ? ' is-tutorial' : '')}>
+      <span className="knob-label-row"><span className="knob-label">{control.label}</span>{tutorialEnabled && (
+        <button
+          className="help-trigger"
+          type="button"
+          aria-label={`查看${ownerName}的${control.label}旋钮说明`}
+          onClick={(event) => { event.stopPropagation(); onHelp({ kind: ownerKind, modelId, ownerName, control }); }}
+        >?</button>
+      )}</span>
+      <label className="knob-hit">
         <span className="knob" style={style} aria-hidden="true"><span /></span>
         <input
           type="range"
@@ -95,9 +114,40 @@ function KnobControl({ control, value, disabled, onChange }: {
           aria-label={control.label + '，' + formatControlValue(control, value)}
           onChange={(event) => onChange(Number(event.target.value))}
         />
-      </span>
+      </label>
       <span className="knob-readout">{formatControlValue(control, value)}</span>
-    </label>
+    </div>
+  );
+}
+
+function ControlHelpDialog({ target, onClose }: { target: HelpTarget | null; onClose: () => void }) {
+  const dialog = useRef<HTMLDialogElement | null>(null);
+  const lesson = target ? getControlHelp(target.kind, target.modelId, target.control) : null;
+
+  useEffect(() => {
+    const element = dialog.current;
+    if (!element) return;
+    if (target && !element.open) element.showModal();
+    if (!target && element.open) element.close();
+  }, [target]);
+
+  return (
+    <dialog
+      ref={dialog}
+      className="control-help-dialog"
+      aria-labelledby="control-help-title"
+      onCancel={(event) => { event.preventDefault(); onClose(); }}
+      onClose={onClose}
+      onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
+    >
+      {target && lesson && <div className="help-sheet">
+        <header><div><span>{target.ownerName}</span><h2 id="control-help-title">{target.control.label}</h2></div><button type="button" onClick={onClose}>关闭</button></header>
+        <div className="help-range"><span>实际范围</span><strong>{lesson.range}</strong></div>
+        <p className="help-summary">{lesson.summary}</p>
+        <div className="help-directions"><section><span>向左调</span><p>{lesson.low}</p></section><section><span>向右调</span><p>{lesson.high}</p></section></div>
+        <div className="help-tip"><span>调音建议</span><p>{lesson.tip}</p></div>
+      </div>}
+    </dialog>
   );
 }
 
@@ -111,7 +161,7 @@ function MiniPedal({ spec }: { spec: EffectSpec }) {
   return <span className={'mini-pedal' + (isWide ? ' is-wide' : '')} style={style} aria-hidden="true"><i /><i /><i /><b /></span>;
 }
 
-function DemoPedal({ item, index, values, selected, bypassed, onSelect, onValue, onBypass, onDrop }: {
+function DemoPedal({ item, index, values, selected, bypassed, tutorialEnabled, onSelect, onValue, onBypass, onDrop, onHelp }: {
   item: ChainItem;
   index: number;
   values: Record<string, number>;
@@ -121,6 +171,8 @@ function DemoPedal({ item, index, values, selected, bypassed, onSelect, onValue,
   onValue: (id: string, value: number) => void;
   onBypass: () => void;
   onDrop: (payload: string) => void;
+  tutorialEnabled: boolean;
+  onHelp: (target: HelpTarget) => void;
 }) {
   const spec = getEffectSpec(item.specId);
   const manyControls = spec.controls.length > 4;
@@ -156,7 +208,12 @@ function DemoPedal({ item, index, values, selected, bypassed, onSelect, onValue,
               control={control}
               value={values[control.id] ?? control.defaultValue}
               disabled={bypassed}
+              tutorialEnabled={tutorialEnabled}
+              ownerKind="effect"
+              modelId={spec.id}
+              ownerName={spec.name}
               onChange={(value) => onValue(control.id, value)}
+              onHelp={onHelp}
             />
           ))}
         </div>
@@ -200,8 +257,11 @@ export default function Home() {
   const [progress, setProgress] = useState(0);
   const [render, setRender] = useState<'idle' | 'busy' | 'ready'>('idle');
   const [saveState, setSaveState] = useState<'idle' | 'saved'>('idle');
+  const [tutorialEnabled, setTutorialEnabled] = useState(false);
+  const [helpTarget, setHelpTarget] = useState<HelpTarget | null>(null);
   const [audioError, setAudioError] = useState('');
   const audio = useRef<LiveAudioSession | null>(null);
+  const helpInvoker = useRef<HTMLElement | null>(null);
   const values = snapshots[snapshot];
   const selectedIndex = chain.findIndex((item) => item.instanceId === selected);
   const selectedSpec = selectedIndex >= 0 ? getEffectSpec(chain[selectedIndex].specId) : null;
@@ -364,6 +424,16 @@ export default function Home() {
     setRender('idle');
   }
 
+  function openControlHelp(target: HelpTarget) {
+    helpInvoker.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setHelpTarget(target);
+  }
+
+  function closeControlHelp() {
+    setHelpTarget(null);
+    window.requestAnimationFrame(() => helpInvoker.current?.focus());
+  }
+
   function removeSelected() {
     const nextSelected = chain[selectedIndex - 1]?.instanceId ?? chain[selectedIndex + 1]?.instanceId ?? '';
     setChain((current) => current.filter((item) => item.instanceId !== selected));
@@ -458,10 +528,12 @@ export default function Home() {
           values={values[item.instanceId] ?? {}}
           selected={selected === item.instanceId}
           bypassed={bypassed.has(item.instanceId)}
+          tutorialEnabled={tutorialEnabled}
           onSelect={() => setSelected(item.instanceId)}
           onValue={(id, value) => updateValue(item.instanceId, id, value)}
           onBypass={() => toggleBypass(item.instanceId)}
           onDrop={(payload) => handleDrop(payload, item.instanceId)}
+          onHelp={openControlHelp}
         />
         <Cable />
       </span>
@@ -476,6 +548,16 @@ export default function Home() {
         <div className="signal-note"><i /><span>当前音色：{activePresetName}</span></div>
         <div className="top-actions">
           <span>{EFFECT_SPECS.length} 块</span>
+          <label className="tutorial-toggle">
+            <input
+              type="checkbox"
+              role="switch"
+              checked={tutorialEnabled}
+              aria-label="参数教程"
+              onChange={(event) => { setTutorialEnabled(event.target.checked); if (!event.target.checked) setHelpTarget(null); }}
+            />
+            <i aria-hidden="true"><b /></i><strong>参数教程</strong>
+          </label>
           <button type="button" className="quiet" onClick={resetBoard}>重置</button>
           <button type="button" className="accent" onClick={saveCurrentPreset}>{saveState === 'saved' ? '已保存' : '保存音色'}</button>
         </div>
@@ -549,7 +631,7 @@ export default function Home() {
                 ))}</div>
                 <p className="model-description">{ampSpec.description}</p>
                 <div className="output-knobs">{ampSpec.controls.map((control) => (
-                  <KnobControl key={control.id} control={control} value={amp.ampValues[control.id] ?? control.defaultValue} disabled={amp.bypassed} onChange={(value) => updateAmpValue('ampValues', control.id, value)} />
+                  <KnobControl key={control.id} control={control} value={amp.ampValues[control.id] ?? control.defaultValue} disabled={amp.bypassed} tutorialEnabled={tutorialEnabled} ownerKind="amp" modelId={ampSpec.id} ownerName={ampSpec.name} onChange={(value) => updateAmpValue('ampValues', control.id, value)} onHelp={openControlHelp} />
                 ))}</div>
               </section>
               <section className="output-section cab-section">
@@ -561,7 +643,7 @@ export default function Home() {
                 ))}</div>
                 <p className="model-description">{cabSpec.description}</p>
                 <div className="output-knobs cab-knobs">{cabSpec.controls.map((control) => (
-                  <KnobControl key={control.id} control={control} value={amp.cabValues[control.id] ?? control.defaultValue} disabled={amp.bypassed} onChange={(value) => updateAmpValue('cabValues', control.id, value)} />
+                  <KnobControl key={control.id} control={control} value={amp.cabValues[control.id] ?? control.defaultValue} disabled={amp.bypassed} tutorialEnabled={tutorialEnabled} ownerKind="cab" modelId={cabSpec.id} ownerName={cabSpec.name} onChange={(value) => updateAmpValue('cabValues', control.id, value)} onHelp={openControlHelp} />
                 ))}</div>
               </section>
             </div>
@@ -615,6 +697,7 @@ export default function Home() {
         {audioError && <span className="audio-error" role="alert">{audioError}</span>}
         <span className="sr-only" role="status" aria-live="polite">{render === 'ready' ? 'WAV 音频已下载' : saveState === 'saved' ? '音色已保存在当前浏览器' : ''}</span>
       </footer>
+      <ControlHelpDialog target={helpTarget} onClose={closeControlHelp} />
     </main>
   );
 }
