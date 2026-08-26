@@ -9,6 +9,7 @@ import {
   type BoardAudioConfig,
   type LiveAudioSession,
 } from './audio/audio-engine';
+import { LiveSessionController } from './audio/live-session-controller';
 import type { AudioChainItem, RoutingConfig, SignalLane } from './audio/audio-core';
 import {
   CHORD_PROGRESSIONS,
@@ -406,7 +407,8 @@ export default function Home() {
   const [agentStatus, setAgentStatus] = useState<AgentStatus>('idle');
   const [agentError, setAgentError] = useState('');
   const [audioError, setAudioError] = useState('');
-  const audio = useRef<LiveAudioSession | null>(null);
+  const [playback] = useState(() => new LiveSessionController<BoardAudioConfig, LiveAudioSession>(createLiveSession, disposeLiveSession));
+  const previousMonitorMode = useRef(mode);
   const helpInvoker = useRef<HTMLElement | null>(null);
   const values = snapshots[snapshot];
   const selectedIndex = chain.findIndex((item) => item.instanceId === selected);
@@ -436,6 +438,11 @@ export default function Home() {
     routing,
     amp,
   }), [chain, values, bypassed, source, mode, output, routing, amp]);
+  const latestAudioConfig = useRef(audioConfig);
+
+  useEffect(() => {
+    latestAudioConfig.current = audioConfig;
+  }, [audioConfig]);
 
   useEffect(() => {
     setUserPresets(parseUserPresets(window.localStorage.getItem('sonic-board-user-presets')));
@@ -448,14 +455,20 @@ export default function Home() {
   }, [playing]);
 
   useEffect(() => {
-    if (!playing || !audio.current) return;
+    const session = playback.current;
+    if (!playing || !session) {
+      previousMonitorMode.current = mode;
+      return;
+    }
+    const delay = previousMonitorMode.current === mode ? 140 : 0;
+    previousMonitorMode.current = mode;
     const timer = window.setTimeout(() => {
-      if (audio.current) void refreshLiveSession(audio.current, audioConfig);
-    }, 140);
+      if (playback.current === session) void refreshLiveSession(session, audioConfig);
+    }, delay);
     return () => window.clearTimeout(timer);
-  }, [audioConfig, playing]);
+  }, [audioConfig, mode, playback, playing]);
 
-  useEffect(() => () => { void disposeLiveSession(audio.current); }, []);
+  useEffect(() => () => { void playback.dispose(); }, [playback]);
 
   function applyBoard(board: InstantiatedPreset, name: string) {
     setChain(board.chain);
@@ -626,7 +639,8 @@ export default function Home() {
   function toggleBypass(instanceId: string) {
     setBypassed((current) => {
       const next = new Set(current);
-      next.has(instanceId) ? next.delete(instanceId) : next.add(instanceId);
+      if (next.has(instanceId)) next.delete(instanceId);
+      else next.add(instanceId);
       return next;
     });
     setActivePresetName('已修改');
@@ -635,20 +649,23 @@ export default function Home() {
 
   async function togglePlayback() {
     setAudioError('');
-    if (playing) {
+    if (playback.requested) {
       setPlaying(false);
       setProgress(0);
-      await disposeLiveSession(audio.current);
-      audio.current = null;
+      await playback.stop();
       return;
     }
-    await disposeLiveSession(audio.current);
     try {
-      audio.current = await createLiveSession(audioConfig);
+      const session = await playback.start(audioConfig);
+      if (!session) return;
+      const latestConfig = latestAudioConfig.current;
+      if (latestConfig !== audioConfig) await refreshLiveSession(session, latestConfig);
+      if (playback.current !== session || !playback.requested) return;
       setProgress(0);
       setPlaying(true);
     } catch {
-      audio.current = null;
+      await playback.stop();
+      setPlaying(false);
       setAudioError('当前浏览器无法启动试听，请检查声音权限。');
     }
   }

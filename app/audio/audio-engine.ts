@@ -41,6 +41,7 @@ export type BoardAudioConfig = {
 export type LiveAudioSession = {
   context: AudioContext;
   source: AudioBufferSourceNode | null;
+  output: AudioNode | null;
   scheduled: AudioScheduledSourceNode[];
   buffers: Map<string, AudioBuffer>;
   startedAt: number;
@@ -571,7 +572,7 @@ function connectMaster(
   return output;
 }
 
-function stopScheduled(session: LiveAudioSession) {
+export function stopLiveGraph(session: LiveAudioSession) {
   session.scheduled.forEach((node) => {
     try { node.stop(); } catch { /* already stopped */ }
     node.disconnect();
@@ -582,6 +583,10 @@ function stopScheduled(session: LiveAudioSession) {
     session.source.disconnect();
     session.source = null;
   }
+  if (session.output) {
+    session.output.disconnect();
+    session.output = null;
+  }
 }
 
 function startLiveGraph(
@@ -590,7 +595,7 @@ function startLiveGraph(
   offsetSeconds: number,
   buffer: AudioBuffer,
 ) {
-  stopScheduled(session);
+  stopLiveGraph(session);
   const key = sourceConfigKey(config.source);
   const source = session.context.createBufferSource();
   const input = session.context.createGain();
@@ -604,6 +609,7 @@ function startLiveGraph(
   const safeOffset = offsetSeconds % buffer.duration;
   source.start(0, safeOffset);
   session.source = source;
+  session.output = master;
   session.startedAt = session.context.currentTime - safeOffset;
   session.duration = buffer.duration;
   session.sourceKey = key;
@@ -618,6 +624,7 @@ export async function createLiveSession(config: BoardAudioConfig) {
   const session: LiveAudioSession = {
     context,
     source: null,
+    output: null,
     scheduled: [],
     buffers: new Map(),
     startedAt: 0,
@@ -650,7 +657,7 @@ export async function refreshLiveSession(session: LiveAudioSession, config: Boar
 export async function disposeLiveSession(session: LiveAudioSession | null) {
   if (!session) return;
   session.revision += 1;
-  stopScheduled(session);
+  stopLiveGraph(session);
   await session.context.close();
 }
 
