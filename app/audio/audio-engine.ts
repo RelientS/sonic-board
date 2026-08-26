@@ -4,6 +4,7 @@ import {
   estimateTailSeconds,
   makeDriveCurve,
   makeGateCurve,
+  makeNoiseGateCurve,
   SOURCE_DURATION_SECONDS,
   synthesizeSourceChannels,
   type AudioChainItem,
@@ -26,6 +27,27 @@ export const SUPPORTED_EFFECT_IDS = new Set([
 ]);
 export const SUPPORTED_AMP_IDS = new Set(AMP_SPECS.map((amp) => amp.id));
 export const SUPPORTED_CAB_IDS = new Set(CAB_SPECS.map((cab) => cab.id));
+
+const noiseGateReady = new WeakSet<BaseAudioContext>();
+const noiseGateLoading = new WeakMap<BaseAudioContext, Promise<void>>();
+
+async function prepareNoiseGateProcessor(context: BaseAudioContext) {
+  if (noiseGateReady.has(context)) return;
+  const worklet = (context as BaseAudioContext & {
+    audioWorklet?: { addModule: (moduleUrl: string) => Promise<void> };
+  }).audioWorklet;
+  if (!worklet || typeof AudioWorkletNode === 'undefined') return;
+  let pending = noiseGateLoading.get(context);
+  if (!pending) {
+    pending = worklet.addModule('/audio/noise-gate-processor.js').then(() => {
+      noiseGateReady.add(context);
+    }).catch(() => {
+      // A calibrated soft gate below keeps preview and export usable on older browsers.
+    });
+    noiseGateLoading.set(context, pending);
+  }
+  await pending;
+}
 
 export type BoardAudioConfig = {
   chain: AudioChainItem[];
@@ -163,14 +185,26 @@ function connectEffectChain(
     }
 
     if (specId === 'noise-gate') {
-      const gate = context.createWaveShaper();
-      const release = context.createBiquadFilter();
       const output = context.createGain();
-      gate.curve = makeGateCurve(parameter(values, 'threshold', 28));
-      release.type = 'lowpass';
-      release.frequency.value = 20_000 - parameter(values, 'release', 42) * 72;
+      const thresholdDb = physical(specId, values, 'threshold', -55);
+      const releaseMs = physical(specId, values, 'release', 180);
       output.gain.value = dbToGain(physical(specId, values, 'level', 0));
-      cursor.connect(gate).connect(release).connect(output);
+      if (noiseGateReady.has(context) && typeof AudioWorkletNode !== 'undefined') {
+        const gate = new AudioWorkletNode(context, 'sonic-noise-gate', {
+          numberOfInputs: 1,
+          numberOfOutputs: 1,
+          outputChannelCount: [2],
+          parameterData: {
+            thresholdDb,
+            releaseMs,
+          },
+        });
+        cursor.connect(gate).connect(output);
+      } else {
+        const fallbackGate = context.createWaveShaper();
+        fallbackGate.curve = makeNoiseGateCurve(thresholdDb);
+        cursor.connect(fallbackGate).connect(output);
+      }
       cursor = output;
       return;
     }
@@ -621,6 +655,7 @@ export async function createLiveSession(config: BoardAudioConfig) {
   if (!AudioContextClass) throw new Error('当前浏览器不支持音频预览');
   const context = new AudioContextClass();
   await context.resume();
+  await prepareNoiseGateProcessor(context);
   const session: LiveAudioSession = {
     context,
     source: null,
@@ -641,6 +676,7 @@ export async function createLiveSession(config: BoardAudioConfig) {
 export async function refreshLiveSession(session: LiveAudioSession, config: BoardAudioConfig) {
   if (session.context.state === 'closed') return;
   const revision = ++session.revision;
+  await prepareNoiseGateProcessor(session.context);
   const key = sourceConfigKey(config.source);
   const offset = sourceConfigKey(config.source) === session.sourceKey
     ? (session.context.currentTime - session.startedAt) % session.duration
@@ -666,6 +702,7 @@ export async function renderBoardToWav(config: BoardAudioConfig) {
   const tail = estimateTailSeconds(config.chain, config.values, new Set(config.bypassed));
   const totalSeconds = SOURCE_DURATION_SECONDS + tail;
   const offline = new OfflineAudioContext(2, Math.ceil(totalSeconds * sampleRate), sampleRate);
+  await prepareNoiseGateProcessor(offline);
   const source = offline.createBufferSource();
   const input = offline.createGain();
   const scheduled: AudioScheduledSourceNode[] = [];

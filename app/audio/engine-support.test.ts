@@ -21,3 +21,9 @@ test('the audio engine renders real guitar samples and keeps synthesis only as f
   assert.match(engineSource, /renderSampledSourceBuffer/);
   assert.match(engineSource, /catch[\s\S]*synthesizeSourceChannels/);
 });
+
+test('noise suppression uses a dB-calibrated envelope worklet instead of sample chopping', () => {
+  assert.match(engineSource, /new AudioWorkletNode\(context, 'sonic-noise-gate'/);
+  assert.match(engineSource, /const thresholdDb = physical\(specId, values, 'threshold'/);
+  assert.match(engineSource, /const releaseMs = physical\(specId, values, 'release'/);
+});

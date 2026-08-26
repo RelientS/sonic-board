@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import * as audioCore from './audio-core.ts';
 
 import {
   clampParameter,
@@ -39,6 +40,23 @@ test('makeGateCurve suppresses low-level signal while preserving loud signal', (
   assert.ok(Math.abs(curve[51]) < 0.005);
   assert.ok(curve[90] > 0.7);
   assert.ok(Math.abs(curve[10] + curve[90]) < 0.00001);
+});
+
+test('noise gate fallback honors its dB threshold without erasing clean guitar level', () => {
+  assert.ok('makeNoiseGateCurve' in audioCore, 'noise gate needs a dB-calibrated fallback curve');
+  const makeNoiseGateCurve = (audioCore as typeof audioCore & {
+    makeNoiseGateCurve: (thresholdDb: number, length?: number) => Float32Array;
+  }).makeNoiseGateCurve;
+  const curve = makeNoiseGateCurve(-55, 65_537);
+  const mapSample = (sample: number) => {
+    const position = (sample + 1) * 0.5 * (curve.length - 1);
+    const low = Math.floor(position);
+    const fraction = position - low;
+    return curve[low] * (1 - fraction) + curve[Math.min(curve.length - 1, low + 1)] * fraction;
+  };
+
+  assert.ok(mapSample(0.05) > 0.047, 'a -26 dB clean note should pass a -55 dB threshold');
+  assert.ok(mapSample(0.0002) < 0.00005, 'sub-threshold noise should be strongly attenuated');
 });
 
 test('getSourceEvents returns different fixed performances for each source', () => {

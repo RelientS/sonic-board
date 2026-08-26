@@ -73,6 +73,26 @@ export function makeGateCurve(value: number, length = 2048) {
   return curve;
 }
 
+export function makeNoiseGateCurve(thresholdDb: number, length = 65_537) {
+  const safeLength = Math.max(3, Math.floor(length));
+  const threshold = 10 ** (Math.min(0, Math.max(-96, thresholdDb)) / 20);
+  const kneeEnd = Math.min(1, threshold * 2);
+  const closedGain = 0.04;
+  const curve = new Float32Array(safeLength);
+
+  for (let index = 0; index < safeLength; index += 1) {
+    const input = (index / (safeLength - 1)) * 2 - 1;
+    const magnitude = Math.abs(input);
+    const knee = kneeEnd === threshold
+      ? Number(magnitude >= threshold)
+      : Math.min(1, Math.max(0, (magnitude - threshold) / (kneeEnd - threshold)));
+    const gain = closedGain + (1 - closedGain) * knee * knee * (3 - 2 * knee);
+    curve[index] = input * gain;
+  }
+
+  return curve;
+}
+
 type StrumStep = {
   offset: number;
   duration: number;
