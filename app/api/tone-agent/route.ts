@@ -1,38 +1,52 @@
-import { buildToneAgentInput, normalizeRemoteTonePlan, parseResponsesText, parseToneAgentJson } from '../../agent/tone-agent-api';
-
-const RESPONSES_URL = 'https://token-share.app/v1/responses';
-const MODEL = 'gpt-5.6-terra';
+import { normalizeToneAgentRequest, runToneAgent } from '../../agent/tone-agent-pi.ts';
+import type { ToneAgentStreamEvent } from '../../agent/tone-agent-runtime.ts';
 
 export async function POST(request: Request) {
   const apiKey = process.env.TOKEN_SHARE_KEY;
   if (!apiKey) return Response.json({ error: '音色 Agent 尚未配置。' }, { status: 503 });
 
-  let prompt = '';
+  let body: unknown;
   try {
-    const body = await request.json() as { prompt?: unknown };
-    prompt = typeof body.prompt === 'string' ? body.prompt.trim().slice(0, 240) : '';
+    body = await request.json();
   } catch {
     return Response.json({ error: '请求格式不正确。' }, { status: 400 });
   }
-  if (!prompt) return Response.json({ error: '请先描述想要的声音。' }, { status: 400 });
+  const input = normalizeToneAgentRequest(body);
+  if (!input) return Response.json({ error: '当前音色上下文不完整，请刷新页面后重试。' }, { status: 400 });
 
-  try {
-    const upstream = await fetch(RESPONSES_URL, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        'x-session-id': `sonic-board-${crypto.randomUUID()}`,
-      },
-      body: JSON.stringify({ model: MODEL, input: buildToneAgentInput(prompt) }),
-    });
-    if (!upstream.ok) return Response.json({ error: '模型服务暂时不可用。' }, { status: 502 });
-    const payload = await upstream.json() as unknown;
-    const text = parseResponsesText(payload);
-    const plan = text ? normalizeRemoteTonePlan(parseToneAgentJson(text)) : null;
-    if (!plan) return Response.json({ error: '模型返回的音色方案未通过参数校验。' }, { status: 502 });
-    return Response.json({ plan, engine: MODEL });
-  } catch {
-    return Response.json({ error: '模型服务暂时不可用。' }, { status: 502 });
-  }
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      let closed = false;
+      const send = (event: ToneAgentStreamEvent) => {
+        if (!closed) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+      };
+      controller.enqueue(encoder.encode(': connected\n\n'));
+      const heartbeat = setInterval(() => {
+        if (!closed) controller.enqueue(encoder.encode(': heartbeat\n\n'));
+      }, 10_000);
+
+      void runToneAgent(apiKey, input, {
+        signal: request.signal,
+        sessionId: `sonic-board-${crypto.randomUUID()}`,
+        onEvent: send,
+      }).then((plan) => send({ type: 'complete', plan })).catch((error) => {
+        if (request.signal.aborted || (error instanceof Error && error.name === 'AbortError')) return;
+        send({ type: 'error', error: error instanceof Error ? error.message : '音色 Agent 暂时不可用。' });
+      }).finally(() => {
+        closed = true;
+        clearInterval(heartbeat);
+        controller.close();
+      });
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    },
+  });
 }

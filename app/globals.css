@@ -292,6 +292,88 @@ button:active:not(:disabled) { filter: brightness(.93); }
 .agent-result ol { display: flex; flex-wrap: wrap; gap: 5px; margin: 0; padding: 0; list-style: none; }
 .agent-result ol li { padding: 5px 7px; border: 1px solid #d7ddd7; border-radius: 5px; background: #fff; font-size: 9px; }
 .agent-result ul { margin: 12px 0 0; padding-left: 18px; color: #5e635d; font-size: 10px; line-height: 1.55; }
+
+.tone-agent-dock {
+  position: fixed;
+  z-index: 70;
+  top: 82px;
+  right: 18px;
+  bottom: 116px;
+  width: min(400px, calc(100vw - 36px));
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  border: 1px solid #c9c6bd;
+  border-radius: 15px;
+  background: #fbfaf6;
+  box-shadow: 0 24px 70px rgb(18 20 22 / 28%);
+}
+.tone-agent-header { display: flex; align-items: center; justify-content: space-between; min-height: 64px; padding: 11px 12px 10px 14px; border-bottom: 1px solid var(--line); background: #fff; }
+.tone-agent-title { display: flex; min-width: 0; align-items: center; gap: 10px; }
+.tone-agent-title > span:last-child { min-width: 0; display: grid; gap: 3px; }
+.tone-agent-title strong { font-size: 14px; letter-spacing: -.01em; }
+.tone-agent-title small { color: #757871; font: 650 9px/1.2 var(--font-geist-mono), monospace; }
+.tone-agent-mark { display: grid; width: 34px; height: 34px; place-items: center; border-radius: 10px; background: #24272b; color: #fff; }
+.tone-agent-header-actions { display: flex; gap: 4px; }
+.tone-agent-header-actions button { display: grid; width: 44px; height: 44px; place-items: center; border: 0; border-radius: 9px; background: transparent; color: #5e615c; cursor: pointer; }
+.tone-agent-header-actions button:hover { background: #efede6; color: var(--ink); }
+.tone-agent-context { min-width: 0; display: grid; grid-template-columns: auto auto minmax(0, 1fr); align-items: center; gap: 6px; min-height: 36px; padding: 0 14px; border-bottom: 1px solid #dedbd2; background: #f0eee7; color: #656861; font-size: 9px; }
+.tone-agent-context svg { color: #3da05b; }
+.tone-agent-context span { font-weight: 720; }
+.tone-agent-context b { min-width: 0; overflow: hidden; color: #858780; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+.tone-agent-thread { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 14px; scroll-behavior: smooth; }
+.tone-agent-intro { padding: 13px; border: 1px solid #d9d6cc; border-radius: 12px; background: #fff; }
+.tone-agent-intro-icon { display: grid; width: 36px; height: 36px; margin-bottom: 10px; place-items: center; border-radius: 9px; background: #f0e7df; color: #b33e2c; }
+.tone-agent-intro h2 { margin: 0; font-size: 15px; letter-spacing: -.02em; }
+.tone-agent-intro p { margin: 7px 0 0; color: #696c66; font-size: 11px; line-height: 1.55; }
+.tone-agent-quick { display: grid; gap: 6px; margin-top: 12px; }
+.tone-agent-quick button { min-height: 44px; padding: 8px 10px; border: 1px solid #dad7ce; border-radius: 8px; background: #f7f5ef; color: #4e514c; cursor: pointer; text-align: left; font-size: 10px; line-height: 1.4; }
+.tone-agent-quick button:hover { border-color: #b8b5ac; background: #efede6; }
+.tone-agent-turn { display: grid; gap: 8px; margin-top: 15px; }
+.tone-agent-user { display: flex; justify-content: flex-end; }
+.tone-agent-user p { max-width: 88%; margin: 0; padding: 9px 11px; border-radius: 11px 11px 3px 11px; background: #272a2e; color: #fff; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.tone-agent-working { display: flex; align-items: center; gap: 7px; min-height: 36px; color: #70736c; font-size: 10px; }
+.tone-agent-working i { width: 8px; height: 8px; border-radius: 50%; background: #e85538; box-shadow: 0 0 0 0 rgb(232 85 56 / 35%); animation: agent-pulse 1.4s ease-out infinite; }
+@keyframes agent-pulse { 60%, 100% { box-shadow: 0 0 0 7px rgb(232 85 56 / 0%); } }
+.tone-agent-trace { overflow: hidden; border: 1px solid #dbd8cf; border-radius: 9px; background: #f4f2eb; }
+.tone-agent-trace summary { display: grid; grid-template-columns: auto auto auto 1fr; align-items: center; gap: 6px; min-height: 40px; padding: 0 10px; color: #5d605a; cursor: pointer; font-size: 10px; font-weight: 700; list-style: none; }
+.tone-agent-trace summary::-webkit-details-marker { display: none; }
+.tone-agent-trace summary b { display: grid; min-width: 19px; height: 19px; place-items: center; border-radius: 999px; background: #dedbd2; font: 650 9px/1 var(--font-geist-mono), monospace; }
+.tone-agent-trace summary > svg:last-child { justify-self: end; transition: transform var(--fast); }
+.tone-agent-trace[open] summary > svg:last-child { transform: rotate(180deg); }
+.tone-agent-trace ol { display: grid; gap: 1px; margin: 0; padding: 0 8px 8px; list-style: none; }
+.tone-agent-trace li { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 5px; padding: 7px; border-radius: 6px; background: rgb(255 255 255 / 72%); color: #347249; }
+.tone-agent-trace li.is-failed { color: #a43d2d; }
+.tone-agent-trace li > span { min-width: 0; display: grid; gap: 3px; }
+.tone-agent-trace li strong { color: #4e514c; font-size: 9px; }
+.tone-agent-trace li small { color: #7b7e77; font-size: 8px; line-height: 1.35; overflow-wrap: anywhere; }
+.tone-agent-trace li code { grid-column: 2; width: fit-content; padding: 2px 4px; border-radius: 4px; background: #ece9e1; color: #70736c; font: 600 7px/1.2 var(--font-geist-mono), monospace; }
+.tone-agent-assistant { padding: 11px; border: 1px solid #d8d5cc; border-radius: 3px 11px 11px 11px; background: #fff; }
+.tone-agent-assistant > span { display: block; margin-bottom: 6px; color: #a13b2b; font: 750 8px/1 var(--font-geist-mono), monospace; letter-spacing: .06em; text-transform: uppercase; }
+.tone-agent-assistant p { margin: 0; color: #3f423e; font-size: 11px; line-height: 1.62; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tone-agent-applied { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 38px; padding: 5px 6px 5px 10px; border: 1px solid #c9dcca; border-radius: 8px; background: #eff7f0; color: #327044; font-size: 9px; font-weight: 720; }
+.tone-agent-applied span, .tone-agent-applied button { display: flex; align-items: center; gap: 5px; }
+.tone-agent-applied button { min-height: 30px; padding: 0 8px; border: 1px solid #bed2c0; border-radius: 6px; background: #fff; color: #3c6848; cursor: pointer; font-size: 9px; font-weight: 700; }
+.tone-agent-applied b { color: #67806d; font-size: 9px; }
+.tone-agent-actions summary { min-height: 32px; color: #767971; cursor: pointer; font-size: 9px; }
+.tone-agent-actions ol { display: grid; gap: 4px; margin: 0; padding: 0 0 0 18px; color: #686b65; font-size: 9px; line-height: 1.45; }
+.tone-agent-inline-error, .tone-agent-error { padding: 9px 10px; border: 1px solid #e2b8ad; border-radius: 8px; background: #fff1ed; color: #8c3528; font-size: 9px; line-height: 1.45; }
+.tone-agent-error { margin-top: 12px; }
+.tone-agent-cancelled { display: flex; align-items: center; gap: 6px; color: #7a625e; font-size: 9px; }
+.tone-agent-composer { padding: 10px 12px max(10px, env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: #fff; }
+.tone-agent-composer > label { display: block; margin: 0 0 6px 2px; color: #686b65; font-size: 9px; font-weight: 720; }
+.tone-agent-composer > div { display: grid; grid-template-columns: minmax(0, 1fr) 44px; align-items: end; gap: 6px; padding: 6px; border: 1px solid #cbc8bf; border-radius: 11px; background: #fbfaf6; }
+.tone-agent-composer textarea { width: 100%; min-height: 50px; max-height: 126px; resize: none; padding: 6px; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 12px; line-height: 1.45; }
+.tone-agent-composer button { display: grid; width: 44px; height: 44px; place-items: center; border: 0; border-radius: 9px; background: #e85538; color: #fff; cursor: pointer; }
+.tone-agent-composer button.is-stop { background: #34373b; }
+.tone-agent-composer > small { display: block; margin: 6px 0 0 2px; color: #8a8c86; font-size: 8px; }
+.agent-open-button.active { border-color: #b83b28; background: #e85538; }
+
+@media (prefers-reduced-motion: reduce) {
+  .tone-agent-thread { scroll-behavior: auto; }
+  .tone-agent-working i { animation: none; }
+}
 .source-picker-sheet section { margin-top: 18px; }
 .source-picker-sheet h3 { margin: 0 0 9px; }
 .source-choice-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
@@ -353,6 +435,12 @@ button:active:not(:disabled) { filter: brightness(.93); }
 }
 
 @media (max-width: 720px) {
+  .tone-agent-dock { inset: 0; width: auto; height: 100dvh; border: 0; border-radius: 0; box-shadow: none; }
+  .tone-agent-header { min-height: calc(60px + env(safe-area-inset-top)); padding-top: max(10px, env(safe-area-inset-top)); }
+  .tone-agent-thread { padding: 12px; }
+  .tone-agent-composer textarea { font-size: 16px; }
+  .tone-agent-composer > small { font-size: 9px; }
+  .tone-agent-quick button, .tone-agent-applied button, .tone-agent-actions summary { min-height: 44px; }
   .app-shell { display: block; min-width: 320px; padding-bottom: calc(224px + env(safe-area-inset-bottom)); }
   .topbar { position: sticky; top: 0; min-height: 64px; padding: 0 14px; }
   .brand small, .top-actions > span, .quiet { display: none; }

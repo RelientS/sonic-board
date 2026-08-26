@@ -19,8 +19,14 @@ import {
   getChordProgression,
   type SourceConfig,
 } from './audio/source-catalog';
-import { planToneRequest, type ToneAgentPlan } from './agent/tone-agent';
-import { normalizeRemoteTonePlan } from './agent/tone-agent-api';
+import { ToneAgentDock, type ToneAgentTurn } from './agent/ToneAgentDock';
+import {
+  applyToneAgentActions,
+  captureToneAgentBoard,
+  type ToneAgentBoardState,
+  type ToneAgentMessage,
+} from './agent/tone-agent-runtime';
+import { isToneAgentAbort, requestToneAgentStream } from './agent/tone-agent-stream';
 import {
   AMP_SPECS,
   CAB_SPECS,
@@ -54,7 +60,6 @@ import {
 type ChainItem = AudioChainItem;
 type Values = Record<string, Record<string, number>>;
 type LibraryMode = 'effects' | 'presets' | 'output';
-type AgentStatus = 'idle' | 'thinking' | 'applied' | 'fallback';
 type HelpTarget = {
   kind: ControlOwnerKind;
   modelId: string;
@@ -72,11 +77,6 @@ const categoryNames: Record<'All' | EffectCategory, string> = {
   Space: '空间',
 };
 const wave = [18, 42, 72, 34, 85, 52, 66, 28, 90, 46, 74, 38, 82, 56, 26, 68, 88, 44, 72, 32, 62, 94, 48, 76, 36, 84, 54, 24, 70, 91, 42, 68, 34, 80, 52, 74, 30, 63, 87, 46];
-const agentExamples = [
-  '宽阔立体声的反向音墙，厚但中频别丢',
-  '干净明亮的分解和弦，合唱加磁带回声',
-  '温暖复古的小调和弦，慢速相位和磁带感',
-];
 const initialFactoryPreset = FACTORY_PRESETS.find((preset) => preset.id === 'reverse-wall') ?? FACTORY_PRESETS[0];
 const initialBoard = instantiatePreset(initialFactoryPreset);
 
@@ -165,68 +165,6 @@ function ControlHelpDialog({ target, onClose }: { target: HelpTarget | null; onC
         <div className="help-directions"><section><span>向左调</span><p>{lesson.low}</p></section><section><span>向右调</span><p>{lesson.high}</p></section></div>
         <div className="help-tip"><span>调音建议</span><p>{lesson.tip}</p></div>
       </div>}
-    </dialog>
-  );
-}
-
-function ToneAgentDialog({ open, prompt, result, status, error, onPrompt, onRun, onClose }: {
-  open: boolean;
-  prompt: string;
-  result: ToneAgentPlan | null;
-  status: AgentStatus;
-  error: string;
-  onPrompt: (value: string) => void;
-  onRun: () => void | Promise<void>;
-  onClose: () => void;
-}) {
-  const dialog = useRef<HTMLDialogElement | null>(null);
-
-  useEffect(() => {
-    const element = dialog.current;
-    if (!element) return;
-    if (open && !element.open) element.showModal();
-    if (!open && element.open) element.close();
-  }, [open]);
-
-  return (
-    <dialog
-      ref={dialog}
-      className="agent-dialog"
-      aria-labelledby="agent-title"
-      onCancel={(event) => { event.preventDefault(); onClose(); }}
-      onClose={onClose}
-      onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
-    >
-      <div className="agent-sheet">
-        <header>
-          <div><span>AI 音色规划 · gpt-5.6-terra</span><h2 id="agent-title">音色 Agent</h2></div>
-          <button type="button" onClick={onClose}>关闭</button>
-        </header>
-        <form onSubmit={(event) => { event.preventDefault(); onRun(); }}>
-          <label className="agent-prompt">
-            <span>描述你想要的声音</span>
-            <textarea
-              value={prompt}
-              maxLength={240}
-              placeholder="例如：慢速、宽阔的反向音墙，和弦要清楚，中频不要被挖空"
-              onChange={(event) => onPrompt(event.target.value)}
-            />
-          </label>
-          <div className="agent-examples" aria-label="需求示例">
-            {agentExamples.map((example) => <button key={example} type="button" onClick={() => onPrompt(example)}>{example}</button>)}
-          </div>
-          <button className="agent-run" type="submit" disabled={status === 'thinking' || !prompt.trim()}>{status === 'thinking' ? '正在调音…' : '生成并应用'}</button>
-        </form>
-        {error && <p className="agent-warning" role="status">{error}</p>}
-        {result && (
-          <section className="agent-result" role="status" aria-live="polite">
-            <div><span>{status === 'fallback' ? '本地兜底已应用' : 'AI 已应用'}</span><strong>{result.name}</strong></div>
-            <p>{result.summary}</p>
-            <ol>{result.preset.chain.map((item) => <li key={`${item.lane ?? 'A'}-${item.specId}`}>{item.lane && result.preset.routing.mode === 'parallel' ? `${item.lane} 路 · ` : ''}{getEffectSpec(item.specId).name}</li>)}</ol>
-            <ul>{result.decisions.map((decision) => <li key={decision}>{decision}</li>)}</ul>
-          </section>
-        )}
-      </div>
     </dialog>
   );
 }
@@ -402,14 +340,17 @@ export default function Home() {
   const [helpTarget, setHelpTarget] = useState<HelpTarget | null>(null);
   const [agentOpen, setAgentOpen] = useState(false);
   const [sourcePickerOpen, setSourcePickerOpen] = useState(false);
-  const [agentPrompt, setAgentPrompt] = useState(agentExamples[0]);
-  const [agentResult, setAgentResult] = useState<ToneAgentPlan | null>(null);
-  const [agentStatus, setAgentStatus] = useState<AgentStatus>('idle');
+  const [agentInput, setAgentInput] = useState('');
+  const [agentTurns, setAgentTurns] = useState<ToneAgentTurn[]>([]);
+  const [agentBusy, setAgentBusy] = useState(false);
   const [agentError, setAgentError] = useState('');
   const [audioError, setAudioError] = useState('');
   const [playback] = useState(() => new LiveSessionController<BoardAudioConfig, LiveAudioSession>(createLiveSession, disposeLiveSession));
   const previousMonitorMode = useRef(mode);
   const helpInvoker = useRef<HTMLElement | null>(null);
+  const agentAbort = useRef<AbortController | null>(null);
+  const agentUndo = useRef(new Map<string, ToneAgentBoardState>());
+  const manualPedalSerial = useRef(0);
   const values = snapshots[snapshot];
   const selectedIndex = chain.findIndex((item) => item.instanceId === selected);
   const selectedSpec = selectedIndex >= 0 ? getEffectSpec(chain[selectedIndex].specId) : null;
@@ -438,14 +379,32 @@ export default function Home() {
     routing,
     amp,
   }), [chain, values, bypassed, source, mode, output, routing, amp]);
+  const toneAgentBoard = useMemo<ToneAgentBoardState>(() => captureToneAgentBoard({
+    name: activePresetName,
+    selectedInstanceId: selected,
+    chain: chain.map((item) => ({ ...item, lane: item.lane ?? 'A' })),
+    values,
+    bypassed: [...bypassed],
+    source,
+    routing,
+    amp,
+    output,
+    monitorMode: mode,
+  }), [activePresetName, selected, chain, values, bypassed, source, routing, amp, output, mode]);
   const latestAudioConfig = useRef(audioConfig);
+  const latestToneAgentBoard = useRef(toneAgentBoard);
 
   useEffect(() => {
     latestAudioConfig.current = audioConfig;
   }, [audioConfig]);
 
   useEffect(() => {
-    setUserPresets(parseUserPresets(window.localStorage.getItem('sonic-board-user-presets')));
+    latestToneAgentBoard.current = toneAgentBoard;
+  }, [toneAgentBoard]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setUserPresets(parseUserPresets(window.localStorage.getItem('sonic-board-user-presets'))), 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
   useEffect(() => {
@@ -468,13 +427,16 @@ export default function Home() {
     return () => window.clearTimeout(timer);
   }, [audioConfig, mode, playback, playing]);
 
-  useEffect(() => () => { void playback.dispose(); }, [playback]);
+  useEffect(() => () => {
+    agentAbort.current?.abort();
+    void playback.dispose();
+  }, [playback]);
 
   function applyBoard(board: InstantiatedPreset, name: string) {
     setChain(board.chain);
     setSnapshots(makeSnapshots(board));
     setSnapshot('A');
-    setSelected(board.chain[0]?.instanceId ?? '');
+    setSelected(board.selectedInstanceId && board.chain.some((item) => item.instanceId === board.selectedInstanceId) ? board.selectedInstanceId : board.chain[0]?.instanceId ?? '');
     setBypassed(new Set(board.bypassed));
     setSource(board.source);
     setOutput(board.output);
@@ -500,33 +462,106 @@ export default function Home() {
     setPresetName(preset.name);
   }
 
+  function applyToneAgentBoard(board: ToneAgentBoardState) {
+    const nextValues = cloneValues(board.values);
+    setChain(board.chain.map((item) => ({ ...item })));
+    setSnapshots({ A: nextValues, B: cloneValues(nextValues) });
+    setSnapshot('A');
+    setSelected(board.chain[0]?.instanceId ?? '');
+    setBypassed(new Set(board.bypassed));
+    setSource({ ...board.source });
+    setRouting({ ...board.routing });
+    setAmp({ ...board.amp, ampValues: { ...board.amp.ampValues }, cabValues: { ...board.amp.cabValues } });
+    setOutput(board.output);
+    setMode(board.monitorMode);
+    setActivePresetName(board.name);
+    setRender('idle');
+    setAudioError('');
+  }
+
   async function runToneAgent() {
-    const prompt = agentPrompt.trim();
-    if (!prompt || agentStatus === 'thinking') return;
-    setAgentStatus('thinking');
+    const instruction = agentInput.trim();
+    if (!instruction || agentBusy) return;
+    const turnId = `tone-agent-${Date.now()}`;
+    const context = captureToneAgentBoard(latestToneAgentBoard.current);
+    const history = agentTurns.flatMap<ToneAgentMessage>((turn) => {
+      const result: ToneAgentMessage[] = [{ role: 'user', content: turn.userMessage }];
+      if (turn.message) result.push({ role: 'assistant', content: turn.message });
+      return result;
+    }).slice(-12);
+    const controller = new AbortController();
+    agentAbort.current = controller;
+    setAgentInput('');
+    setAgentBusy(true);
     setAgentError('');
+    setAgentTurns((current) => [...current, {
+      id: turnId,
+      userMessage: instruction,
+      status: 'running',
+      trace: [],
+      actions: [],
+    }]);
 
-    let plan: ToneAgentPlan | null = null;
     try {
-      const response = await fetch('/api/tone-agent', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt }),
+      const plan = await requestToneAgentStream({ instruction, context, history }, {
+        signal: controller.signal,
+        onEvent: (event) => {
+          if (event.type !== 'text_delta' && event.type !== 'trace') return;
+          setAgentTurns((current) => current.map((turn) => {
+            if (turn.id !== turnId) return turn;
+            if (event.type === 'text_delta') return { ...turn, streamingMessage: `${turn.streamingMessage || ''}${event.delta}`.slice(-4_000) };
+            const trace = turn.trace.some((step) => step.id === event.step.id) ? turn.trace : [...turn.trace, event.step].slice(-48);
+            return { ...turn, trace };
+          }));
+        },
       });
-      if (!response.ok) throw new Error('agent unavailable');
-      const payload = await response.json() as { plan?: unknown };
-      plan = normalizeRemoteTonePlan(payload.plan);
-      if (!plan) throw new Error('invalid plan');
-      setAgentStatus('applied');
-    } catch {
-      plan = planToneRequest(prompt);
-      setAgentStatus('fallback');
-      setAgentError('模型暂时没有返回可用方案，已用本地音色规则生成同类效果器链。');
+      const before = captureToneAgentBoard(latestToneAgentBoard.current);
+      const applied = applyToneAgentActions(before, plan.actions);
+      if (applied.changed > 0) {
+        agentUndo.current.set(turnId, before);
+        applyToneAgentBoard(applied.board);
+      }
+      setAgentTurns((current) => current.map((turn) => turn.id === turnId ? {
+        ...turn,
+        status: 'completed',
+        message: plan.message,
+        streamingMessage: undefined,
+        trace: plan.trace.length ? plan.trace : turn.trace,
+        actions: plan.actions,
+        appliedCount: applied.changed,
+        applyErrors: applied.errors,
+      } : turn));
+    } catch (error) {
+      if (isToneAgentAbort(error)) {
+        setAgentTurns((current) => current.map((turn) => turn.id === turnId ? { ...turn, status: 'cancelled' } : turn));
+      } else {
+        const message = error instanceof Error ? error.message : '音色 Agent 暂时不可用。';
+        setAgentError(`${message} 你可以直接重试，当前音色没有被修改。`);
+        setAgentTurns((current) => current.map((turn) => turn.id === turnId ? { ...turn, status: 'failed' } : turn));
+      }
+    } finally {
+      if (agentAbort.current === controller) agentAbort.current = null;
+      setAgentBusy(false);
     }
+  }
 
-    setAgentResult(plan);
-    applyBoard(instantiatePreset(plan.preset), `Agent · ${plan.name}`);
-    setMode('wet');
+  function stopToneAgent() {
+    agentAbort.current?.abort();
+  }
+
+  function undoToneAgentTurn(turnId: string) {
+    const before = agentUndo.current.get(turnId);
+    if (!before) return;
+    applyToneAgentBoard(before);
+    agentUndo.current.delete(turnId);
+    setAgentTurns((current) => current.map((turn) => turn.id === turnId ? { ...turn, undone: true } : turn));
+  }
+
+  function clearToneAgentConversation() {
+    if (agentBusy) return;
+    agentUndo.current.clear();
+    setAgentTurns([]);
+    setAgentError('');
   }
 
   function updateSource(next: SourceConfig) {
@@ -552,7 +587,8 @@ export default function Home() {
       setAudioError('当前板面最多放 16 块效果器，请先移除一块。');
       return;
     }
-    const instanceId = specId + '-' + Date.now();
+    manualPedalSerial.current += 1;
+    const instanceId = `${specId}-manual-${manualPedalSerial.current}`;
     const defaults = makeDefaultValues(specId);
     const lane = routing.mode === 'parallel' ? selectedLane : 'A';
     setChain((current) => [...current, { instanceId, specId, lane }]);
@@ -746,7 +782,13 @@ export default function Home() {
         <div className="signal-note"><i /><span>当前音色：{activePresetName}</span></div>
         <div className="top-actions">
           <span>{EFFECT_SPECS.length} 块</span>
-          <button type="button" className="agent-open-button" aria-label="打开音色 Agent" onClick={() => setAgentOpen(true)}>音色 Agent</button>
+          <button
+            type="button"
+            className={'agent-open-button' + (agentOpen ? ' active' : '')}
+            aria-label={agentOpen ? '关闭音色 Agent' : '打开音色 Agent'}
+            aria-expanded={agentOpen}
+            onClick={() => setAgentOpen((current) => !current)}
+          >音色 Agent</button>
           <label className="tutorial-toggle">
             <input
               type="checkbox"
@@ -898,7 +940,20 @@ export default function Home() {
         <span className="sr-only" role="status" aria-live="polite">{render === 'ready' ? 'WAV 音频已下载' : saveState === 'saved' ? '音色已保存在当前浏览器' : ''}</span>
       </footer>
       <ControlHelpDialog target={helpTarget} onClose={closeControlHelp} />
-      <ToneAgentDialog open={agentOpen} prompt={agentPrompt} result={agentResult} status={agentStatus} error={agentError} onPrompt={setAgentPrompt} onRun={runToneAgent} onClose={() => setAgentOpen(false)} />
+      <ToneAgentDock
+        open={agentOpen}
+        input={agentInput}
+        turns={agentTurns}
+        busy={agentBusy}
+        error={agentError}
+        boardSummary={`${chain.length} 块 · ${routing.mode === 'parallel' ? '双路并联' : '串联'} · ${ampSpec.name}`}
+        onOpenChange={setAgentOpen}
+        onInputChange={setAgentInput}
+        onSubmit={() => void runToneAgent()}
+        onStop={stopToneAgent}
+        onUndo={undoToneAgentTurn}
+        onClear={clearToneAgentConversation}
+      />
       <SourcePickerDialog open={sourcePickerOpen} source={source} onChange={updateSource} onClose={() => setSourcePickerOpen(false)} />
     </main>
   );
