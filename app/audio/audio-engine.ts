@@ -31,6 +31,28 @@ export const SUPPORTED_CAB_IDS = new Set(CAB_SPECS.map((cab) => cab.id));
 const noiseGateReady = new WeakSet<BaseAudioContext>();
 const noiseGateLoading = new WeakMap<BaseAudioContext, Promise<void>>();
 
+export function activateMobileAudio(
+  context: AudioContext,
+  navigatorObject: Navigator = window.navigator,
+) {
+  try {
+    const audioSession = (navigatorObject as Navigator & {
+      audioSession?: { type: string };
+    }).audioSession;
+    if (audioSession) audioSession.type = 'playback';
+  } catch {
+    // Older WebKit versions expose no configurable audio session.
+  }
+
+  const unlockSource = context.createBufferSource();
+  unlockSource.buffer = context.createBuffer(1, 1, context.sampleRate);
+  unlockSource.connect(context.destination);
+  unlockSource.start(0);
+  void context.resume().catch(() => {
+    // The awaited resume in createLiveSession reports a real activation failure.
+  });
+}
+
 async function prepareNoiseGateProcessor(context: BaseAudioContext) {
   if (noiseGateReady.has(context)) return;
   const worklet = (context as BaseAudioContext & {
@@ -654,6 +676,7 @@ export async function createLiveSession(config: BoardAudioConfig) {
     (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
   if (!AudioContextClass) throw new Error('当前浏览器不支持音频预览');
   const context = new AudioContextClass();
+  activateMobileAudio(context, window.navigator);
   await context.resume();
   await prepareNoiseGateProcessor(context);
   const session: LiveAudioSession = {
