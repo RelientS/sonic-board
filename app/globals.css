@@ -283,6 +283,16 @@ button:active:not(:disabled) { filter: brightness(.93); }
 .help-directions p, .help-tip p { margin: 9px 0 0; color: #4c4f49; font-size: 12px; line-height: 1.55; }
 .help-tip { margin-top: 9px; padding: 14px; border: 1px solid #d9c77e; border-radius: 10px; background: #fff8d9; }
 
+@media (min-width: 1081px) {
+  .app-shell { height: 100dvh; overflow: hidden; }
+  .workspace { overflow: hidden; }
+  .library-panel { display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }
+  .library-browser { min-height: 0; }
+  .effects-browser { display: grid; grid-template-rows: auto auto auto minmax(0, 1fr); }
+  .effects-browser .library-list { min-height: 0; overflow-y: auto; overscroll-behavior-y: contain; scroll-snap-type: y proximity; scrollbar-gutter: stable; padding-right: 5px; }
+  .preset-browser, .output-browser { overflow-y: auto; overscroll-behavior-y: contain; scrollbar-gutter: stable; padding-right: 5px; }
+}
+
 @media (max-width: 1280px) and (min-width: 721px) {
   .board-stage { grid-template-rows: 154px minmax(0, 1fr); }
   .board-toolbar { grid-template-columns: minmax(180px, 1fr) auto auto; }

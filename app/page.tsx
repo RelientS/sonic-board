@@ -32,6 +32,7 @@ import {
   type InstantiatedPreset,
 } from './effects/catalog';
 import { getControlHelp, type ControlOwnerKind } from './effects/control-help';
+import { getPedalControlLabel } from './effects/control-labels';
 import {
   captureUserPreset,
   instantiateUserPreset,
@@ -81,8 +82,9 @@ function makeSnapshots(board: InstantiatedPreset) {
   return { A: a, B: b };
 }
 
-function KnobControl({ control, value, disabled, tutorialEnabled, ownerKind, modelId, ownerName, onChange, onHelp }: {
+function KnobControl({ control, displayLabel, value, disabled, tutorialEnabled, ownerKind, modelId, ownerName, onChange, onHelp }: {
   control: ControlSpec;
+  displayLabel?: string;
   value: number;
   disabled: boolean;
   tutorialEnabled: boolean;
@@ -95,7 +97,7 @@ function KnobControl({ control, value, disabled, tutorialEnabled, ownerKind, mod
   const style = { '--angle': String(-138 + value * 2.76) + 'deg' } as CSSProperties;
   return (
     <div className={'knob-control' + (tutorialEnabled ? ' is-tutorial' : '')}>
-      <span className="knob-label-row"><span className="knob-label">{control.label}</span>{tutorialEnabled && (
+      <span className="knob-label-row"><span className="knob-label">{displayLabel ?? control.label}</span>{tutorialEnabled && (
         <button
           className="help-trigger"
           type="button"
@@ -206,6 +208,7 @@ function DemoPedal({ item, index, values, selected, bypassed, tutorialEnabled, o
             <KnobControl
               key={control.id}
               control={control}
+              displayLabel={getPedalControlLabel(spec.id, control.id)}
               value={values[control.id] ?? control.defaultValue}
               disabled={bypassed}
               tutorialEnabled={tutorialEnabled}
@@ -572,7 +575,7 @@ export default function Home() {
           </div>
 
           {libraryMode === 'effects' ? (
-            <>
+            <div className="library-browser effects-browser">
               <div className="library-title"><div><span className="eyebrow">效果器库</span><h1>经典结构</h1></div><b>{library.length}</b></div>
               <label className="search"><span className="sr-only">搜索效果器</span><input placeholder="搜索名称、类型或用途" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
               <div className="filters" aria-label="筛选效果器类型">{(['All', 'Dynamics', 'Tone', 'Drive', 'Mod', 'Delay', 'Space'] as const).map((entry) => <button key={entry} type="button" className={category === entry ? 'active' : ''} aria-pressed={category === entry} onClick={() => setCategory(entry)}>{categoryNames[entry]}</button>)}</div>
@@ -583,9 +586,9 @@ export default function Home() {
                   <button type="button" aria-label={'添加' + spec.name} onClick={() => addPedal(spec.id)}>添加</button>
                 </article>
               ))}</div>
-            </>
+            </div>
           ) : libraryMode === 'presets' ? (
-            <div className="preset-browser">
+            <div className="library-browser preset-browser">
               <div className="library-title"><div><span className="eyebrow">音色库</span><h1>盯鞋起点</h1></div><b>{FACTORY_PRESETS.length + userPresets.length}</b></div>
               <div className="preset-editor">
                 <label><span>音色名称</span><input value={presetName} maxLength={28} onChange={(event) => setPresetName(event.target.value)} /></label>
@@ -614,7 +617,7 @@ export default function Home() {
               </section>
             </div>
           ) : (
-            <div className="output-browser">
+            <div className="library-browser output-browser">
               <div className="library-title"><div><span className="eyebrow">输出模块</span><h1>箱头与箱体</h1></div><b>{AMP_SPECS.length + CAB_SPECS.length}</b></div>
               <button
                 type="button"
