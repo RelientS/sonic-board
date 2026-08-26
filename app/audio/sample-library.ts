@@ -11,6 +11,8 @@ export type RealGuitarSampleBank = {
   source: string;
   sourceUrl: string;
   license: 'CC0 1.0';
+  signal: 'raw-di';
+  highCutHz: number;
   samples: RealGuitarSample[];
 };
 
@@ -39,61 +41,64 @@ export function applySampleInputHeadroom(
   return gain;
 }
 
-const fenderRoots = [
+const directRoots = [
   ['c2', 65.406],
+  ['f2', 87.307],
   ['a2', 110],
-  ['e3', 164.814],
+  ['c3', 130.813],
+  ['d3', 146.832],
   ['g3', 195.998],
+  ['b3', 246.942],
+  ['cs4', 277.183],
   ['e4', 329.628],
   ['g4', 391.995],
   ['b4', 493.883],
-] as const;
-
-const blackAndGreenRoots = [
-  ['e2', 82.407],
-  ['a2', 110],
-  ['d3', 146.832],
-  ['g3', 195.998],
-  ['c4', 261.626],
-  ['g4', 391.995],
-  ['c5', 523.251],
+  ['d5', 587.33],
 ] as const;
 
 function samples(folder: string, roots: ReadonlyArray<readonly [string, number]>) {
   return roots.map(([name, rootFrequency]) => ({
-    url: `/audio/guitars/${folder}/${name}.m4a`,
+    url: `/audio/guitars/${folder}/${name}.wav`,
     rootFrequency,
   }));
 }
 
 export const REAL_GUITAR_SAMPLE_BANKS: Record<GuitarVoiceId, RealGuitarSampleBank> = {
   'single-neck': {
-    instrument: 'Gretsch Anniversary',
-    source: 'Black & Green Guitars',
-    sourceUrl: 'https://github.com/sfzinstruments/karoryfer.black-and-green-guitars',
+    instrument: 'Fender electric guitar, bridge pickup, soft take',
+    source: 'FreePats Electric Guitar Direct',
+    sourceUrl: 'https://freepats.zenvoid.org/ElectricGuitar/clean-electric-guitar.html',
     license: 'CC0 1.0',
-    samples: samples('gretsch', blackAndGreenRoots),
+    signal: 'raw-di',
+    highCutHz: 7_500,
+    samples: samples('fender-direct-soft', directRoots),
   },
   'single-bridge': {
-    instrument: 'Fender Stratocaster Bridge Clean',
-    source: 'FreePats Clean Electric Guitar',
+    instrument: 'Fender electric guitar, bridge pickup, balanced take',
+    source: 'FreePats Electric Guitar Direct',
     sourceUrl: 'https://freepats.zenvoid.org/ElectricGuitar/clean-electric-guitar.html',
     license: 'CC0 1.0',
-    samples: samples('fender-clean', fenderRoots),
+    signal: 'raw-di',
+    highCutHz: 11_000,
+    samples: samples('fender-direct-balanced', directRoots),
   },
   humbucker: {
-    instrument: 'Hofner Club',
-    source: 'Black & Green Guitars',
-    sourceUrl: 'https://github.com/sfzinstruments/karoryfer.black-and-green-guitars',
-    license: 'CC0 1.0',
-    samples: samples('hofner', blackAndGreenRoots),
-  },
-  hollowbody: {
-    instrument: 'Fender Stratocaster Bridge Jazz',
-    source: 'FreePats Clean Electric Guitar',
+    instrument: 'Fender electric guitar, bridge pickup, picked take',
+    source: 'FreePats Electric Guitar Direct',
     sourceUrl: 'https://freepats.zenvoid.org/ElectricGuitar/clean-electric-guitar.html',
     license: 'CC0 1.0',
-    samples: samples('fender-jazz', fenderRoots),
+    signal: 'raw-di',
+    highCutHz: 15_000,
+    samples: samples('fender-direct-picked', directRoots),
+  },
+  hollowbody: {
+    instrument: 'Fender electric guitar, bridge pickup, dark take',
+    source: 'FreePats Electric Guitar Direct',
+    sourceUrl: 'https://freepats.zenvoid.org/ElectricGuitar/clean-electric-guitar.html',
+    license: 'CC0 1.0',
+    signal: 'raw-di',
+    highCutHz: 4_500,
+    samples: samples('fender-direct-dark', directRoots),
   },
 };
 

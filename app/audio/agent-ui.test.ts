@@ -11,9 +11,9 @@ test('workbench exposes an accessible tone agent and clean input picker', () => 
   assert.match(page, /className="agent-open-button"/);
   assert.match(page, /aria-label="选择清音输入"/);
   assert.match(page, /生成并应用/);
-  assert.match(page, /真实采样 · CC0/);
-  assert.match(page, /FreePats/);
-  assert.match(page, /Black & Green Guitars/);
+  assert.match(page, /真实采样 · 未处理 DI · CC0/);
+  assert.match(page, /FreePats Direct DI/);
+  assert.doesNotMatch(page, /Black & Green Guitars/);
 });
 
 test('agent and source dialogs adapt to mobile sheets', () => {

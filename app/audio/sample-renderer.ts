@@ -1,5 +1,5 @@
 import { SOURCE_DURATION_SECONDS } from './audio-core.ts';
-import { applySampleInputHeadroom, makeSamplePlaybackPlan } from './sample-library.ts';
+import { REAL_GUITAR_SAMPLE_BANKS, applySampleInputHeadroom, makeSamplePlaybackPlan } from './sample-library.ts';
 import { type SourceConfig } from './source-catalog.ts';
 
 const encodedSampleCache = new Map<string, Promise<ArrayBuffer>>();
@@ -21,6 +21,7 @@ export async function renderSampledSourceBuffer(
   sourceConfig: SourceConfig,
 ) {
   const plan = makeSamplePlaybackPlan(sourceConfig);
+  const bank = REAL_GUITAR_SAMPLE_BANKS[sourceConfig.guitar];
   const offline = new OfflineAudioContext(
     2,
     Math.ceil(SOURCE_DURATION_SECONDS * context.sampleRate),
@@ -39,6 +40,7 @@ export async function renderSampledSourceBuffer(
     if (!buffer) return;
     const player = offline.createBufferSource();
     const envelope = offline.createGain();
+    const tone = offline.createBiquadFilter();
     const panner = offline.createStereoPanner();
     const start = event.time;
     const end = Math.min(SOURCE_DURATION_SECONDS, start + event.duration);
@@ -52,8 +54,11 @@ export async function renderSampledSourceBuffer(
     envelope.gain.exponentialRampToValueAtTime(peak, attackEnd);
     envelope.gain.setValueAtTime(peak, releaseStart);
     envelope.gain.exponentialRampToValueAtTime(0.0001, end);
+    tone.type = 'lowpass';
+    tone.frequency.value = bank.highCutHz;
+    tone.Q.value = 0.42;
     panner.pan.value = event.pan;
-    player.connect(envelope).connect(panner).connect(offline.destination);
+    player.connect(envelope).connect(tone).connect(panner).connect(offline.destination);
     player.start(start);
     player.stop(Math.min(SOURCE_DURATION_SECONDS, end + 0.02));
   });

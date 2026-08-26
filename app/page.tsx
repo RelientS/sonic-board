@@ -266,9 +266,7 @@ function SourcePickerDialog({ open, source, onChange, onClose }: {
             ))}
           </div>
           <p className="sample-license-note">
-            真实采样 · CC0 · <a href="https://freepats.zenvoid.org/ElectricGuitar/clean-electric-guitar.html" target="_blank" rel="noreferrer">FreePats</a>
-            {' / '}
-            <a href="https://github.com/sfzinstruments/karoryfer.black-and-green-guitars" target="_blank" rel="noreferrer">{'Black & Green Guitars'}</a>
+            真实采样 · 未处理 DI · CC0 · <a href="https://freepats.zenvoid.org/ElectricGuitar/clean-electric-guitar.html" target="_blank" rel="noreferrer">FreePats Direct DI</a>
           </p>
         </section>
         <section>
