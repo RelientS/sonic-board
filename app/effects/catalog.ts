@@ -1,4 +1,5 @@
-import type { SourceKind } from '../audio/audio-core';
+import type { RoutingConfig, SignalLane, SourceKind } from '../audio/audio-core';
+import { makeAmpCabConfig, type AmpCabConfig } from '../amps/catalog.ts';
 
 export type EffectCategory = 'Dynamics' | 'Tone' | 'Drive' | 'Mod' | 'Delay' | 'Space';
 export type ControlCurve = 'linear' | 'exponential';
@@ -30,6 +31,7 @@ export type EffectSpec = {
 
 export type PresetChainItem = {
   specId: string;
+  lane?: SignalLane;
   settings?: Record<string, number>;
 };
 
@@ -39,15 +41,19 @@ export type FactoryPreset = {
   description: string;
   source: SourceKind;
   output: number;
+  routing: RoutingConfig;
+  amp: AmpCabConfig;
   chain: PresetChainItem[];
 };
 
 export type InstantiatedPreset = {
-  chain: Array<{ instanceId: string; specId: string }>;
+  chain: Array<{ instanceId: string; specId: string; lane?: SignalLane }>;
   values: Record<string, Record<string, number>>;
   bypassed: string[];
   source: SourceKind;
   output: number;
+  routing: RoutingConfig;
+  amp: AmpCabConfig;
 };
 
 const c = (
@@ -171,6 +177,8 @@ export const EFFECT_SPECS: EffectSpec[] = [
 export const FACTORY_PRESETS: FactoryPreset[] = [
   {
     id: 'reverse-wall', name: '反向音墙', description: '反向空间先进法兹，厚、黏、带吸入感。', source: 'chords', output: 66,
+    routing: { mode: 'serial', blend: 50, spread: 0 },
+    amp: makeAmpCabConfig('brit-20', 'closed-4x12', { gain: 32, mid: 64, presence: 52 }),
     chain: [
       { specId: 'studio-comp', settings: { sustain: 38, attack: 64 } },
       { specId: 'soft-detune', settings: { cents: 34, blend: 22, spread: 62 } },
@@ -181,6 +189,8 @@ export const FACTORY_PRESETS: FactoryPreset[] = [
   },
   {
     id: 'soft-focus', name: '柔焦清音', description: '压缩、合唱、磁带回声和长大厅。', source: 'arpeggio', output: 72,
+    routing: { mode: 'serial', blend: 50, spread: 0 },
+    amp: makeAmpCabConfig('glass-120', 'open-2x12', { gain: 14, treble: 61, presence: 58 }),
     chain: [
       { specId: 'studio-comp', settings: { sustain: 52, tone: 58 } },
       { specId: 'analog-chorus', settings: { rate: 24, depth: 38, mix: 38 } },
@@ -190,6 +200,8 @@ export const FACTORY_PRESETS: FactoryPreset[] = [
   },
   {
     id: 'glide-bloom', name: '摇把花开', description: '缓慢颤音接反向空间，再由法兹焊成一体。', source: 'chords', output: 64,
+    routing: { mode: 'serial', blend: 50, spread: 0 },
+    amp: makeAmpCabConfig('brit-20', 'closed-4x12', { gain: 28, mid: 61, treble: 51 }),
     chain: [
       { specId: 'tape-vibrato', settings: { rate: 16, depth: 34, rise: 18 } },
       { specId: 'blue-drive', settings: { gain: 42, tone: 57, level: 62 } },
@@ -200,6 +212,8 @@ export const FACTORY_PRESETS: FactoryPreset[] = [
   },
   {
     id: 'grey-machine', name: '灰色机器', description: '啮齿失真推动电锯失真，门限空间迅速收尾。', source: 'lead', output: 58,
+    routing: { mode: 'serial', blend: 50, spread: 0 },
+    amp: makeAmpCabConfig('dark-stack', 'closed-4x12', { gain: 46, bass: 54, presence: 42 }),
     chain: [
       { specId: 'noise-gate', settings: { threshold: 34, release: 28 } },
       { specId: 'rodent-dist', settings: { distortion: 48, filter: 58, volume: 56 } },
@@ -210,6 +224,8 @@ export const FACTORY_PRESETS: FactoryPreset[] = [
   },
   {
     id: 'slow-orbit', name: '慢速轨道', description: '相位与失谐缓慢运动，延迟和大厅负责纵深。', source: 'arpeggio', output: 70,
+    routing: { mode: 'serial', blend: 50, spread: 0 },
+    amp: makeAmpCabConfig('american-twin', 'open-2x12', { gain: 19, mid: 47, treble: 60 }),
     chain: [
       { specId: 'slow-phase', settings: { rate: 10, depth: 34, res: 16, mix: 36 } },
       { specId: 'soft-detune', settings: { cents: 28, blend: 24, spread: 76 } },
@@ -219,6 +235,8 @@ export const FACTORY_PRESETS: FactoryPreset[] = [
   },
   {
     id: 'jet-cloud', name: '喷气云层', description: '轻过载后接深镶边，再铺磁带回声和大厅。', source: 'chords', output: 66,
+    routing: { mode: 'serial', blend: 50, spread: 0 },
+    amp: makeAmpCabConfig('class-a-30', 'blue-2x12', { gain: 33, treble: 62, presence: 56 }),
     chain: [
       { specId: 'blue-drive', settings: { gain: 34, tone: 48, level: 64 } },
       { specId: 'jet-flanger', settings: { manual: 46, rate: 18, depth: 72, res: 54, mix: 44 } },
@@ -228,11 +246,39 @@ export const FACTORY_PRESETS: FactoryPreset[] = [
   },
   {
     id: 'pulse-haze', name: '脉冲薄雾', description: '偏压抖音切出律动，反向空间和模拟延迟补足尾巴。', source: 'chords', output: 69,
+    routing: { mode: 'serial', blend: 50, spread: 0 },
+    amp: makeAmpCabConfig('american-twin', 'open-2x12', { gain: 22, bass: 52, treble: 61 }),
     chain: [
       { specId: 'studio-comp', settings: { sustain: 44, attack: 52 } },
       { specId: 'bias-tremolo', settings: { rate: 39, depth: 52, wave: 28 } },
       { specId: 'reverse-space', settings: { mix: 31, decay: 39, preDelay: 14 } },
       { specId: 'analog-delay', settings: { time: 46, feedback: 28, mix: 25 } },
+    ],
+  },
+  {
+    id: 'stereo-bloom', name: '双路花开', description: 'A 路保持清晰与运动，B 路把反向空间压进法兹，左右展开。', source: 'chords', output: 63,
+    routing: { mode: 'parallel', blend: 56, spread: 82 },
+    amp: makeAmpCabConfig('glass-120', 'open-2x12', { gain: 17, mid: 55, treble: 59, presence: 57 }, { distance: 22, room: 15 }),
+    chain: [
+      { specId: 'studio-comp', lane: 'A', settings: { sustain: 40, attack: 58 } },
+      { specId: 'analog-chorus', lane: 'A', settings: { rate: 21, depth: 43, mix: 38 } },
+      { specId: 'digital-delay', lane: 'A', settings: { time: 36, feedback: 28, mix: 25, width: 76 } },
+      { specId: 'reverse-space', lane: 'B', settings: { mix: 54, decay: 52, density: 80, highCut: 55 } },
+      { specId: 'wall-fuzz', lane: 'B', settings: { sustain: 72, tone: 46, mids: 62, gate: 9 } },
+      { specId: 'cloud-hall', lane: 'B', settings: { mix: 30, decay: 48, motion: 36 } },
+    ],
+  },
+  {
+    id: 'dual-wall', name: '双重音墙', description: '两种失真分别占据左右，中间由箱头和封闭 4×12 收束。', source: 'chords', output: 55,
+    routing: { mode: 'parallel', blend: 50, spread: 68 },
+    amp: makeAmpCabConfig('brit-20', 'closed-4x12', { gain: 24, bass: 50, mid: 66, presence: 48 }, { position: 56, distance: 14, room: 6 }),
+    chain: [
+      { specId: 'blue-drive', lane: 'A', settings: { gain: 36, tone: 54, level: 60 } },
+      { specId: 'wall-fuzz', lane: 'A', settings: { sustain: 76, tone: 49, mids: 63, gate: 12 } },
+      { specId: 'graphic-eq', lane: 'A', settings: { '400': 56, '800': 62, '1600': 58 } },
+      { specId: 'rodent-dist', lane: 'B', settings: { distortion: 58, filter: 53, volume: 56 } },
+      { specId: 'chainsaw-dist', lane: 'B', settings: { low: 69, high: 72, distortion: 66 } },
+      { specId: 'gated-room', lane: 'B', settings: { mix: 26, decay: 29, hold: 24, release: 17 } },
     ],
   },
 ];
@@ -284,10 +330,22 @@ export function makeDefaultValues(specId: string) {
 
 export function instantiatePreset(preset: FactoryPreset): InstantiatedPreset {
   presetSerial += 1;
-  const chain = preset.chain.map((item, index) => ({ instanceId: `${item.specId}-${presetSerial}-${index + 1}`, specId: item.specId }));
+  const chain = preset.chain.map((item, index) => ({ instanceId: `${item.specId}-${presetSerial}-${index + 1}`, specId: item.specId, lane: item.lane ?? 'A' }));
   const values = Object.fromEntries(chain.map((item, index) => [
     item.instanceId,
     { ...makeDefaultValues(item.specId), ...preset.chain[index].settings },
   ]));
-  return { chain, values, bypassed: [], source: preset.source, output: preset.output };
+  return {
+    chain,
+    values,
+    bypassed: [],
+    source: preset.source,
+    output: preset.output,
+    routing: { ...preset.routing },
+    amp: {
+      ...preset.amp,
+      ampValues: { ...preset.amp.ampValues },
+      cabValues: { ...preset.amp.cabValues },
+    },
+  };
 }

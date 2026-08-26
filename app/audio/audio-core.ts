@@ -1,4 +1,12 @@
 export type SourceKind = 'chords' | 'arpeggio' | 'lead';
+export type SignalLane = 'A' | 'B';
+export type RoutingMode = 'serial' | 'parallel';
+
+export type RoutingConfig = {
+  mode: RoutingMode;
+  blend: number;
+  spread: number;
+};
 
 export type SourceEvent = {
   time: number;
@@ -11,6 +19,7 @@ export type SourceEvent = {
 export type AudioChainItem = {
   instanceId: string;
   specId: string;
+  lane?: SignalLane;
 };
 
 export type AudioValues = Record<string, Record<string, number>>;

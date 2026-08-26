@@ -9,7 +9,16 @@ import {
   type BoardAudioConfig,
   type LiveAudioSession,
 } from './audio/audio-engine';
-import type { SourceKind } from './audio/audio-core';
+import type { AudioChainItem, RoutingConfig, SignalLane, SourceKind } from './audio/audio-core';
+import {
+  AMP_SPECS,
+  CAB_SPECS,
+  getAmpSpec,
+  getCabSpec,
+  makeDefaultAmpValues,
+  makeDefaultCabValues,
+  type AmpCabConfig,
+} from './amps/catalog';
 import {
   EFFECT_SPECS,
   FACTORY_PRESETS,
@@ -29,9 +38,9 @@ import {
   type UserPreset,
 } from './effects/user-presets';
 
-type ChainItem = { instanceId: string; specId: string };
+type ChainItem = AudioChainItem;
 type Values = Record<string, Record<string, number>>;
-type LibraryMode = 'effects' | 'presets';
+type LibraryMode = 'effects' | 'presets' | 'output';
 
 const categoryNames: Record<'All' | EffectCategory, string> = {
   All: '全部',
@@ -180,6 +189,8 @@ export default function Home() {
   const [search, setSearch] = useState('');
   const [zoom, setZoom] = useState(0.94);
   const [mode, setMode] = useState<'dry' | 'wet'>('wet');
+  const [routing, setRouting] = useState<RoutingConfig>(initialBoard.routing);
+  const [amp, setAmp] = useState<AmpCabConfig>(initialBoard.amp);
   const [source, setSource] = useState<SourceKind>(initialBoard.source);
   const [output, setOutput] = useState(initialBoard.output);
   const [activePresetName, setActivePresetName] = useState(initialFactoryPreset.name);
@@ -194,6 +205,11 @@ export default function Home() {
   const values = snapshots[snapshot];
   const selectedIndex = chain.findIndex((item) => item.instanceId === selected);
   const selectedSpec = selectedIndex >= 0 ? getEffectSpec(chain[selectedIndex].specId) : null;
+  const selectedLane = chain[selectedIndex]?.lane ?? 'A';
+  const selectedLaneItems = routing.mode === 'parallel' ? chain.filter((item) => (item.lane ?? 'A') === selectedLane) : chain;
+  const selectedLaneIndex = selectedLaneItems.findIndex((item) => item.instanceId === selected);
+  const ampSpec = getAmpSpec(amp.ampId);
+  const cabSpec = getCabSpec(amp.cabId);
 
   const library = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -211,7 +227,9 @@ export default function Home() {
     source,
     mode,
     output,
-  }), [chain, values, bypassed, source, mode, output]);
+    routing,
+    amp,
+  }), [chain, values, bypassed, source, mode, output, routing, amp]);
 
   useEffect(() => {
     setUserPresets(parseUserPresets(window.localStorage.getItem('sonic-board-user-presets')));
@@ -241,6 +259,8 @@ export default function Home() {
     setBypassed(new Set(board.bypassed));
     setSource(board.source);
     setOutput(board.output);
+    setRouting({ ...board.routing });
+    setAmp({ ...board.amp, ampValues: { ...board.amp.ampValues }, cabValues: { ...board.amp.cabValues } });
     setActivePresetName(name);
     setRender('idle');
     setAudioError('');
@@ -274,13 +294,14 @@ export default function Home() {
   }
 
   function addPedal(specId: string) {
-    if (chain.length >= 12) {
-      setAudioError('一条链最多放 12 块效果器，请先移除一块。');
+    if (chain.length >= 16) {
+      setAudioError('当前板面最多放 16 块效果器，请先移除一块。');
       return;
     }
     const instanceId = specId + '-' + Date.now();
     const defaults = makeDefaultValues(specId);
-    setChain((current) => [...current, { instanceId, specId }]);
+    const lane = routing.mode === 'parallel' ? selectedLane : 'A';
+    setChain((current) => [...current, { instanceId, specId, lane }]);
     setSnapshots((current) => ({ A: { ...current.A, [instanceId]: { ...defaults } }, B: { ...current.B, [instanceId]: { ...defaults } } }));
     setSelected(instanceId);
     setActivePresetName('已修改');
@@ -308,8 +329,39 @@ export default function Home() {
   }
 
   function moveSelected(direction: -1 | 1) {
-    const target = chain[selectedIndex + direction];
+    const target = selectedLaneItems[selectedLaneIndex + direction];
     if (target) moveItem(selected, target.instanceId);
+  }
+
+  function assignSelectedLane(lane: SignalLane) {
+    if (selectedIndex < 0) return;
+    setChain((current) => current.map((item) => item.instanceId === selected ? { ...item, lane } : item));
+    setActivePresetName('已修改');
+    setRender('idle');
+  }
+
+  function updateRouting(next: Partial<RoutingConfig>) {
+    setRouting((current) => ({ ...current, ...next }));
+    setActivePresetName('已修改');
+    setRender('idle');
+  }
+
+  function selectAmp(ampId: string) {
+    setAmp((current) => ({ ...current, ampId, ampValues: makeDefaultAmpValues(ampId) }));
+    setActivePresetName('已修改');
+    setRender('idle');
+  }
+
+  function selectCab(cabId: string) {
+    setAmp((current) => ({ ...current, cabId, cabValues: makeDefaultCabValues(cabId) }));
+    setActivePresetName('已修改');
+    setRender('idle');
+  }
+
+  function updateAmpValue(section: 'ampValues' | 'cabValues', controlId: string, value: number) {
+    setAmp((current) => ({ ...current, [section]: { ...current[section], [controlId]: value } }));
+    setActivePresetName('已修改');
+    setRender('idle');
   }
 
   function removeSelected() {
@@ -356,7 +408,7 @@ export default function Home() {
       return;
     }
     try {
-      const captured = captureUserPreset({ name: presetName, chain, values, bypassed, source, output });
+      const captured = captureUserPreset({ name: presetName, chain, values, bypassed, source, output, routing, amp });
       const next = [captured, ...userPresets].slice(0, 24);
       window.localStorage.setItem('sonic-board-user-presets', JSON.stringify(next));
       setUserPresets(next);
@@ -396,6 +448,26 @@ export default function Home() {
     }
   }
 
+  function renderPedal(item: ChainItem) {
+    const index = chain.findIndex((entry) => entry.instanceId === item.instanceId);
+    return (
+      <span className="chain-part" key={item.instanceId}>
+        <DemoPedal
+          item={item}
+          index={index}
+          values={values[item.instanceId] ?? {}}
+          selected={selected === item.instanceId}
+          bypassed={bypassed.has(item.instanceId)}
+          onSelect={() => setSelected(item.instanceId)}
+          onValue={(id, value) => updateValue(item.instanceId, id, value)}
+          onBypass={() => toggleBypass(item.instanceId)}
+          onDrop={(payload) => handleDrop(payload, item.instanceId)}
+        />
+        <Cable />
+      </span>
+    );
+  }
+
   return (
     <main className="app-shell">
       <a className="skip-link" href="#pedalboard">跳到效果器板</a>
@@ -414,6 +486,7 @@ export default function Home() {
           <div className="panel-tabs" aria-label="库类型">
             <button type="button" className={libraryMode === 'effects' ? 'active' : ''} aria-pressed={libraryMode === 'effects'} onClick={() => setLibraryMode('effects')}>效果器 <b>{EFFECT_SPECS.length}</b></button>
             <button type="button" className={libraryMode === 'presets' ? 'active' : ''} aria-pressed={libraryMode === 'presets'} onClick={() => setLibraryMode('presets')}>音色 <b>{FACTORY_PRESETS.length + userPresets.length}</b></button>
+            <button type="button" className={libraryMode === 'output' ? 'active' : ''} aria-pressed={libraryMode === 'output'} onClick={() => setLibraryMode('output')}>输出 <b>10</b></button>
           </div>
 
           {libraryMode === 'effects' ? (
@@ -429,7 +502,7 @@ export default function Home() {
                 </article>
               ))}</div>
             </>
-          ) : (
+          ) : libraryMode === 'presets' ? (
             <div className="preset-browser">
               <div className="library-title"><div><span className="eyebrow">音色库</span><h1>盯鞋起点</h1></div><b>{FACTORY_PRESETS.length + userPresets.length}</b></div>
               <div className="preset-editor">
@@ -440,7 +513,7 @@ export default function Home() {
                 <h2>内置音色</h2>
                 <div className="preset-list">{FACTORY_PRESETS.map((preset) => (
                   <article className="preset-card" key={preset.id}>
-                    <div><strong>{preset.name}</strong><small>{preset.description}</small><span>{preset.chain.length} 块 · {sourceNames[preset.source]}</span></div>
+                    <div><strong>{preset.name}</strong><small>{preset.description}</small><span>{preset.chain.length} 块 · {preset.routing.mode === 'parallel' ? '双路并联' : '串联'} · {getAmpSpec(preset.amp.ampId).name}</span></div>
                     <button type="button" onClick={() => loadFactoryPreset(preset.id)}>载入</button>
                   </article>
                 ))}</div>
@@ -450,12 +523,46 @@ export default function Home() {
                 {userPresets.length === 0 ? <p className="preset-empty">还没有保存在本机的音色。</p> : (
                   <div className="preset-list">{userPresets.map((preset) => (
                     <article className="preset-card user" key={preset.id}>
-                      <div><strong>{preset.name}</strong><small>{preset.chain.map((item) => getEffectSpec(item.specId).name).join(' → ')}</small><span>{preset.chain.length} 块 · {sourceNames[preset.source]}</span></div>
+                      <div><strong>{preset.name}</strong><small>{preset.chain.map((item) => getEffectSpec(item.specId).name).join(' → ')}</small><span>{preset.chain.length} 块 · {preset.routing.mode === 'parallel' ? '双路并联' : '串联'} · {sourceNames[preset.source]}</span></div>
                       <button type="button" onClick={() => loadUserPreset(preset)}>载入</button>
                       <button type="button" className="delete-preset" aria-label={'删除' + preset.name} onClick={() => deleteUserPreset(preset)}>删除</button>
                     </article>
                   ))}</div>
                 )}
+              </section>
+            </div>
+          ) : (
+            <div className="output-browser">
+              <div className="library-title"><div><span className="eyebrow">输出模块</span><h1>箱头与箱体</h1></div><b>{AMP_SPECS.length + CAB_SPECS.length}</b></div>
+              <button
+                type="button"
+                className={'amp-bypass' + (amp.bypassed ? ' active' : '')}
+                aria-pressed={amp.bypassed}
+                onClick={() => { setAmp((current) => ({ ...current, bypassed: !current.bypassed })); setRender('idle'); }}
+              >{amp.bypassed ? '输出模拟已旁通' : '输出模拟已启用'}</button>
+              <section className="output-section">
+                <div className="section-heading"><h2>箱头</h2><span>{ampSpec.family}</span></div>
+                <div className="model-list" role="radiogroup" aria-label="箱头模型">{AMP_SPECS.map((model) => (
+                  <button key={model.id} type="button" role="radio" aria-checked={amp.ampId === model.id} className={amp.ampId === model.id ? 'active' : ''} onClick={() => selectAmp(model.id)}>
+                    <i style={{ background: model.accent }} aria-hidden="true" /><span><strong>{model.name}</strong><small>{model.family}</small></span>
+                  </button>
+                ))}</div>
+                <p className="model-description">{ampSpec.description}</p>
+                <div className="output-knobs">{ampSpec.controls.map((control) => (
+                  <KnobControl key={control.id} control={control} value={amp.ampValues[control.id] ?? control.defaultValue} disabled={amp.bypassed} onChange={(value) => updateAmpValue('ampValues', control.id, value)} />
+                ))}</div>
+              </section>
+              <section className="output-section cab-section">
+                <div className="section-heading"><h2>箱体</h2><span>{cabSpec.format}</span></div>
+                <div className="cab-list" role="radiogroup" aria-label="箱体模型">{CAB_SPECS.map((model) => (
+                  <button key={model.id} type="button" role="radio" aria-checked={amp.cabId === model.id} className={amp.cabId === model.id ? 'active' : ''} onClick={() => selectCab(model.id)}>
+                    <strong>{model.name}</strong><small>{model.format}</small>
+                  </button>
+                ))}</div>
+                <p className="model-description">{cabSpec.description}</p>
+                <div className="output-knobs cab-knobs">{cabSpec.controls.map((control) => (
+                  <KnobControl key={control.id} control={control} value={amp.cabValues[control.id] ?? control.defaultValue} disabled={amp.bypassed} onChange={(value) => updateAmpValue('cabValues', control.id, value)} />
+                ))}</div>
               </section>
             </div>
           )}
@@ -465,30 +572,34 @@ export default function Home() {
           <div className="board-toolbar">
             <div className="selected-meta">
               <span className="eyebrow">已选效果器</span>
-              <div><strong>{selectedSpec?.name ?? '未选择'}</strong><small>{selectedSpec ? categoryNames[selectedSpec.category] + ' · ' + selectedSpec.family + ' · ' + (bypassed.has(selected) ? '已旁通' : '已启用') : ''}</small></div>
+              <div><strong>{selectedSpec?.name ?? '未选择'}</strong><small>{selectedSpec ? (routing.mode === 'parallel' ? selectedLane + ' 路 · ' : '') + categoryNames[selectedSpec.category] + ' · ' + selectedSpec.family + ' · ' + (bypassed.has(selected) ? '已旁通' : '已启用') : ''}</small></div>
             </div>
-            <div className="move-actions"><button type="button" disabled={selectedIndex <= 0} onClick={() => moveSelected(-1)}>前移</button><button type="button" disabled={selectedIndex < 0 || selectedIndex >= chain.length - 1} onClick={() => moveSelected(1)}>后移</button><button type="button" disabled={selectedIndex < 0} onClick={removeSelected}>移除</button></div>
+            <div className="edit-actions">
+              <div className="move-actions"><button type="button" disabled={selectedLaneIndex <= 0} onClick={() => moveSelected(-1)}>前移</button><button type="button" disabled={selectedLaneIndex < 0 || selectedLaneIndex >= selectedLaneItems.length - 1} onClick={() => moveSelected(1)}>后移</button><button type="button" disabled={selectedIndex < 0} onClick={removeSelected}>移除</button></div>
+              {routing.mode === 'parallel' && <div className="lane-actions" aria-label="分配已选效果器到通道"><span>放到</span>{(['A', 'B'] as const).map((lane) => <button key={lane} type="button" className={selectedLane === lane ? 'active' : ''} aria-pressed={selectedLane === lane} disabled={selectedIndex < 0} onClick={() => assignSelectedLane(lane)}>{lane} 路</button>)}</div>}
+            </div>
+            <div className="routing-tools">
+              <div className="segments route-mode" aria-label="串联或并联">{(['serial', 'parallel'] as const).map((entry) => <button key={entry} type="button" className={routing.mode === entry ? 'active' : ''} aria-pressed={routing.mode === entry} onClick={() => updateRouting({ mode: entry })}>{entry === 'serial' ? '串联' : '双路并联'}</button>)}</div>
+              <label><span>A / B 平衡</span><input type="range" min="0" max="100" value={routing.blend} disabled={routing.mode === 'serial'} aria-label="A B 通道平衡" onChange={(event) => updateRouting({ blend: Number(event.target.value) })} /></label>
+              <label><span>立体声宽度</span><input type="range" min="0" max="100" value={routing.spread} disabled={routing.mode === 'serial'} aria-label="立体声宽度" onChange={(event) => updateRouting({ spread: Number(event.target.value) })} /></label>
+            </div>
             <div className="zoom"><button type="button" aria-label="缩小板面" onClick={() => setZoom((value) => Math.max(.7, value - .08))}>−</button><span>{Math.round(zoom * 100)}%</span><button type="button" aria-label="放大板面" onClick={() => setZoom((value) => Math.min(1.1, value + .08))}>+</button></div>
           </div>
-          <div className="board-scroll"><div className="board-frame"><div className="chain" style={{ '--scale': zoom } as CSSProperties}>
+          <div className="board-scroll"><div className={'board-frame ' + routing.mode}><div className={'chain ' + routing.mode} style={{ '--scale': zoom } as CSSProperties}>
             <div className="input-box">输入</div><Cable />
-            {chain.map((item, index) => (
-              <span className="chain-part" key={item.instanceId}>
-                <DemoPedal
-                  item={item}
-                  index={index}
-                  values={values[item.instanceId] ?? {}}
-                  selected={selected === item.instanceId}
-                  bypassed={bypassed.has(item.instanceId)}
-                  onSelect={() => setSelected(item.instanceId)}
-                  onValue={(id, value) => updateValue(item.instanceId, id, value)}
-                  onBypass={() => toggleBypass(item.instanceId)}
-                  onDrop={(payload) => handleDrop(payload, item.instanceId)}
-                />
-                <Cable />
-              </span>
-            ))}
-            <div className="amp"><div><span>固定输出</span><strong>BRIT 20</strong><small>箱头 + 2×12 箱体</small></div><i /></div>
+            {routing.mode === 'serial' ? chain.map(renderPedal) : (
+              <>
+                <div className="route-node splitter"><span>分流</span><b>A/B</b></div><Cable />
+                <div className="lane-stack">
+                  {(['A', 'B'] as const).map((lane) => {
+                    const laneItems = chain.filter((item) => (item.lane ?? 'A') === lane);
+                    return <div className={'lane-row lane-' + lane.toLowerCase()} key={lane}><span className="lane-label">{lane} 路</span><Cable />{laneItems.map(renderPedal)}{laneItems.length === 0 && <span className="lane-empty">空通道（干声直通）</span>}</div>;
+                  })}
+                </div>
+                <Cable /><div className="route-node merger"><span>合流</span><b>Σ</b></div><Cable />
+              </>
+            )}
+            <button type="button" className={'amp' + (amp.bypassed ? ' is-bypassed' : '')} onClick={() => setLibraryMode('output')}><div><span>{amp.bypassed ? '已旁通' : '箱头 + 箱体'}</span><strong>{ampSpec.name}</strong><small>{cabSpec.name}</small></div><i /></button>
           </div>{chain.length === 0 && <p className="empty">从左侧添加效果器，或载入一个音色。</p>}</div></div>
         </section>
       </div>
@@ -498,7 +609,7 @@ export default function Home() {
         <button className={'play' + (playing ? ' active' : '')} type="button" aria-label={playing ? '停止试听' : '开始试听'} onClick={() => void togglePlayback()}>{playing ? '■' : '▶'}</button>
         <div className="waveform" aria-label={'试听进度 ' + Math.round(progress) + '%'}><i style={{ width: String(progress) + '%' }} />{wave.map((height, index) => <b key={String(height) + '-' + String(index)} style={{ height: String(height) + '%' }} />)}</div>
         <div className="segments" aria-label="干声或效果声">{(['dry', 'wet'] as const).map((entry) => <button key={entry} type="button" className={mode === entry ? 'active' : ''} aria-pressed={mode === entry} onClick={() => { setMode(entry); setRender('idle'); }}>{entry === 'dry' ? '干声' : '效果'}</button>)}</div>
-        <div className="segments ab" aria-label="A 或 B 参数">{(['A', 'B'] as const).map((entry) => <button key={entry} type="button" className={snapshot === entry ? 'active' : ''} aria-pressed={snapshot === entry} onClick={() => { setSnapshot(entry); setRender('idle'); }}>{entry}</button>)}</div>
+        <div className="segments ab" aria-label="参数快照 A 或 B">{(['A', 'B'] as const).map((entry) => <button key={entry} type="button" className={snapshot === entry ? 'active' : ''} aria-pressed={snapshot === entry} onClick={() => { setSnapshot(entry); setRender('idle'); }}>快照 {entry}</button>)}</div>
         <label className="output"><span>输出音量</span><input type="range" min="0" max="100" value={output} aria-label="输出音量" onChange={(event) => { setOutput(Number(event.target.value)); setRender('idle'); }} /></label>
         <button type="button" className="render" disabled={render === 'busy'} onClick={() => void exportWav()}>{render === 'busy' ? '正在导出…' : render === 'ready' ? '已下载' : '导出 WAV'}</button>
         {audioError && <span className="audio-error" role="alert">{audioError}</span>}

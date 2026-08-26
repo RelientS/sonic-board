@@ -40,7 +40,7 @@ test('control values map normalized knob positions to physical units', () => {
 });
 
 test('factory presets cover distinct shoegaze chains and instantiate complete values', () => {
-  assert.ok(FACTORY_PRESETS.length >= 6);
+  assert.ok(FACTORY_PRESETS.length >= 9);
   const wall = FACTORY_PRESETS.find((preset) => preset.id === 'reverse-wall')!;
   assert.ok(wall);
   assert.ok(wall.chain.findIndex((item) => item.specId === 'reverse-space') < wall.chain.findIndex((item) => item.specId === 'wall-fuzz'));
@@ -54,4 +54,12 @@ test('factory presets cover distinct shoegaze chains and instantiate complete va
     const spec = getEffectSpec(item.specId);
     assert.deepEqual(Object.keys(first.values[item.instanceId]).sort(), spec.controls.map((control) => control.id).sort());
   });
+
+  const stereo = FACTORY_PRESETS.find((preset) => preset.id === 'stereo-bloom')!;
+  assert.equal(stereo.routing.mode, 'parallel');
+  assert.ok(stereo.chain.some((item) => item.lane === 'A'));
+  assert.ok(stereo.chain.some((item) => item.lane === 'B'));
+  const instantiatedStereo = instantiatePreset(stereo);
+  assert.equal(instantiatedStereo.routing.mode, 'parallel');
+  assert.equal(instantiatedStereo.amp.ampId, stereo.amp.ampId);
 });

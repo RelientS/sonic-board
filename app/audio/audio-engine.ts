@@ -8,9 +8,12 @@ import {
   synthesizeSourceChannels,
   type AudioChainItem,
   type AudioValues,
+  type RoutingConfig,
   type SourceKind,
 } from './audio-core.ts';
 import { getEffectSpec, mapControlValue } from '../effects/catalog.ts';
+import { AMP_SPECS, CAB_SPECS, getAmpSpec, getCabSpec, type AmpCabConfig } from '../amps/catalog.ts';
+import { computeLaneMix, partitionChain } from './routing.ts';
 
 export const SUPPORTED_EFFECT_IDS = new Set([
   'studio-comp', 'noise-gate', 'graphic-eq',
@@ -19,6 +22,8 @@ export const SUPPORTED_EFFECT_IDS = new Set([
   'analog-delay', 'tape-echo', 'digital-delay',
   'reverse-space', 'gated-room', 'cloud-hall',
 ]);
+export const SUPPORTED_AMP_IDS = new Set(AMP_SPECS.map((amp) => amp.id));
+export const SUPPORTED_CAB_IDS = new Set(CAB_SPECS.map((cab) => cab.id));
 
 export type BoardAudioConfig = {
   chain: AudioChainItem[];
@@ -27,6 +32,8 @@ export type BoardAudioConfig = {
   source: SourceKind;
   mode: 'dry' | 'wet';
   output: number;
+  routing: RoutingConfig;
+  amp: AmpCabConfig;
 };
 
 export type LiveAudioSession = {
@@ -118,13 +125,12 @@ function connectEffectChain(
   input: AudioNode,
   config: BoardAudioConfig,
   scheduled: AudioScheduledSourceNode[],
+  chain: AudioChainItem[] = config.chain,
 ) {
-  if (config.mode === 'dry') return input;
-
   const bypassed = new Set(config.bypassed);
   let cursor = input;
 
-  config.chain.forEach((item) => {
+  chain.forEach((item) => {
     if (bypassed.has(item.instanceId)) return;
     const values = config.values[item.instanceId] ?? {};
     const specId = item.specId;
@@ -441,6 +447,106 @@ function connectEffectChain(
   return cursor;
 }
 
+function makeCabinetImpulse(context: BaseAudioContext, seconds: number, distance: number, room: number, seed: number) {
+  const roomTail = room / 100 * 0.055;
+  const length = Math.max(1, Math.ceil(context.sampleRate * (seconds + roomTail)));
+  const buffer = context.createBuffer(2, length, context.sampleRate);
+  const random = seededRandom(seed);
+  const distanceDelay = Math.floor((0.0004 + distance / 100 * 0.0045) * context.sampleRate);
+
+  for (let channel = 0; channel < 2; channel += 1) {
+    const data = buffer.getChannelData(channel);
+    data[Math.min(length - 1, distanceDelay + channel * 2)] = 0.92;
+    for (let index = distanceDelay + 1; index < length; index += 1) {
+      const phase = (index - distanceDelay) / Math.max(1, length - distanceDelay);
+      const cabinetDecay = Math.exp(-phase * (7.5 - room / 24));
+      const earlyReflection = index % Math.max(7, Math.floor(context.sampleRate * 0.0017)) === 0 ? 0.34 : 0.08;
+      data[index] += random() * cabinetDecay * earlyReflection * (0.42 + room / 180);
+    }
+  }
+
+  return buffer;
+}
+
+function connectAmpCab(context: BaseAudioContext, input: AudioNode, ampConfig: AmpCabConfig) {
+  if (ampConfig.bypassed) return input;
+  const amp = getAmpSpec(ampConfig.ampId);
+  const cab = getCabSpec(ampConfig.cabId);
+  const ampValues = ampConfig.ampValues;
+  const cabValues = ampConfig.cabValues;
+  const inputGain = context.createGain();
+  const bass = context.createBiquadFilter();
+  const mids = context.createBiquadFilter();
+  const treble = context.createBiquadFilter();
+  const shaper = context.createWaveShaper();
+  const presence = context.createBiquadFilter();
+  const ampCut = context.createBiquadFilter();
+  const master = context.createGain();
+  const gainValue = parameter(ampValues, 'gain', 40);
+
+  inputGain.gain.value = 0.34 + parameter(ampValues, 'input', 50) / 42;
+  bass.type = 'lowshelf'; bass.frequency.value = amp.voicing.lowHz; bass.gain.value = (parameter(ampValues, 'bass', 50) - 50) * 0.22;
+  mids.type = 'peaking'; mids.frequency.value = amp.voicing.midHz; mids.Q.value = 0.72; mids.gain.value = (parameter(ampValues, 'mid', 50) - 50) * 0.25;
+  treble.type = 'highshelf'; treble.frequency.value = amp.voicing.highHz; treble.gain.value = (parameter(ampValues, 'treble', 50) - 50) * 0.2;
+  shaper.curve = makeDriveCurve(Math.max(1, gainValue * amp.voicing.drive));
+  shaper.oversample = '4x';
+  presence.type = 'peaking'; presence.frequency.value = amp.voicing.presenceHz; presence.Q.value = 0.72; presence.gain.value = (parameter(ampValues, 'presence', 50) - 50) * 0.17;
+  ampCut.type = 'lowpass'; ampCut.frequency.value = amp.voicing.highCut; ampCut.Q.value = 0.62;
+  master.gain.value = (0.12 + parameter(ampValues, 'master', 60) / 94) / (0.74 + gainValue / 115);
+  input.connect(inputGain).connect(bass).connect(mids).connect(treble).connect(shaper).connect(presence).connect(ampCut).connect(master);
+
+  const cabHighPass = context.createBiquadFilter();
+  const cabLowPass = context.createBiquadFilter();
+  const body = context.createBiquadFilter();
+  const air = context.createBiquadFilter();
+  const position = parameter(cabValues, 'position', 48);
+  const distance = parameter(cabValues, 'distance', 18);
+  const room = parameter(cabValues, 'room', 10);
+  cabHighPass.type = 'highpass'; cabHighPass.frequency.value = cab.voicing.lowCut + distance * 0.32;
+  cabLowPass.type = 'lowpass'; cabLowPass.frequency.value = Math.max(2_000, cab.voicing.highCut * (1.12 - position / 330 - distance / 520)); cabLowPass.Q.value = 0.72;
+  body.type = 'peaking'; body.frequency.value = cab.voicing.bodyHz; body.Q.value = 0.95; body.gain.value = cab.voicing.bodyGain;
+  air.type = 'peaking'; air.frequency.value = cab.voicing.airHz; air.Q.value = 1.08; air.gain.value = cab.voicing.airGain + (50 - position) * 0.045;
+  master.connect(cabHighPass).connect(body).connect(air).connect(cabLowPass);
+
+  if (cab.voicing.impulseSeconds <= 0) return cabLowPass;
+  const convolver = context.createConvolver();
+  convolver.normalize = true;
+  convolver.buffer = makeCabinetImpulse(context, cab.voicing.impulseSeconds, distance, room, cab.id.length * 1877);
+  cabLowPass.connect(convolver);
+  return convolver;
+}
+
+function connectBoardGraph(
+  context: BaseAudioContext,
+  input: AudioNode,
+  config: BoardAudioConfig,
+  scheduled: AudioScheduledSourceNode[],
+) {
+  if (config.mode === 'dry') return input;
+  const routes = partitionChain(config.chain, config.routing.mode);
+  let effected: AudioNode;
+
+  if (config.routing.mode === 'serial') {
+    effected = connectEffectChain(context, input, config, scheduled, routes.serial);
+  } else {
+    const sum = context.createGain();
+    const laneMix = computeLaneMix(config.routing.blend, config.routing.spread);
+    (['A', 'B'] as const).forEach((lane) => {
+      const laneInput = context.createGain();
+      const laneGain = context.createGain();
+      const lanePan = context.createStereoPanner();
+      input.connect(laneInput);
+      const laneOutput = connectEffectChain(context, laneInput, config, scheduled, routes[lane]);
+      laneGain.gain.value = laneMix[lane].gain;
+      lanePan.pan.value = laneMix[lane].pan;
+      laneOutput.connect(laneGain).connect(lanePan).connect(sum);
+    });
+    effected = sum;
+  }
+
+  return connectAmpCab(context, effected, config.amp);
+}
+
 function connectMaster(
   context: BaseAudioContext,
   input: AudioNode,
@@ -488,7 +594,7 @@ function startLiveGraph(
   source.loop = true;
   source.loopEnd = buffer.duration;
   source.connect(input);
-  const effected = connectEffectChain(session.context, input, config, session.scheduled);
+  const effected = connectBoardGraph(session.context, input, config, session.scheduled);
   const master = connectMaster(session.context, effected, config.output);
   master.connect(session.context.destination);
   const safeOffset = offsetSeconds % buffer.duration;
@@ -541,7 +647,7 @@ export async function renderBoardToWav(config: BoardAudioConfig) {
   const scheduled: AudioScheduledSourceNode[] = [];
   source.buffer = makeAudioBuffer(offline, config.source);
   source.connect(input);
-  const effected = connectEffectChain(offline, input, config, scheduled);
+  const effected = connectBoardGraph(offline, input, config, scheduled);
   connectMaster(offline, effected, config.output).connect(offline.destination);
   source.start(0);
   const rendered = await offline.startRendering();

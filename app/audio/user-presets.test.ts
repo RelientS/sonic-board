@@ -6,16 +6,24 @@ import { captureUserPreset, instantiateUserPreset, parseUserPresets } from '../e
 test('captureUserPreset stores portable chain settings without runtime instance ids', () => {
   const preset = captureUserPreset({
     name: '我的音墙',
-    chain: [{ instanceId: 'wall-fuzz-173', specId: 'wall-fuzz' }],
+    chain: [{ instanceId: 'wall-fuzz-173', specId: 'wall-fuzz', lane: 'B' }],
     values: { 'wall-fuzz-173': { volume: 61, tone: 42, sustain: 80, mids: 58, attack: 20, gate: 10 } },
     bypassed: new Set(['wall-fuzz-173']),
     source: 'chords',
     output: 68,
+    routing: { mode: 'parallel', blend: 62, spread: 78 },
+    amp: {
+      ampId: 'glass-120', cabId: 'open-2x12', bypassed: false,
+      ampValues: { input: 50, gain: 22, bass: 48, mid: 54, treble: 62, presence: 57, master: 70 },
+      cabValues: { position: 58, distance: 24, room: 12 },
+    },
   }, 'preset-1', 1234);
 
   assert.equal(preset.id, 'preset-1');
   assert.equal(preset.createdAt, 1234);
-  assert.deepEqual(preset.chain[0], { specId: 'wall-fuzz', settings: { volume: 61, tone: 42, sustain: 80, mids: 58, attack: 20, gate: 10 }, bypassed: true });
+  assert.deepEqual(preset.chain[0], { specId: 'wall-fuzz', lane: 'B', settings: { volume: 61, tone: 42, sustain: 80, mids: 58, attack: 20, gate: 10 }, bypassed: true });
+  assert.deepEqual(preset.routing, { mode: 'parallel', blend: 62, spread: 78 });
+  assert.equal(preset.amp.ampId, 'glass-120');
 });
 
 test('instantiateUserPreset creates fresh runtime ids and restores bypass state', () => {
@@ -40,4 +48,16 @@ test('parseUserPresets rejects malformed storage and caps the library', () => {
     chain: [{ specId: 'blue-drive', settings: { level: 60, tone: 50, gain: 40 }, bypassed: false }],
   }));
   assert.equal(parseUserPresets(JSON.stringify(valid)).length, 24);
+});
+
+test('parseUserPresets migrates older serial presets to routing and amp defaults', () => {
+  const legacy = {
+    id: 'legacy', name: '旧音色', createdAt: 1, source: 'chords', output: 70,
+    chain: [{ specId: 'blue-drive', settings: { level: 60, tone: 50, gain: 40 }, bypassed: false }],
+  };
+  const [migrated] = parseUserPresets(JSON.stringify([legacy]));
+  assert.equal(migrated.routing.mode, 'serial');
+  assert.equal(migrated.chain[0].lane, 'A');
+  assert.equal(migrated.amp.ampId, 'brit-20');
+  assert.equal(migrated.amp.cabId, 'closed-4x12');
 });
