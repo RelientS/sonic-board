@@ -10,7 +10,7 @@ import {
   normalizeSourceConfig,
   sourceConfigKey,
 } from './source-catalog.ts';
-import { getSourceEvents, synthesizeSourceChannels } from './audio-core.ts';
+import { getSourceEvents, SOURCE_DURATION_SECONDS, synthesizeSourceChannels } from './audio-core.ts';
 
 test('clean input catalog separates guitar, performance and chord choices', () => {
   assert.ok(GUITAR_VOICES.length >= 4);
@@ -64,5 +64,27 @@ test('rhythm choices create repeated down-up strums with distinct accents', () =
   assert.deepEqual(eighths.slice(4, 8).map((event) => event.frequency), [246.94, 220, 164.81, 110]);
   assert.ok(eighths[0].velocity > eighths[4].velocity);
   assert.notDeepEqual(eighths.map((event) => event.time), syncopated.map((event) => event.time));
-  assert.ok([...eighths, ...syncopated, ...wall].every((event) => event.time < 6.1 && event.duration > 0));
+  assert.ok([...eighths, ...syncopated, ...wall].every((event) => event.time < SOURCE_DURATION_SECONDS && event.duration > 0));
+});
+
+test('rhythm strokes keep ringing across later attacks without clipping the final decay', () => {
+  const strokeCounts = {
+    'eighth-strum': 4,
+    'syncopated-strum': 5,
+    'wall-strum': 2,
+  } as const;
+
+  Object.entries(strokeCounts).forEach(([performance, strokeCount]) => {
+    const events = getSourceEvents(makeSourceConfig(performance as keyof typeof strokeCounts, 'single-neck', 'dream-open'));
+    const strokes = events.filter((_, index) => index % 4 === 0);
+    const firstChord = strokes.slice(0, strokeCount);
+    firstChord.slice(0, -1).forEach((stroke, index) => {
+      const overlap = stroke.time + stroke.duration - firstChord[index + 1].time;
+      assert.ok(overlap >= 0.45, `${performance} stroke ${index + 1} overlap ${overlap}`);
+    });
+
+    const finalDecay = Math.max(...events.map((event) => event.time + event.duration));
+    assert.ok(finalDecay > 6.1, `${performance} final decay ${finalDecay}`);
+    assert.ok(finalDecay <= SOURCE_DURATION_SECONDS, `${performance} exceeds source duration`);
+  });
 });

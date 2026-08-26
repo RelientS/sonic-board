@@ -31,7 +31,7 @@ export type AudioChainItem = {
 
 export type AudioValues = Record<string, Record<string, number>>;
 
-export const SOURCE_DURATION_SECONDS = 6.1;
+export const SOURCE_DURATION_SECONDS = 6.4;
 
 export function clampParameter(value: number) {
   return Math.min(100, Math.max(0, value));
@@ -85,21 +85,21 @@ const STRUM_PATTERNS: Partial<Record<SourceKind, StrumStep[]>> = {
     { offset: 0, duration: 1.36, velocity: 0.76, direction: 'down' },
   ],
   'eighth-strum': [
-    { offset: 0, duration: 0.29, velocity: 0.78, direction: 'down' },
-    { offset: 0.36, duration: 0.24, velocity: 0.56, direction: 'up' },
-    { offset: 0.72, duration: 0.29, velocity: 0.68, direction: 'down' },
-    { offset: 1.08, duration: 0.24, velocity: 0.54, direction: 'up' },
+    { offset: 0, duration: 1.68, velocity: 0.78, direction: 'down' },
+    { offset: 0.36, duration: 1.34, velocity: 0.56, direction: 'up' },
+    { offset: 0.72, duration: 1.02, velocity: 0.68, direction: 'down' },
+    { offset: 1.08, duration: 0.68, velocity: 0.54, direction: 'up' },
   ],
   'syncopated-strum': [
-    { offset: 0, duration: 0.25, velocity: 0.78, direction: 'down' },
-    { offset: 0.27, duration: 0.18, velocity: 0.52, direction: 'up' },
-    { offset: 0.72, duration: 0.27, velocity: 0.72, direction: 'down' },
-    { offset: 0.9, duration: 0.18, velocity: 0.56, direction: 'up' },
-    { offset: 1.26, duration: 0.18, velocity: 0.62, direction: 'down' },
+    { offset: 0, duration: 1.68, velocity: 0.78, direction: 'down' },
+    { offset: 0.27, duration: 1.43, velocity: 0.52, direction: 'up' },
+    { offset: 0.72, duration: 1.02, velocity: 0.72, direction: 'down' },
+    { offset: 0.9, duration: 0.86, velocity: 0.56, direction: 'up' },
+    { offset: 1.26, duration: 0.52, velocity: 0.62, direction: 'down' },
   ],
   'wall-strum': [
-    { offset: 0, duration: 0.68, velocity: 0.8, direction: 'down' },
-    { offset: 0.76, duration: 0.6, velocity: 0.64, direction: 'down' },
+    { offset: 0, duration: 1.75, velocity: 0.8, direction: 'down' },
+    { offset: 0.76, duration: 0.98, velocity: 0.64, direction: 'down' },
   ],
 };
 
