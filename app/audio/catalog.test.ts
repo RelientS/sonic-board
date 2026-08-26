@@ -27,6 +27,16 @@ test('classic-inspired effects preserve their defining control layouts', () => {
   assert.ok(getEffectSpec('reverse-space').controls.some((control) => control.id === 'lowCut'));
 });
 
+test('pedals use the classic model names shown on the physical board', () => {
+  assert.equal(getEffectSpec('studio-comp').name, 'MXR Dyna Comp');
+  assert.equal(getEffectSpec('blue-drive').name, 'Boss BD-2 Blues Driver');
+  assert.equal(getEffectSpec('rodent-dist').name, 'Pro Co RAT 2');
+  assert.equal(getEffectSpec('wall-fuzz').name, 'Electro-Harmonix Big Muff Pi');
+  assert.equal(getEffectSpec('slow-phase').name, 'Electro-Harmonix Small Stone');
+  assert.equal(getEffectSpec('analog-chorus').name, 'Boss CE-2 Chorus');
+  assert.equal(getEffectSpec('reverse-space').name, 'Yamaha SPX90 Reverse Gate');
+});
+
 test('control values map normalized knob positions to physical units', () => {
   const delayTime = getEffectSpec('digital-delay').controls.find((control) => control.id === 'time')!;
   const eqBand = getEffectSpec('graphic-eq').controls.find((control) => control.id === '800')!;

@@ -9,7 +9,17 @@ import {
   type BoardAudioConfig,
   type LiveAudioSession,
 } from './audio/audio-engine';
-import type { AudioChainItem, RoutingConfig, SignalLane, SourceKind } from './audio/audio-core';
+import type { AudioChainItem, RoutingConfig, SignalLane } from './audio/audio-core';
+import {
+  CHORD_PROGRESSIONS,
+  GUITAR_VOICES,
+  PERFORMANCE_SPECS,
+  formatSourceConfig,
+  getChordProgression,
+  type SourceConfig,
+} from './audio/source-catalog';
+import { planToneRequest, type ToneAgentPlan } from './agent/tone-agent';
+import { normalizeRemoteTonePlan } from './agent/tone-agent-api';
 import {
   AMP_SPECS,
   CAB_SPECS,
@@ -43,6 +53,7 @@ import {
 type ChainItem = AudioChainItem;
 type Values = Record<string, Record<string, number>>;
 type LibraryMode = 'effects' | 'presets' | 'output';
+type AgentStatus = 'idle' | 'thinking' | 'applied' | 'fallback';
 type HelpTarget = {
   kind: ControlOwnerKind;
   modelId: string;
@@ -59,8 +70,12 @@ const categoryNames: Record<'All' | EffectCategory, string> = {
   Delay: '延迟',
   Space: '空间',
 };
-const sourceNames: Record<SourceKind, string> = { chords: '清音和弦', arpeggio: '分解和弦', lead: '单音旋律' };
 const wave = [18, 42, 72, 34, 85, 52, 66, 28, 90, 46, 74, 38, 82, 56, 26, 68, 88, 44, 72, 32, 62, 94, 48, 76, 36, 84, 54, 24, 70, 91, 42, 68, 34, 80, 52, 74, 30, 63, 87, 46];
+const agentExamples = [
+  '宽阔立体声的反向音墙，厚但中频别丢',
+  '干净明亮的分解和弦，合唱加磁带回声',
+  '温暖复古的小调和弦，慢速相位和磁带感',
+];
 const initialFactoryPreset = FACTORY_PRESETS.find((preset) => preset.id === 'reverse-wall') ?? FACTORY_PRESETS[0];
 const initialBoard = instantiatePreset(initialFactoryPreset);
 
@@ -149,6 +164,125 @@ function ControlHelpDialog({ target, onClose }: { target: HelpTarget | null; onC
         <div className="help-directions"><section><span>向左调</span><p>{lesson.low}</p></section><section><span>向右调</span><p>{lesson.high}</p></section></div>
         <div className="help-tip"><span>调音建议</span><p>{lesson.tip}</p></div>
       </div>}
+    </dialog>
+  );
+}
+
+function ToneAgentDialog({ open, prompt, result, status, error, onPrompt, onRun, onClose }: {
+  open: boolean;
+  prompt: string;
+  result: ToneAgentPlan | null;
+  status: AgentStatus;
+  error: string;
+  onPrompt: (value: string) => void;
+  onRun: () => void | Promise<void>;
+  onClose: () => void;
+}) {
+  const dialog = useRef<HTMLDialogElement | null>(null);
+
+  useEffect(() => {
+    const element = dialog.current;
+    if (!element) return;
+    if (open && !element.open) element.showModal();
+    if (!open && element.open) element.close();
+  }, [open]);
+
+  return (
+    <dialog
+      ref={dialog}
+      className="agent-dialog"
+      aria-labelledby="agent-title"
+      onCancel={(event) => { event.preventDefault(); onClose(); }}
+      onClose={onClose}
+      onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
+    >
+      <div className="agent-sheet">
+        <header>
+          <div><span>AI 音色规划 · gpt-5.6-terra</span><h2 id="agent-title">音色 Agent</h2></div>
+          <button type="button" onClick={onClose}>关闭</button>
+        </header>
+        <form onSubmit={(event) => { event.preventDefault(); onRun(); }}>
+          <label className="agent-prompt">
+            <span>描述你想要的声音</span>
+            <textarea
+              value={prompt}
+              maxLength={240}
+              placeholder="例如：慢速、宽阔的反向音墙，和弦要清楚，中频不要被挖空"
+              onChange={(event) => onPrompt(event.target.value)}
+            />
+          </label>
+          <div className="agent-examples" aria-label="需求示例">
+            {agentExamples.map((example) => <button key={example} type="button" onClick={() => onPrompt(example)}>{example}</button>)}
+          </div>
+          <button className="agent-run" type="submit" disabled={status === 'thinking' || !prompt.trim()}>{status === 'thinking' ? '正在调音…' : '生成并应用'}</button>
+        </form>
+        {error && <p className="agent-warning" role="status">{error}</p>}
+        {result && (
+          <section className="agent-result" role="status" aria-live="polite">
+            <div><span>{status === 'fallback' ? '本地兜底已应用' : 'AI 已应用'}</span><strong>{result.name}</strong></div>
+            <p>{result.summary}</p>
+            <ol>{result.preset.chain.map((item) => <li key={`${item.lane ?? 'A'}-${item.specId}`}>{item.lane && result.preset.routing.mode === 'parallel' ? `${item.lane} 路 · ` : ''}{getEffectSpec(item.specId).name}</li>)}</ol>
+            <ul>{result.decisions.map((decision) => <li key={decision}>{decision}</li>)}</ul>
+          </section>
+        )}
+      </div>
+    </dialog>
+  );
+}
+
+function SourcePickerDialog({ open, source, onChange, onClose }: {
+  open: boolean;
+  source: SourceConfig;
+  onChange: (source: SourceConfig) => void;
+  onClose: () => void;
+}) {
+  const dialog = useRef<HTMLDialogElement | null>(null);
+
+  useEffect(() => {
+    const element = dialog.current;
+    if (!element) return;
+    if (open && !element.open) element.showModal();
+    if (!open && element.open) element.close();
+  }, [open]);
+
+  return (
+    <dialog
+      ref={dialog}
+      className="source-picker-dialog"
+      aria-labelledby="source-picker-title"
+      onCancel={(event) => { event.preventDefault(); onClose(); }}
+      onClose={onClose}
+      onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
+    >
+      <div className="source-picker-sheet">
+        <header><div><span>固定清音输入</span><h2 id="source-picker-title">选择电吉他与演奏</h2></div><button type="button" onClick={onClose}>完成</button></header>
+        <section>
+          <h3>电吉他音色</h3>
+          <div className="source-choice-grid guitars" role="radiogroup" aria-label="电吉他音色">
+            {GUITAR_VOICES.map((voice) => (
+              <button key={voice.id} type="button" role="radio" aria-checked={source.guitar === voice.id} className={source.guitar === voice.id ? 'active' : ''} onClick={() => onChange({ ...source, guitar: voice.id })}>
+                <strong>{voice.name}</strong><small>{voice.description}</small>
+              </button>
+            ))}
+          </div>
+        </section>
+        <section>
+          <h3>演奏方式</h3>
+          <div className="source-choice-grid performance" role="radiogroup" aria-label="演奏方式">
+            {PERFORMANCE_SPECS.map((performance) => <button key={performance.id} type="button" role="radio" aria-checked={source.performance === performance.id} className={source.performance === performance.id ? 'active' : ''} onClick={() => onChange({ ...source, performance: performance.id })}><strong>{performance.name}</strong></button>)}
+          </div>
+        </section>
+        <section>
+          <h3>和弦进行</h3>
+          <div className="source-choice-grid progressions" role="radiogroup" aria-label="和弦进行">
+            {CHORD_PROGRESSIONS.map((progression) => (
+              <button key={progression.id} type="button" role="radio" aria-checked={source.progression === progression.id} className={source.progression === progression.id ? 'active' : ''} onClick={() => onChange({ ...source, progression: progression.id })}>
+                <strong>{progression.name}</strong><small>{progression.chords}</small>
+              </button>
+            ))}
+          </div>
+        </section>
+      </div>
     </dialog>
   );
 }
@@ -251,7 +385,7 @@ export default function Home() {
   const [mode, setMode] = useState<'dry' | 'wet'>('wet');
   const [routing, setRouting] = useState<RoutingConfig>(initialBoard.routing);
   const [amp, setAmp] = useState<AmpCabConfig>(initialBoard.amp);
-  const [source, setSource] = useState<SourceKind>(initialBoard.source);
+  const [source, setSource] = useState<SourceConfig>(initialBoard.source);
   const [output, setOutput] = useState(initialBoard.output);
   const [activePresetName, setActivePresetName] = useState(initialFactoryPreset.name);
   const [presetName, setPresetName] = useState('我的音色');
@@ -262,6 +396,12 @@ export default function Home() {
   const [saveState, setSaveState] = useState<'idle' | 'saved'>('idle');
   const [tutorialEnabled, setTutorialEnabled] = useState(false);
   const [helpTarget, setHelpTarget] = useState<HelpTarget | null>(null);
+  const [agentOpen, setAgentOpen] = useState(false);
+  const [sourcePickerOpen, setSourcePickerOpen] = useState(false);
+  const [agentPrompt, setAgentPrompt] = useState(agentExamples[0]);
+  const [agentResult, setAgentResult] = useState<ToneAgentPlan | null>(null);
+  const [agentStatus, setAgentStatus] = useState<AgentStatus>('idle');
+  const [agentError, setAgentError] = useState('');
   const [audioError, setAudioError] = useState('');
   const audio = useRef<LiveAudioSession | null>(null);
   const helpInvoker = useRef<HTMLElement | null>(null);
@@ -342,6 +482,41 @@ export default function Home() {
   function loadUserPreset(preset: UserPreset) {
     applyBoard(instantiateUserPreset(preset), preset.name);
     setPresetName(preset.name);
+  }
+
+  async function runToneAgent() {
+    const prompt = agentPrompt.trim();
+    if (!prompt || agentStatus === 'thinking') return;
+    setAgentStatus('thinking');
+    setAgentError('');
+
+    let plan: ToneAgentPlan | null = null;
+    try {
+      const response = await fetch('/api/tone-agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt }),
+      });
+      if (!response.ok) throw new Error('agent unavailable');
+      const payload = await response.json() as { plan?: unknown };
+      plan = normalizeRemoteTonePlan(payload.plan);
+      if (!plan) throw new Error('invalid plan');
+      setAgentStatus('applied');
+    } catch {
+      plan = planToneRequest(prompt);
+      setAgentStatus('fallback');
+      setAgentError('模型暂时没有返回可用方案，已用本地音色规则生成同类效果器链。');
+    }
+
+    setAgentResult(plan);
+    applyBoard(instantiatePreset(plan.preset), `Agent · ${plan.name}`);
+    setMode('wet');
+  }
+
+  function updateSource(next: SourceConfig) {
+    setSource(next);
+    setActivePresetName('已修改');
+    setRender('idle');
   }
 
   function updateValue(instanceId: string, controlId: string, value: number) {
@@ -551,6 +726,7 @@ export default function Home() {
         <div className="signal-note"><i /><span>当前音色：{activePresetName}</span></div>
         <div className="top-actions">
           <span>{EFFECT_SPECS.length} 块</span>
+          <button type="button" className="agent-open-button" aria-label="打开音色 Agent" onClick={() => setAgentOpen(true)}>音色 Agent</button>
           <label className="tutorial-toggle">
             <input
               type="checkbox"
@@ -577,6 +753,7 @@ export default function Home() {
           {libraryMode === 'effects' ? (
             <div className="library-browser effects-browser">
               <div className="library-title"><div><span className="eyebrow">效果器库</span><h1>经典结构</h1></div><b>{library.length}</b></div>
+              <p className="classic-note">经典型号名用于快速辨识；本站为风格建模，并非品牌官方复刻。</p>
               <label className="search"><span className="sr-only">搜索效果器</span><input placeholder="搜索名称、类型或用途" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
               <div className="filters" aria-label="筛选效果器类型">{(['All', 'Dynamics', 'Tone', 'Drive', 'Mod', 'Delay', 'Space'] as const).map((entry) => <button key={entry} type="button" className={category === entry ? 'active' : ''} aria-pressed={category === entry} onClick={() => setCategory(entry)}>{categoryNames[entry]}</button>)}</div>
               <div className="library-list">{library.map((spec) => (
@@ -608,7 +785,7 @@ export default function Home() {
                 {userPresets.length === 0 ? <p className="preset-empty">还没有保存在本机的音色。</p> : (
                   <div className="preset-list">{userPresets.map((preset) => (
                     <article className="preset-card user" key={preset.id}>
-                      <div><strong>{preset.name}</strong><small>{preset.chain.map((item) => getEffectSpec(item.specId).name).join(' → ')}</small><span>{preset.chain.length} 块 · {preset.routing.mode === 'parallel' ? '双路并联' : '串联'} · {sourceNames[preset.source]}</span></div>
+                      <div><strong>{preset.name}</strong><small>{preset.chain.map((item) => getEffectSpec(item.specId).name).join(' → ')}</small><span>{preset.chain.length} 块 · {preset.routing.mode === 'parallel' ? '双路并联' : '串联'} · {formatSourceConfig(preset.source)}</span></div>
                       <button type="button" onClick={() => loadUserPreset(preset)}>载入</button>
                       <button type="button" className="delete-preset" aria-label={'删除' + preset.name} onClick={() => deleteUserPreset(preset)}>删除</button>
                     </article>
@@ -690,7 +867,7 @@ export default function Home() {
       </div>
 
       <footer className="transport">
-        <label className="source"><span className="eyebrow">固定音源</span><select value={source} aria-label="试听音源" onChange={(event) => { setSource(event.target.value as SourceKind); setRender('idle'); }}><option value="chords">清音和弦循环</option><option value="arpeggio">清音分解和弦</option><option value="lead">清音单音旋律</option></select></label>
+        <button className="source-trigger" type="button" aria-label="选择清音输入" onClick={() => setSourcePickerOpen(true)}><span>清音输入</span><strong>{formatSourceConfig(source)}</strong><small>{getChordProgression(source.progression).name}</small></button>
         <button className={'play' + (playing ? ' active' : '')} type="button" aria-label={playing ? '停止试听' : '开始试听'} onClick={() => void togglePlayback()}>{playing ? '■' : '▶'}</button>
         <div className="waveform" aria-label={'试听进度 ' + Math.round(progress) + '%'}><i style={{ width: String(progress) + '%' }} />{wave.map((height, index) => <b key={String(height) + '-' + String(index)} style={{ height: String(height) + '%' }} />)}</div>
         <div className="segments" aria-label="干声或效果声">{(['dry', 'wet'] as const).map((entry) => <button key={entry} type="button" className={mode === entry ? 'active' : ''} aria-pressed={mode === entry} onClick={() => { setMode(entry); setRender('idle'); }}>{entry === 'dry' ? '干声' : '效果'}</button>)}</div>
@@ -701,6 +878,8 @@ export default function Home() {
         <span className="sr-only" role="status" aria-live="polite">{render === 'ready' ? 'WAV 音频已下载' : saveState === 'saved' ? '音色已保存在当前浏览器' : ''}</span>
       </footer>
       <ControlHelpDialog target={helpTarget} onClose={closeControlHelp} />
+      <ToneAgentDialog open={agentOpen} prompt={agentPrompt} result={agentResult} status={agentStatus} error={agentError} onPrompt={setAgentPrompt} onRun={runToneAgent} onClose={() => setAgentOpen(false)} />
+      <SourcePickerDialog open={sourcePickerOpen} source={source} onChange={updateSource} onClose={() => setSourcePickerOpen(false)} />
     </main>
   );
 }

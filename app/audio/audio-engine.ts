@@ -9,8 +9,9 @@ import {
   type AudioChainItem,
   type AudioValues,
   type RoutingConfig,
-  type SourceKind,
+  type SourceConfig,
 } from './audio-core.ts';
+import { sourceConfigKey } from './source-catalog.ts';
 import { getEffectSpec, mapControlValue } from '../effects/catalog.ts';
 import { AMP_SPECS, CAB_SPECS, getAmpSpec, getCabSpec, type AmpCabConfig } from '../amps/catalog.ts';
 import { computeLaneMix, partitionChain } from './routing.ts';
@@ -29,7 +30,7 @@ export type BoardAudioConfig = {
   chain: AudioChainItem[];
   values: AudioValues;
   bypassed: string[];
-  source: SourceKind;
+  source: SourceConfig;
   mode: 'dry' | 'wet';
   output: number;
   routing: RoutingConfig;
@@ -40,10 +41,10 @@ export type LiveAudioSession = {
   context: AudioContext;
   source: AudioBufferSourceNode | null;
   scheduled: AudioScheduledSourceNode[];
-  buffers: Map<SourceKind, AudioBuffer>;
+  buffers: Map<string, AudioBuffer>;
   startedAt: number;
   duration: number;
-  sourceKind: SourceKind;
+  sourceKey: string;
 };
 
 function parameter(values: Record<string, number>, id: string, fallback: number) {
@@ -68,7 +69,7 @@ function seededRandom(seed: number) {
   };
 }
 
-function makeAudioBuffer(context: BaseAudioContext, source: SourceKind) {
+function makeAudioBuffer(context: BaseAudioContext, source: SourceConfig) {
   const channels = synthesizeSourceChannels(source, context.sampleRate);
   const buffer = context.createBuffer(channels.length, channels[0].length, context.sampleRate);
   channels.forEach((channel, index) => buffer.copyToChannel(channel, index));
@@ -583,10 +584,11 @@ function startLiveGraph(
   offsetSeconds: number,
 ) {
   stopScheduled(session);
-  let buffer = session.buffers.get(config.source);
+  const key = sourceConfigKey(config.source);
+  let buffer = session.buffers.get(key);
   if (!buffer) {
     buffer = makeAudioBuffer(session.context, config.source);
-    session.buffers.set(config.source, buffer);
+    session.buffers.set(key, buffer);
   }
   const source = session.context.createBufferSource();
   const input = session.context.createGain();
@@ -602,7 +604,7 @@ function startLiveGraph(
   session.source = source;
   session.startedAt = session.context.currentTime - safeOffset;
   session.duration = buffer.duration;
-  session.sourceKind = config.source;
+  session.sourceKey = key;
 }
 
 export async function createLiveSession(config: BoardAudioConfig) {
@@ -618,14 +620,14 @@ export async function createLiveSession(config: BoardAudioConfig) {
     buffers: new Map(),
     startedAt: 0,
     duration: SOURCE_DURATION_SECONDS,
-    sourceKind: config.source,
+    sourceKey: sourceConfigKey(config.source),
   };
   startLiveGraph(session, config, 0);
   return session;
 }
 
 export function refreshLiveSession(session: LiveAudioSession, config: BoardAudioConfig) {
-  const offset = config.source === session.sourceKind
+  const offset = sourceConfigKey(config.source) === session.sourceKey
     ? (session.context.currentTime - session.startedAt) % session.duration
     : 0;
   startLiveGraph(session, config, offset);

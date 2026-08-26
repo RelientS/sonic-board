@@ -1,4 +1,11 @@
-export type SourceKind = 'chords' | 'arpeggio' | 'lead';
+import {
+  getChordProgression,
+  normalizeSourceConfig,
+  type SourceConfig,
+  type SourceKind,
+} from './source-catalog.ts';
+
+export type { SourceConfig, SourceKind } from './source-catalog.ts';
 export type SignalLane = 'A' | 'B';
 export type RoutingMode = 'serial' | 'parallel';
 
@@ -66,38 +73,34 @@ export function makeGateCurve(value: number, length = 2048) {
   return curve;
 }
 
-const chordFrequencies = [
-  [110, 164.81, 220],
-  [98, 146.83, 196],
-  [82.41, 123.47, 164.81],
-  [92.5, 138.59, 185],
-];
-
-export function getSourceEvents(kind: SourceKind): SourceEvent[] {
-  if (kind === 'chords') {
+export function getSourceEvents(source: SourceKind | SourceConfig): SourceEvent[] {
+  const config = normalizeSourceConfig(source);
+  const chordFrequencies = getChordProgression(config.progression).frequencies;
+  if (config.performance === 'chords') {
     return chordFrequencies.flatMap((chord, chordIndex) =>
       chord.map((frequency, noteIndex) => ({
-        time: chordIndex * 1.45 + noteIndex * 0.012,
+        time: chordIndex * 1.45 + noteIndex * 0.014,
         duration: 1.36,
         frequency,
-        velocity: 0.72 - noteIndex * 0.08,
-        pan: (noteIndex - 1) * 0.18,
+        velocity: 0.76 - noteIndex * 0.07,
+        pan: (noteIndex - (chord.length - 1) / 2) * 0.13,
       })),
     );
   }
 
-  if (kind === 'arpeggio') {
-    const notes = [110, 164.81, 220, 329.63, 98, 146.83, 196, 293.66, 82.41, 123.47, 164.81, 246.94, 92.5, 138.59, 185, 277.18];
+  if (config.performance === 'arpeggio') {
+    const notes = chordFrequencies.flatMap((chord) => [...chord, chord[1] * 2]);
     return notes.map((frequency, index) => ({
-      time: index * 0.36,
-      duration: 0.82,
+      time: index * 0.29,
+      duration: 0.76,
       frequency,
       velocity: 0.62 + (index % 4 === 0 ? 0.12 : 0),
       pan: index % 2 === 0 ? -0.14 : 0.14,
     }));
   }
 
-  const notes = [220, 246.94, 261.63, 329.63, 293.66, 261.63, 246.94, 220, 196, 220, 246.94, 220];
+  const roots = chordFrequencies.map((chord) => chord[0] * 2);
+  const notes = [roots[0], roots[0] * 1.12246, roots[0] * 1.18921, roots[1] * 2, roots[1] * 1.68179, roots[2] * 2, roots[2] * 1.49831, roots[2] * 1.33484, roots[3] * 1.49831, roots[3] * 1.68179, roots[3] * 2, roots[0] * 2];
   return notes.map((frequency, index) => ({
     time: index * 0.46,
     duration: index % 4 === 3 ? 0.82 : 0.42,
@@ -115,13 +118,22 @@ function seededNoise(seed: number) {
   };
 }
 
-export function synthesizeSourceChannels(kind: SourceKind, sampleRate: number) {
+const guitarProfiles = {
+  'single-neck': { second: 0.3, third: 0.12, fourth: 0.05, pick: 0.14, decay: 2.85, gain: 0.35 },
+  'single-bridge': { second: 0.5, third: 0.25, fourth: 0.12, pick: 0.23, decay: 3.15, gain: 0.31 },
+  humbucker: { second: 0.42, third: 0.2, fourth: 0.06, pick: 0.11, decay: 2.55, gain: 0.38 },
+  hollowbody: { second: 0.21, third: 0.07, fourth: 0.02, pick: 0.08, decay: 2.35, gain: 0.39 },
+};
+
+export function synthesizeSourceChannels(source: SourceKind | SourceConfig, sampleRate: number) {
+  const config = normalizeSourceConfig(source);
+  const profile = guitarProfiles[config.guitar];
   const frameCount = Math.ceil(SOURCE_DURATION_SECONDS * sampleRate);
   const left = new Float32Array(frameCount);
   const right = new Float32Array(frameCount);
-  const random = seededNoise(0x5f3759df + kind.length * 97);
+  const random = seededNoise(0x5f3759df + config.guitar.length * 97 + config.progression.length * 41);
 
-  getSourceEvents(kind).forEach((event, eventIndex) => {
+  getSourceEvents(config).forEach((event, eventIndex) => {
     const startFrame = Math.floor(event.time * sampleRate);
     const eventFrames = Math.ceil(event.duration * sampleRate);
     const leftGain = Math.sqrt((1 - event.pan) * 0.5);
@@ -131,12 +143,14 @@ export function synthesizeSourceChannels(kind: SourceKind, sampleRate: number) {
     for (let frame = 0; frame < eventFrames && startFrame + frame < frameCount; frame += 1) {
       const time = frame / sampleRate;
       const attack = Math.min(1, time / 0.012);
-      const decay = Math.exp(-3.35 * time);
-      const pick = time < 0.026 ? random() * (1 - time / 0.026) * 0.18 : 0;
-      const fundamental = Math.sin(Math.PI * 2 * event.frequency * time + phaseOffset);
-      const second = Math.sin(Math.PI * 2 * event.frequency * 2.01 * time + phaseOffset * 0.6) * 0.38;
-      const third = Math.sin(Math.PI * 2 * event.frequency * 3.02 * time) * 0.17;
-      const sample = (fundamental + second + third + pick) * attack * decay * event.velocity * 0.34;
+      const decay = Math.exp(-profile.decay * time);
+      const pick = time < 0.026 ? random() * (1 - time / 0.026) * profile.pick : 0;
+      const vibrato = 1 + Math.sin(Math.PI * 2 * 4.6 * time + eventIndex) * Math.min(0.0016, time * 0.0008);
+      const fundamental = Math.sin(Math.PI * 2 * event.frequency * vibrato * time + phaseOffset);
+      const second = Math.sin(Math.PI * 2 * event.frequency * 2.006 * time + phaseOffset * 0.6) * profile.second;
+      const third = Math.sin(Math.PI * 2 * event.frequency * 3.014 * time) * profile.third;
+      const fourth = Math.sin(Math.PI * 2 * event.frequency * 4.028 * time + phaseOffset * 0.2) * profile.fourth;
+      const sample = (fundamental + second + third + fourth + pick) * attack * decay * event.velocity * profile.gain;
       left[startFrame + frame] += sample * leftGain;
       right[startFrame + frame] += sample * rightGain;
     }

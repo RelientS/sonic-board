@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { captureUserPreset, instantiateUserPreset, parseUserPresets } from '../effects/user-presets.ts';
+import { DEFAULT_SOURCE_CONFIG, makeSourceConfig } from './source-catalog.ts';
 
 test('captureUserPreset stores portable chain settings without runtime instance ids', () => {
   const preset = captureUserPreset({
@@ -9,7 +10,7 @@ test('captureUserPreset stores portable chain settings without runtime instance 
     chain: [{ instanceId: 'wall-fuzz-173', specId: 'wall-fuzz', lane: 'B' }],
     values: { 'wall-fuzz-173': { volume: 61, tone: 42, sustain: 80, mids: 58, attack: 20, gate: 10 } },
     bypassed: new Set(['wall-fuzz-173']),
-    source: 'chords',
+    source: makeSourceConfig('chords', 'humbucker', 'power-bloom'),
     output: 68,
     routing: { mode: 'parallel', blend: 62, spread: 78 },
     amp: {
@@ -24,11 +25,12 @@ test('captureUserPreset stores portable chain settings without runtime instance 
   assert.deepEqual(preset.chain[0], { specId: 'wall-fuzz', lane: 'B', settings: { volume: 61, tone: 42, sustain: 80, mids: 58, attack: 20, gate: 10 }, bypassed: true });
   assert.deepEqual(preset.routing, { mode: 'parallel', blend: 62, spread: 78 });
   assert.equal(preset.amp.ampId, 'glass-120');
+  assert.equal(preset.source.guitar, 'humbucker');
 });
 
 test('instantiateUserPreset creates fresh runtime ids and restores bypass state', () => {
   const stored = {
-    id: 'saved-1', name: 'Saved', createdAt: 12, source: 'lead' as const, output: 64,
+    id: 'saved-1', name: 'Saved', createdAt: 12, source: makeSourceConfig('lead', 'single-bridge', 'major-seven'), output: 64,
     chain: [{ specId: 'rodent-dist', settings: { distortion: 72, filter: 48, volume: 58 }, bypassed: true }],
   };
   const first = instantiateUserPreset(stored);
@@ -60,4 +62,5 @@ test('parseUserPresets migrates older serial presets to routing and amp defaults
   assert.equal(migrated.chain[0].lane, 'A');
   assert.equal(migrated.amp.ampId, 'brit-20');
   assert.equal(migrated.amp.cabId, 'closed-4x12');
+  assert.deepEqual(migrated.source, { ...DEFAULT_SOURCE_CONFIG, performance: 'chords' });
 });

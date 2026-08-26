@@ -1,4 +1,5 @@
-import type { RoutingConfig, SignalLane, SourceKind } from '../audio/audio-core';
+import type { RoutingConfig, SignalLane } from '../audio/audio-core';
+import { normalizeSourceConfig, type SourceConfig } from '../audio/source-catalog.ts';
 import {
   getAmpSpec,
   getCabSpec,
@@ -12,7 +13,7 @@ export type UserPreset = {
   id: string;
   name: string;
   createdAt: number;
-  source: SourceKind;
+  source: SourceConfig;
   output: number;
   routing: RoutingConfig;
   amp: AmpCabConfig;
@@ -29,7 +30,7 @@ type BoardCapture = {
   chain: Array<{ instanceId: string; specId: string; lane?: SignalLane }>;
   values: Record<string, Record<string, number>>;
   bypassed: Set<string>;
-  source: SourceKind;
+  source: SourceConfig;
   output: number;
   routing: RoutingConfig;
   amp: AmpCabConfig;
@@ -83,7 +84,7 @@ export function instantiateUserPreset(preset: UserPreset): InstantiatedPreset {
     chain,
     values,
     bypassed,
-    source: preset.source,
+    source: normalizeSourceConfig(preset.source),
     output: preset.output,
     routing: preset.routing ? { ...preset.routing } : { mode: 'serial', blend: 50, spread: 0 },
     amp: preset.amp ? cloneAmp(preset.amp) : makeDefaultAmpCabConfig(),
@@ -119,7 +120,6 @@ function normalizeUserPreset(value: unknown): UserPreset | null {
   if (!value || typeof value !== 'object') return null;
   const preset = value as Partial<UserPreset>;
   if (typeof preset.id !== 'string' || typeof preset.name !== 'string' || typeof preset.createdAt !== 'number') return null;
-  if (!['chords', 'arpeggio', 'lead'].includes(preset.source ?? '')) return null;
   if (typeof preset.output !== 'number' || !Array.isArray(preset.chain) || preset.chain.length === 0) return null;
 
   const chain = preset.chain.map((item) => {
@@ -148,7 +148,7 @@ function normalizeUserPreset(value: unknown): UserPreset | null {
     id: preset.id,
     name: preset.name,
     createdAt: preset.createdAt,
-    source: preset.source as SourceKind,
+    source: normalizeSourceConfig(preset.source),
     output: Math.min(100, Math.max(0, preset.output)),
     routing,
     amp: normalizeAmp(preset.amp),
