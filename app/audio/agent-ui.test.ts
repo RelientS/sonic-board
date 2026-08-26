@@ -17,4 +17,5 @@ test('agent and source dialogs adapt to mobile sheets', () => {
   assert.match(styles, /\.agent-dialog/);
   assert.match(styles, /\.source-picker-dialog/);
   assert.match(styles, /@media\s*\(max-width:\s*720px\)[\s\S]*?\.agent-dialog[^}]*position:\s*fixed/s);
+  assert.match(styles, /@media\s*\(max-width:\s*720px\)[\s\S]*?\.agent-prompt textarea[^}]*font-size:\s*16px/s);
 });

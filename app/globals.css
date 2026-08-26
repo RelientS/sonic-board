@@ -387,6 +387,7 @@ button:active:not(:disabled) { filter: brightness(.93); }
   .agent-dialog, .source-picker-dialog { position: fixed; inset: auto 12px max(12px, env(safe-area-inset-bottom)); width: auto; max-height: calc(100dvh - 32px - env(safe-area-inset-bottom)); margin: 0; border-radius: 16px 16px 12px 12px; }
   .agent-sheet, .source-picker-sheet { padding: 18px; }
   .agent-sheet header button, .source-picker-sheet header button { min-height: 44px; }
+  .agent-prompt textarea { font-size: 16px; }
   .agent-examples { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 3px; }
   .agent-examples button { min-width: max-content; min-height: 44px; }
   .agent-run { min-height: 48px; }
