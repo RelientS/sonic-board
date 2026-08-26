@@ -272,7 +272,7 @@ function SourcePickerDialog({ open, source, onChange, onClose }: {
         <section>
           <h3>演奏方式</h3>
           <div className="source-choice-grid performance" role="radiogroup" aria-label="演奏方式">
-            {PERFORMANCE_SPECS.map((performance) => <button key={performance.id} type="button" role="radio" aria-checked={source.performance === performance.id} className={source.performance === performance.id ? 'active' : ''} onClick={() => onChange({ ...source, performance: performance.id })}><strong>{performance.name}</strong></button>)}
+            {PERFORMANCE_SPECS.map((performance) => <button key={performance.id} type="button" role="radio" aria-checked={source.performance === performance.id} className={source.performance === performance.id ? 'active' : ''} onClick={() => onChange({ ...source, performance: performance.id })}><strong>{performance.name}</strong><small>{performance.description}</small></button>)}
           </div>
         </section>
         <section>

@@ -73,20 +73,57 @@ export function makeGateCurve(value: number, length = 2048) {
   return curve;
 }
 
+type StrumStep = {
+  offset: number;
+  duration: number;
+  velocity: number;
+  direction: 'down' | 'up';
+};
+
+const STRUM_PATTERNS: Partial<Record<SourceKind, StrumStep[]>> = {
+  chords: [
+    { offset: 0, duration: 1.36, velocity: 0.76, direction: 'down' },
+  ],
+  'eighth-strum': [
+    { offset: 0, duration: 0.29, velocity: 0.78, direction: 'down' },
+    { offset: 0.36, duration: 0.24, velocity: 0.56, direction: 'up' },
+    { offset: 0.72, duration: 0.29, velocity: 0.68, direction: 'down' },
+    { offset: 1.08, duration: 0.24, velocity: 0.54, direction: 'up' },
+  ],
+  'syncopated-strum': [
+    { offset: 0, duration: 0.25, velocity: 0.78, direction: 'down' },
+    { offset: 0.27, duration: 0.18, velocity: 0.52, direction: 'up' },
+    { offset: 0.72, duration: 0.27, velocity: 0.72, direction: 'down' },
+    { offset: 0.9, duration: 0.18, velocity: 0.56, direction: 'up' },
+    { offset: 1.26, duration: 0.18, velocity: 0.62, direction: 'down' },
+  ],
+  'wall-strum': [
+    { offset: 0, duration: 0.68, velocity: 0.8, direction: 'down' },
+    { offset: 0.76, duration: 0.6, velocity: 0.64, direction: 'down' },
+  ],
+};
+
+function makeStrumEvents(chordFrequencies: number[][], pattern: StrumStep[]) {
+  return chordFrequencies.flatMap((chord, chordIndex) => pattern.flatMap((step) => {
+    const notes = step.direction === 'up' ? [...chord].reverse() : chord;
+    return notes.map((frequency, noteIndex) => {
+      const stringIndex = step.direction === 'up' ? chord.length - 1 - noteIndex : noteIndex;
+      return {
+        time: chordIndex * 1.45 + step.offset + noteIndex * 0.014,
+        duration: step.duration,
+        frequency,
+        velocity: Math.max(0.32, step.velocity - noteIndex * 0.045),
+        pan: (stringIndex - (chord.length - 1) / 2) * 0.13,
+      };
+    });
+  }));
+}
+
 export function getSourceEvents(source: SourceKind | SourceConfig): SourceEvent[] {
   const config = normalizeSourceConfig(source);
   const chordFrequencies = getChordProgression(config.progression).frequencies;
-  if (config.performance === 'chords') {
-    return chordFrequencies.flatMap((chord, chordIndex) =>
-      chord.map((frequency, noteIndex) => ({
-        time: chordIndex * 1.45 + noteIndex * 0.014,
-        duration: 1.36,
-        frequency,
-        velocity: 0.76 - noteIndex * 0.07,
-        pan: (noteIndex - (chord.length - 1) / 2) * 0.13,
-      })),
-    );
-  }
+  const strumPattern = STRUM_PATTERNS[config.performance];
+  if (strumPattern) return makeStrumEvents(chordFrequencies, strumPattern);
 
   if (config.performance === 'arpeggio') {
     const notes = chordFrequencies.flatMap((chord) => [...chord, chord[1] * 2]);

@@ -13,6 +13,7 @@ test('workbench exposes an accessible tone agent and clean input picker', () => 
   assert.match(page, /生成并应用/);
   assert.match(page, /真实采样 · 未处理 DI · CC0/);
   assert.match(page, /FreePats Direct DI/);
+  assert.match(page, /performance\.description/);
   assert.doesNotMatch(page, /Black & Green Guitars/);
 });
 

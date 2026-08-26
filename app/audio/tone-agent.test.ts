@@ -26,6 +26,12 @@ test('tone agent understands clean bright arpeggios and named effects', () => {
   assert.ok(!ids.includes('wall-fuzz'));
 });
 
+test('tone agent understands requested strumming rhythms', () => {
+  assert.equal(planToneRequest('清音八分扫弦，加一点合唱').preset.source.performance, 'eighth-strum');
+  assert.equal(planToneRequest('做一个有反拍的切分扫弦').preset.source.performance, 'syncopated-strum');
+  assert.equal(planToneRequest('慢速扫弦做成宽阔音墙').preset.source.performance, 'wall-strum');
+});
+
 test('tone agent keeps every generated board valid and bounded', () => {
   const available = new Set(EFFECT_SPECS.map((effect) => effect.id));
   const requests = [

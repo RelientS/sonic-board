@@ -1,6 +1,7 @@
 import { makeAmpCabConfig } from '../amps/catalog.ts';
 import {
   getGuitarVoice,
+  getPerformanceSpec,
   makeSourceConfig,
   type ChordProgressionId,
   type GuitarVoiceId,
@@ -18,7 +19,12 @@ export type ToneAgentPlan = {
 const has = (text: string, expression: RegExp) => expression.test(text);
 
 function inferSource(text: string, character: 'wall' | 'clean' | 'noise' | 'vintage' | 'motion') {
-  const performance: SourceKind = has(text, /分解|琶音|arpeggio/) ? 'arpeggio' : has(text, /单音|旋律|lead/) ? 'lead' : 'chords';
+  const performance: SourceKind = has(text, /分解|琶音|arpeggio/) ? 'arpeggio'
+    : has(text, /单音|旋律|lead/) ? 'lead'
+      : has(text, /切分|反拍|syncop/) ? 'syncopated-strum'
+        : has(text, /八分|直八|连续扫弦|eighth/) ? 'eighth-strum'
+          : has(text, /慢速扫弦|慢扫|稀疏扫弦/) ? 'wall-strum'
+            : 'chords';
   const guitar: GuitarVoiceId = has(text, /明亮|清晰|琴桥|bright/) ? 'single-bridge'
     : has(text, /温暖|柔和|爵士|空心|复古|warm|jazz/) ? 'hollowbody'
       : has(text, /厚|重|音墙|法兹|凶|双线圈|humbucker|fuzz/) || character === 'noise' || character === 'wall' ? 'humbucker'
@@ -123,7 +129,7 @@ export function planToneRequest(input: string): ToneAgentPlan {
   const decisions = [
     wide ? '使用双路并联，并把空间与动态分到左右通道。' : '保持串联，让各级效果按顺序彼此推动。',
     `清音输入选择 ${getGuitarVoice(source.guitar).name} 真实采样。`,
-    source.performance === 'arpeggio' ? '使用分解和弦检查尾音清晰度。' : source.performance === 'lead' ? '使用单音旋律检查延音和门限。' : '使用扫弦和弦检查音墙密度。',
+    `使用${getPerformanceSpec(source.performance).name}检查效果器对演奏动态的响应。`,
   ];
 
   return {

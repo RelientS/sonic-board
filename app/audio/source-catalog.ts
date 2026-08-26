@@ -1,4 +1,4 @@
-export type SourceKind = 'chords' | 'arpeggio' | 'lead';
+export type SourceKind = 'chords' | 'eighth-strum' | 'syncopated-strum' | 'wall-strum' | 'arpeggio' | 'lead';
 export type GuitarVoiceId = 'single-neck' | 'single-bridge' | 'humbucker' | 'hollowbody';
 export type ChordProgressionId = 'dream-open' | 'minor-drift' | 'major-seven' | 'power-bloom';
 
@@ -15,10 +15,13 @@ export const GUITAR_VOICES: Array<{ id: GuitarVoiceId; name: string; description
   { id: 'hollowbody', name: 'Fender DI Dark', description: '真实采样，未处理 DI，高频收敛，适合复古和柔和清音。' },
 ];
 
-export const PERFORMANCE_SPECS: Array<{ id: SourceKind; name: string }> = [
-  { id: 'chords', name: '扫弦和弦' },
-  { id: 'arpeggio', name: '分解和弦' },
-  { id: 'lead', name: '单音旋律' },
+export const PERFORMANCE_SPECS: Array<{ id: SourceKind; name: string; description: string }> = [
+  { id: 'chords', name: '单次扫弦', description: '每个和弦向下一次，适合听音色本体。' },
+  { id: 'eighth-strum', name: '八分扫弦', description: '连续下上交替，重拍更明确。' },
+  { id: 'syncopated-strum', name: '切分扫弦', description: '保留空拍与反拍，律动更有推动感。' },
+  { id: 'wall-strum', name: '慢速音墙', description: '稀疏长扫弦，给混响和法兹留空间。' },
+  { id: 'arpeggio', name: '分解和弦', description: '逐音拨奏，适合检查延迟与尾音。' },
+  { id: 'lead', name: '单音旋律', description: '固定旋律，适合检查延音和门限。' },
 ];
 
 export const CHORD_PROGRESSIONS: Array<{
