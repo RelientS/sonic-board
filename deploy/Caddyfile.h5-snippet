@@ -1,0 +1,8 @@
+# Keep the existing h5.tryx402.xyz subpath routes above these entries.
+route /api/tone-agent {
+	reverse_proxy https://sonic-board-demo.relient.chatgpt.site {
+		header_up Host sonic-board-demo.relient.chatgpt.site
+	}
+}
+
+reverse_proxy 127.0.0.1:3111
