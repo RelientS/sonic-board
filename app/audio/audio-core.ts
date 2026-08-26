@@ -39,6 +39,24 @@ export function makeDriveCurve(value: number, length = 2048) {
   return curve;
 }
 
+export function makeGateCurve(value: number, length = 2048) {
+  const safeLength = Math.max(3, Math.floor(length));
+  const threshold = 0.015 + (clampParameter(value) / 100) * 0.28;
+  const curve = new Float32Array(safeLength);
+
+  for (let index = 0; index < safeLength; index += 1) {
+    const input = (index / (safeLength - 1)) * 2 - 1;
+    const magnitude = Math.abs(input);
+    if (magnitude <= threshold) {
+      curve[index] = 0;
+      continue;
+    }
+    curve[index] = Math.sign(input) * ((magnitude - threshold) / (1 - threshold));
+  }
+
+  return curve;
+}
+
 const chordFrequencies = [
   [110, 164.81, 220],
   [98, 146.83, 196],
@@ -134,11 +152,14 @@ export function estimateTailSeconds(
     if (bypassed.has(item.instanceId)) return;
     const pedalValues = values[item.instanceId] ?? {};
 
-    if (item.specId === 'tape-echo') {
-      const delay = mapDelaySeconds(pedalValues.time ?? 45);
-      const feedback = Math.min(0.72, clampParameter(pedalValues.repeats ?? 30) / 139);
+    if (item.specId === 'tape-echo' || item.specId === 'analog-delay' || item.specId === 'digital-delay') {
+      const timeValue = clampParameter(pedalValues.time ?? 45) / 100;
+      const ranges = item.specId === 'analog-delay' ? [0.04, 0.8] : item.specId === 'digital-delay' ? [0.04, 2] : [0.06, 1.2];
+      const delay = ranges[0] * (ranges[1] / ranges[0]) ** timeValue;
+      const feedbackValue = item.specId === 'tape-echo' ? pedalValues.repeats : pedalValues.feedback;
+      const feedback = Math.min(item.specId === 'digital-delay' ? 0.86 : 0.78, clampParameter(feedbackValue ?? 30) / 112);
       const repeatsUntilQuiet = feedback > 0.01 ? Math.log(0.01) / Math.log(feedback) : 1;
-      tail = Math.max(tail, Math.min(8, delay * repeatsUntilQuiet));
+      tail = Math.max(tail, Math.min(10, delay * repeatsUntilQuiet));
     }
 
     if (item.specId === 'reverse-space') {
@@ -146,7 +167,15 @@ export function estimateTailSeconds(
     }
 
     if (item.specId === 'cloud-hall') {
-      tail = Math.max(tail, 1.4 + clampParameter(pedalValues.decay ?? 65) / 14);
+      const normalized = clampParameter(pedalValues.decay ?? 65) / 100;
+      tail = Math.max(tail, Math.min(12, 0.5 * (20 / 0.5) ** normalized));
+    }
+
+    if (item.specId === 'gated-room') {
+      const decay = 0.3 * (8 / 0.3) ** (clampParameter(pedalValues.decay ?? 42) / 100);
+      const hold = 0.001 * (3000 / 1) ** (clampParameter(pedalValues.hold ?? 38) / 100);
+      const release = 0.005 * (3000 / 5) ** (clampParameter(pedalValues.release ?? 24) / 100);
+      tail = Math.max(tail, Math.min(12, decay + hold + release));
     }
   });
 

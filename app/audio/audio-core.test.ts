@@ -7,6 +7,7 @@ import {
   estimateTailSeconds,
   getSourceEvents,
   makeDriveCurve,
+  makeGateCurve,
   mapDelaySeconds,
   synthesizeSourceChannels,
 } from './audio-core.ts';
@@ -30,6 +31,14 @@ test('makeDriveCurve creates a symmetric bounded waveshaper curve', () => {
   assert.equal(curve[4], 0);
   assert.ok(curve[8] > 0.9);
   assert.ok(Math.abs(curve[0] + curve[8]) < 0.00001);
+});
+
+test('makeGateCurve suppresses low-level signal while preserving loud signal', () => {
+  const curve = makeGateCurve(60, 101);
+  assert.equal(curve.length, 101);
+  assert.ok(Math.abs(curve[51]) < 0.005);
+  assert.ok(curve[90] > 0.7);
+  assert.ok(Math.abs(curve[10] + curve[90]) < 0.00001);
 });
 
 test('getSourceEvents returns different fixed performances for each source', () => {
@@ -85,4 +94,20 @@ test('estimateTailSeconds follows active delay and reverb settings', () => {
   assert.ok(estimateTailSeconds(chain, values, new Set()) >= 5);
   assert.ok(estimateTailSeconds(chain, values, new Set(['hall-1'])) >= 2);
   assert.equal(estimateTailSeconds([], {}, new Set()), 0.25);
+});
+
+test('estimateTailSeconds covers every delay and space family in the expanded catalog', () => {
+  const chain = [
+    { instanceId: 'analog-1', specId: 'analog-delay' },
+    { instanceId: 'digital-1', specId: 'digital-delay' },
+    { instanceId: 'gate-1', specId: 'gated-room' },
+  ];
+  const values = {
+    'analog-1': { time: 80, feedback: 70 },
+    'digital-1': { time: 76, feedback: 78 },
+    'gate-1': { decay: 70, hold: 60, release: 55 },
+  };
+
+  assert.ok(estimateTailSeconds(chain, values, new Set()) >= 5);
+  assert.ok(estimateTailSeconds(chain, values, new Set(['digital-1'])) >= 2);
 });

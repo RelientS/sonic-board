@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'Sonic Board — 中文效果器链',
-  description: '排列真实单块效果器、调节参数，并用固定清音试听或导出音色。',
+  title: 'Sonic Board — 盯鞋音色工作台',
+  description: '用 19 块经典结构效果器搭建盯鞋音色链，实时试听、A/B、保存音色并导出 WAV。',
 };
 
 export default function RootLayout({

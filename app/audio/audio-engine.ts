@@ -3,13 +3,22 @@ import {
   encodePcm16Wav,
   estimateTailSeconds,
   makeDriveCurve,
-  mapDelaySeconds,
+  makeGateCurve,
   SOURCE_DURATION_SECONDS,
   synthesizeSourceChannels,
   type AudioChainItem,
   type AudioValues,
   type SourceKind,
-} from './audio-core';
+} from './audio-core.ts';
+import { getEffectSpec, mapControlValue } from '../effects/catalog.ts';
+
+export const SUPPORTED_EFFECT_IDS = new Set([
+  'studio-comp', 'noise-gate', 'graphic-eq',
+  'blue-drive', 'rodent-dist', 'wall-fuzz', 'chainsaw-dist',
+  'slow-phase', 'analog-chorus', 'jet-flanger', 'tape-vibrato', 'bias-tremolo', 'soft-detune',
+  'analog-delay', 'tape-echo', 'digital-delay',
+  'reverse-space', 'gated-room', 'cloud-hall',
+]);
 
 export type BoardAudioConfig = {
   chain: AudioChainItem[];
@@ -34,6 +43,16 @@ function parameter(values: Record<string, number>, id: string, fallback: number)
   return clampParameter(values[id] ?? fallback);
 }
 
+function physical(specId: string, values: Record<string, number>, id: string, fallback: number) {
+  const control = getEffectSpec(specId).controls.find((entry) => entry.id === id);
+  if (!control) return fallback;
+  return mapControlValue(control, parameter(values, id, control.defaultValue));
+}
+
+function dbToGain(db: number) {
+  return 10 ** (db / 20);
+}
+
 function seededRandom(seed: number) {
   let state = seed >>> 0;
   return () => {
@@ -52,8 +71,9 @@ function makeAudioBuffer(context: BaseAudioContext, source: SourceKind) {
 function makeImpulse(
   context: BaseAudioContext,
   seconds: number,
-  reverse: boolean,
+  kind: 'decay' | 'reverse' | 'gate',
   seed: number,
+  density = 100,
 ) {
   const length = Math.max(1, Math.floor(context.sampleRate * seconds));
   const buffer = context.createBuffer(2, length, context.sampleRate);
@@ -63,8 +83,13 @@ function makeImpulse(
     const data = buffer.getChannelData(channel);
     for (let index = 0; index < length; index += 1) {
       const phase = index / length;
-      const envelope = reverse ? phase ** 2.2 : (1 - phase) ** 2.5;
-      data[index] = random() * envelope * 0.72;
+      const envelope = kind === 'reverse'
+        ? phase ** 2.2
+        : kind === 'gate'
+          ? phase < 0.58 ? (1 - phase * 0.72) : ((1 - phase) / 0.42) ** 2
+          : (1 - phase) ** 2.5;
+      const active = Math.abs(random()) <= density / 100;
+      data[index] = active ? random() * envelope * 0.72 : 0;
     }
   }
 
@@ -102,100 +127,314 @@ function connectEffectChain(
   config.chain.forEach((item) => {
     if (bypassed.has(item.instanceId)) return;
     const values = config.values[item.instanceId] ?? {};
+    const specId = item.specId;
 
-    if (item.specId === 'wall-fuzz') {
+    if (specId === 'studio-comp') {
+      const compressor = context.createDynamicsCompressor();
+      const toneFilter = context.createBiquadFilter();
+      const output = context.createGain();
+      const sustain = parameter(values, 'sustain', 46);
+      compressor.threshold.value = -8 - sustain * 0.34;
+      compressor.knee.value = 10;
+      compressor.ratio.value = 2 + sustain / 9;
+      compressor.attack.value = physical(specId, values, 'attack', 18) / 1000;
+      compressor.release.value = 0.09 + sustain / 240;
+      toneFilter.type = 'highshelf';
+      toneFilter.frequency.value = 2_800;
+      toneFilter.gain.value = (parameter(values, 'tone', 52) - 50) * 0.12;
+      output.gain.value = dbToGain(physical(specId, values, 'level', 0));
+      cursor.connect(compressor).connect(toneFilter).connect(output);
+      cursor = output;
+      return;
+    }
+
+    if (specId === 'noise-gate') {
+      const gate = context.createWaveShaper();
+      const release = context.createBiquadFilter();
+      const output = context.createGain();
+      gate.curve = makeGateCurve(parameter(values, 'threshold', 28));
+      release.type = 'lowpass';
+      release.frequency.value = 20_000 - parameter(values, 'release', 42) * 72;
+      output.gain.value = dbToGain(physical(specId, values, 'level', 0));
+      cursor.connect(gate).connect(release).connect(output);
+      cursor = output;
+      return;
+    }
+
+    if (specId === 'graphic-eq') {
+      let eqCursor = cursor;
+      ['100', '200', '400', '800', '1600', '3200', '6400'].forEach((band, index) => {
+        const filter = context.createBiquadFilter();
+        filter.type = index === 6 ? 'highshelf' : 'peaking';
+        filter.frequency.value = Number(band);
+        filter.Q.value = index === 6 ? 0.7 : 1.18;
+        filter.gain.value = physical(specId, values, band, 0);
+        eqCursor.connect(filter);
+        eqCursor = filter;
+      });
+      const output = context.createGain();
+      output.gain.value = dbToGain(physical(specId, values, 'level', 0));
+      eqCursor.connect(output);
+      cursor = output;
+      return;
+    }
+
+    if (specId === 'blue-drive' || specId === 'rodent-dist') {
       const preGain = context.createGain();
       const shaper = context.createWaveShaper();
-      const tone = context.createBiquadFilter();
-      const level = context.createGain();
-      preGain.gain.value = 1.2 + parameter(values, 'sustain', 60) / 18;
-      shaper.curve = makeDriveCurve(parameter(values, 'sustain', 60));
+      const highPass = context.createBiquadFilter();
+      const lowPass = context.createBiquadFilter();
+      const output = context.createGain();
+      const drive = parameter(values, specId === 'blue-drive' ? 'gain' : 'distortion', 45);
+      preGain.gain.value = specId === 'blue-drive' ? 1 + drive / 20 : 1.8 + drive / 10;
+      shaper.curve = makeDriveCurve(specId === 'blue-drive' ? drive * 0.58 : drive * 1.08);
       shaper.oversample = '4x';
-      tone.type = 'lowpass';
-      tone.frequency.value = 850 + parameter(values, 'tone', 45) * 58;
-      tone.Q.value = 0.72;
-      level.gain.value = 0.22 + parameter(values, 'volume', 55) / 105;
-      cursor.connect(preGain).connect(shaper).connect(tone).connect(level);
-      cursor = level;
+      highPass.type = 'highpass';
+      highPass.frequency.value = specId === 'blue-drive' ? 72 : 48;
+      lowPass.type = 'lowpass';
+      lowPass.frequency.value = specId === 'rodent-dist'
+        ? 11_500 - parameter(values, 'filter', 45) * 91
+        : physical(specId, values, 'tone', 4_800);
+      lowPass.Q.value = 0.68;
+      output.gain.value = dbToGain(physical(specId, values, specId === 'blue-drive' ? 'level' : 'volume', -1)) * (specId === 'rodent-dist' ? 0.46 : 0.58);
+      cursor.connect(preGain).connect(shaper).connect(highPass).connect(lowPass).connect(output);
+      cursor = output;
       return;
     }
 
-    if (item.specId === 'slow-phase') {
+    if (specId === 'wall-fuzz') {
+      const dryInput = cursor;
+      const preGain = context.createGain();
+      const gate = context.createWaveShaper();
+      const shaper = context.createWaveShaper();
+      const toneFilter = context.createBiquadFilter();
+      const mids = context.createBiquadFilter();
+      const output = context.createGain();
+      const sustain = parameter(values, 'sustain', 67);
+      preGain.gain.value = 2.2 + sustain / 9;
+      gate.curve = makeGateCurve(parameter(values, 'gate', 8) * 0.65);
+      shaper.curve = makeDriveCurve(sustain * 1.15);
+      shaper.oversample = '4x';
+      toneFilter.type = 'lowpass';
+      toneFilter.frequency.value = physical(specId, values, 'tone', 4_200);
+      toneFilter.Q.value = 0.78;
+      mids.type = 'peaking';
+      mids.frequency.value = 1_050;
+      mids.Q.value = 0.92;
+      mids.gain.value = physical(specId, values, 'mids', 0);
+      output.gain.value = dbToGain(physical(specId, values, 'volume', -1)) * 0.27;
+      dryInput.connect(preGain).connect(gate).connect(shaper).connect(toneFilter).connect(mids).connect(output);
+      if (parameter(values, 'attack', 22) > 1) {
+        const attackFilter = context.createBiquadFilter();
+        const attackGain = context.createGain();
+        attackFilter.type = 'bandpass';
+        attackFilter.frequency.value = 2_300;
+        attackFilter.Q.value = 0.8;
+        attackGain.gain.value = parameter(values, 'attack', 22) / 420;
+        dryInput.connect(attackFilter).connect(attackGain).connect(output);
+      }
+      cursor = output;
+      return;
+    }
+
+    if (specId === 'chainsaw-dist') {
+      const preGain = context.createGain();
+      const shaper = context.createWaveShaper();
+      const low = context.createBiquadFilter();
+      const highMid = context.createBiquadFilter();
+      const presence = context.createBiquadFilter();
+      const output = context.createGain();
+      const distortion = parameter(values, 'distortion', 78);
+      preGain.gain.value = 2.4 + distortion / 8;
+      shaper.curve = makeDriveCurve(distortion * 1.2);
+      shaper.oversample = '4x';
+      low.type = 'lowshelf'; low.frequency.value = 120; low.gain.value = (parameter(values, 'low', 72) - 50) * 0.24;
+      highMid.type = 'peaking'; highMid.frequency.value = 1_050; highMid.Q.value = 0.82; highMid.gain.value = (parameter(values, 'high', 76) - 50) * 0.28;
+      presence.type = 'peaking'; presence.frequency.value = 2_700; presence.Q.value = 1.25; presence.gain.value = (parameter(values, 'high', 76) - 50) * 0.18;
+      output.gain.value = dbToGain(physical(specId, values, 'level', -1)) * 0.3;
+      cursor.connect(preGain).connect(shaper).connect(low).connect(highMid).connect(presence).connect(output);
+      cursor = output;
+      return;
+    }
+
+    if (specId === 'slow-phase') {
       const first = context.createBiquadFilter();
       const second = context.createBiquadFilter();
+      const third = context.createBiquadFilter();
+      const fourth = context.createBiquadFilter();
       const lfo = context.createOscillator();
-      const firstDepth = context.createGain();
-      const secondDepth = context.createGain();
+      const depths = [context.createGain(), context.createGain(), context.createGain(), context.createGain()];
+      const filters = [first, second, third, fourth];
       const depth = parameter(values, 'depth', 38);
-      first.type = 'allpass';
-      second.type = 'allpass';
-      first.frequency.value = 520;
-      second.frequency.value = 1_150;
-      first.Q.value = 0.7 + parameter(values, 'res', 20) / 13;
-      second.Q.value = first.Q.value;
-      lfo.frequency.value = 0.06 + parameter(values, 'rate', 22) / 72;
-      firstDepth.gain.value = 120 + depth * 12;
-      secondDepth.gain.value = 240 + depth * 16;
-      lfo.connect(firstDepth).connect(first.frequency);
-      lfo.connect(secondDepth).connect(second.frequency);
-      lfo.start(0);
-      scheduled.push(lfo);
-      cursor.connect(first).connect(second);
-      cursor = mixParallel(context, cursor, second, 54);
+      filters.forEach((filter, index) => {
+        filter.type = 'allpass';
+        filter.frequency.value = [330, 620, 1_100, 1_900][index];
+        filter.Q.value = 0.6 + parameter(values, 'res', 18) / 11;
+        depths[index].gain.value = 80 + depth * (8 + index * 2.6);
+        lfo.connect(depths[index]).connect(filter.frequency);
+      });
+      lfo.frequency.value = physical(specId, values, 'rate', 0.25);
+      lfo.start(0); scheduled.push(lfo);
+      cursor.connect(first).connect(second).connect(third).connect(fourth);
+      cursor = mixParallel(context, cursor, fourth, parameter(values, 'mix', 44));
       return;
     }
 
-    if (item.specId === 'soft-detune') {
-      const sum = context.createGain();
+    if (specId === 'analog-chorus' || specId === 'soft-detune') {
       const wetBus = context.createGain();
-      const cents = parameter(values, 'cents', 35);
-      const spread = parameter(values, 'spread', 54) / 100;
-      [-1, 1].forEach((direction) => {
-        const delay = context.createDelay(0.05);
+      const toneFilter = context.createBiquadFilter();
+      const spread = specId === 'soft-detune' ? parameter(values, 'spread', 54) / 100 : 0.72;
+      [-1, 1].forEach((direction, index) => {
+        const delay = context.createDelay(0.06);
         const pan = context.createStereoPanner();
         const lfo = context.createOscillator();
         const modulation = context.createGain();
-        delay.delayTime.value = 0.0085 + direction * 0.0008;
+        const depth = specId === 'soft-detune' ? physical(specId, values, 'cents', 7) / 30_000 : 0.0006 + parameter(values, 'depth', 48) / 18_000;
+        delay.delayTime.value = specId === 'soft-detune' ? 0.009 + index * 0.0013 : 0.014 + index * 0.002;
         pan.pan.value = direction * spread;
-        lfo.frequency.value = 0.22 + direction * 0.035;
-        modulation.gain.value = 0.0004 + cents / 28_000;
+        lfo.frequency.value = specId === 'soft-detune' ? 0.18 + index * 0.047 : physical(specId, values, 'rate', 0.6) * (1 + index * 0.05);
+        modulation.gain.value = depth;
         lfo.connect(modulation).connect(delay.delayTime);
-        lfo.start(0);
-        scheduled.push(lfo);
+        lfo.start(0); scheduled.push(lfo);
         cursor.connect(delay).connect(pan).connect(wetBus);
       });
-      cursor.connect(sum);
-      const wetGain = context.createGain();
-      wetGain.gain.value = parameter(values, 'blend', 28) / 100;
-      wetBus.connect(wetGain).connect(sum);
-      cursor = sum;
+      toneFilter.type = 'lowpass';
+      toneFilter.frequency.value = physical(specId, values, 'tone', 6_000);
+      wetBus.connect(toneFilter);
+      cursor = mixParallel(context, cursor, toneFilter, parameter(values, specId === 'soft-detune' ? 'blend' : 'mix', 38));
       return;
     }
 
-    if (item.specId === 'tape-echo') {
-      const delay = context.createDelay(1.2);
+    if (specId === 'jet-flanger') {
+      const delay = context.createDelay(0.03);
+      const feedback = context.createGain();
+      const lfo = context.createOscillator();
+      const modulation = context.createGain();
+      const center = 0.001 + parameter(values, 'manual', 52) * 0.00007;
+      delay.delayTime.value = center;
+      feedback.gain.value = Math.min(0.84, parameter(values, 'res', 38) / 112);
+      lfo.frequency.value = physical(specId, values, 'rate', 0.4);
+      modulation.gain.value = Math.min(center * 0.82, 0.0004 + parameter(values, 'depth', 62) * 0.000065);
+      lfo.connect(modulation).connect(delay.delayTime);
+      lfo.start(0); scheduled.push(lfo);
+      delay.connect(feedback).connect(delay);
+      cursor.connect(delay);
+      cursor = mixParallel(context, cursor, delay, parameter(values, 'mix', 46));
+      return;
+    }
+
+    if (specId === 'tape-vibrato') {
+      const delay = context.createDelay(0.05);
+      const toneFilter = context.createBiquadFilter();
+      const lfo = context.createOscillator();
+      const modulation = context.createGain();
+      const rise = physical(specId, values, 'rise', 200) / 1000;
+      delay.delayTime.value = 0.012;
+      lfo.frequency.value = physical(specId, values, 'rate', 0.35);
+      modulation.gain.setValueAtTime(0, context.currentTime);
+      modulation.gain.linearRampToValueAtTime(0.00025 + physical(specId, values, 'depth', 8) / 12_000, context.currentTime + Math.max(0.005, rise));
+      lfo.connect(modulation).connect(delay.delayTime);
+      lfo.start(0); scheduled.push(lfo);
+      toneFilter.type = 'lowpass'; toneFilter.frequency.value = physical(specId, values, 'tone', 5_000);
+      cursor.connect(delay).connect(toneFilter);
+      cursor = toneFilter;
+      return;
+    }
+
+    if (specId === 'bias-tremolo') {
+      const tremolo = context.createGain();
+      const lfo = context.createOscillator();
+      const shape = context.createWaveShaper();
+      const modulation = context.createGain();
+      const depth = parameter(values, 'depth', 48) / 100;
+      tremolo.gain.value = 1 - depth * 0.5;
+      lfo.frequency.value = physical(specId, values, 'rate', 1.2);
+      shape.curve = makeDriveCurve(parameter(values, 'wave', 35) * 0.75, 1024);
+      modulation.gain.value = depth * 0.5;
+      lfo.connect(shape).connect(modulation).connect(tremolo.gain);
+      lfo.start(0); scheduled.push(lfo);
+      const output = context.createGain();
+      output.gain.value = dbToGain(physical(specId, values, 'level', 0));
+      cursor.connect(tremolo).connect(output);
+      cursor = output;
+      return;
+    }
+
+    if (specId === 'analog-delay' || specId === 'tape-echo') {
+      const delay = context.createDelay(1.3);
       const feedback = context.createGain();
       const damping = context.createBiquadFilter();
-      delay.delayTime.value = mapDelaySeconds(parameter(values, 'time', 48));
-      feedback.gain.value = Math.min(0.72, parameter(values, 'repeats', 34) / 139);
-      damping.type = 'lowpass';
-      damping.frequency.value = 3_400;
+      const lfo = context.createOscillator();
+      const modulation = context.createGain();
+      delay.delayTime.value = physical(specId, values, 'time', 380) / 1000;
+      feedback.gain.value = Math.min(0.78, parameter(values, specId === 'tape-echo' ? 'repeats' : 'feedback', 32) / 112);
+      damping.type = 'lowpass'; damping.frequency.value = physical(specId, values, 'tone', 3_500);
+      lfo.frequency.value = specId === 'tape-echo' ? 0.42 : 0.18;
+      modulation.gain.value = parameter(values, specId === 'tape-echo' ? 'wow' : 'mod', 14) / 38_000;
+      lfo.connect(modulation).connect(delay.delayTime);
+      lfo.start(0); scheduled.push(lfo);
       delay.connect(damping).connect(feedback).connect(delay);
       cursor.connect(delay);
-      cursor = mixParallel(context, cursor, delay, parameter(values, 'mix', 27));
+      cursor = mixParallel(context, cursor, delay, parameter(values, 'mix', 28));
       return;
     }
 
-    if (item.specId === 'reverse-space' || item.specId === 'cloud-hall') {
+    if (specId === 'digital-delay') {
+      const left = context.createDelay(2.1);
+      const right = context.createDelay(2.1);
+      const leftPan = context.createStereoPanner();
+      const rightPan = context.createStereoPanner();
+      const feedbackLeft = context.createGain();
+      const feedbackRight = context.createGain();
+      const toneFilter = context.createBiquadFilter();
+      const wet = context.createGain();
+      const delayTime = physical(specId, values, 'time', 480) / 1000;
+      const feedbackValue = Math.min(0.84, parameter(values, 'feedback', 36) / 110);
+      const width = parameter(values, 'width', 68) / 100;
+      left.delayTime.value = delayTime;
+      right.delayTime.value = Math.min(2, delayTime * 1.013);
+      leftPan.pan.value = -width; rightPan.pan.value = width;
+      feedbackLeft.gain.value = feedbackValue; feedbackRight.gain.value = feedbackValue;
+      toneFilter.type = 'lowpass'; toneFilter.frequency.value = physical(specId, values, 'tone', 7_000);
+      cursor.connect(left); cursor.connect(right);
+      left.connect(leftPan).connect(wet); right.connect(rightPan).connect(wet);
+      left.connect(feedbackLeft).connect(right);
+      right.connect(feedbackRight).connect(left);
+      wet.connect(toneFilter);
+      cursor = mixParallel(context, cursor, toneFilter, parameter(values, 'mix', 34));
+      return;
+    }
+
+    if (specId === 'reverse-space' || specId === 'gated-room' || specId === 'cloud-hall') {
+      const preDelay = context.createDelay(1.05);
       const convolver = context.createConvolver();
-      const tone = context.createBiquadFilter();
-      const decay = parameter(values, 'decay', item.specId === 'cloud-hall' ? 72 : 64);
-      const seconds = item.specId === 'cloud-hall' ? 1.4 + decay / 14 : 1.1 + decay / 18;
-      convolver.buffer = makeImpulse(context, seconds, item.specId === 'reverse-space', item.instanceId.length * 911);
-      tone.type = 'lowpass';
-      tone.frequency.value = item.specId === 'cloud-hall' ? 5_800 : 1_800 + parameter(values, 'tone', 46) * 52;
-      cursor.connect(convolver).connect(tone);
-      cursor = mixParallel(context, cursor, tone, parameter(values, 'mix', 40));
+      const highPass = context.createBiquadFilter();
+      const lowPass = context.createBiquadFilter();
+      const decaySeconds = Math.min(10, physical(specId, values, 'decay', specId === 'cloud-hall' ? 6 : 3));
+      const preDelaySeconds = specId === 'gated-room' ? 0.008 : physical(specId, values, 'preDelay', 20) / 1000;
+      const kind = specId === 'reverse-space' ? 'reverse' : specId === 'gated-room' ? 'gate' : 'decay';
+      const density = specId === 'reverse-space' ? parameter(values, 'density', 74) : 100;
+      const impulseSeconds = specId === 'gated-room'
+        ? Math.min(8, decaySeconds + physical(specId, values, 'hold', 180) / 1000 + physical(specId, values, 'release', 120) / 1000)
+        : decaySeconds;
+      preDelay.delayTime.value = Math.min(1, preDelaySeconds);
+      convolver.buffer = makeImpulse(context, impulseSeconds, kind, item.instanceId.length * 911, density);
+      highPass.type = 'highpass';
+      highPass.frequency.value = specId === 'reverse-space' ? physical(specId, values, 'lowCut', 90) : 45;
+      lowPass.type = 'lowpass';
+      lowPass.frequency.value = specId === 'reverse-space' || specId === 'gated-room'
+        ? physical(specId, values, 'highCut', 6_000)
+        : physical(specId, values, 'tone', 6_000);
+      cursor.connect(preDelay).connect(convolver).connect(highPass).connect(lowPass);
+      if (specId === 'cloud-hall' && parameter(values, 'motion', 31) > 0) {
+        const lfo = context.createOscillator();
+        const modulation = context.createGain();
+        lfo.frequency.value = 0.11;
+        modulation.gain.value = parameter(values, 'motion', 31) / 180_000;
+        lfo.connect(modulation).connect(preDelay.delayTime);
+        lfo.start(0); scheduled.push(lfo);
+      }
+      cursor = mixParallel(context, cursor, lowPass, parameter(values, 'mix', 40));
     }
   });
 
