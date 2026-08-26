@@ -6,6 +6,7 @@ import { getSourceEvents } from './audio-core.ts';
 import { GUITAR_VOICES, makeSourceConfig } from './source-catalog.ts';
 import {
   REAL_GUITAR_SAMPLE_BANKS,
+  applySampleInputHeadroom,
   makeSamplePlaybackPlan,
 } from './sample-library.ts';
 
@@ -43,4 +44,16 @@ test('source picker names the recorded instruments instead of synthetic pickup p
     'Fender Bridge Jazz',
   ]);
   assert.ok(GUITAR_VOICES.every((voice) => voice.description.includes('真实采样')));
+});
+
+test('real sample mixes are reduced to clean amp-input headroom without boosting quiet sources', () => {
+  const loud = [new Float32Array([0.1, -0.8, 0.4]), new Float32Array([0.2, 0.6, -0.3])];
+  const appliedGain = applySampleInputHeadroom(loud);
+  const resultingPeak = Math.max(...loud.flatMap((channel) => [...channel].map(Math.abs)));
+  assert.ok(appliedGain < 0.23);
+  assert.ok(resultingPeak <= 0.18);
+
+  const quiet = [new Float32Array([0.05, -0.1])];
+  assert.equal(applySampleInputHeadroom(quiet), 1);
+  assert.deepEqual([...quiet[0]], [0.05000000074505806, -0.10000000149011612]);
 });

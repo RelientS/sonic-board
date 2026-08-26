@@ -19,6 +19,26 @@ export type SamplePlaybackEvent = SourceEvent & {
   playbackRate: number;
 };
 
+export const SAMPLE_INPUT_PEAK = 10 ** (-15 / 20);
+
+export function applySampleInputHeadroom(
+  channels: Float32Array[],
+  targetPeak = SAMPLE_INPUT_PEAK,
+) {
+  let peak = 0;
+  channels.forEach((channel) => {
+    for (let index = 0; index < channel.length; index += 1) {
+      peak = Math.max(peak, Math.abs(channel[index]));
+    }
+  });
+  if (peak <= targetPeak || peak === 0) return 1;
+  const gain = targetPeak / peak;
+  channels.forEach((channel) => {
+    for (let index = 0; index < channel.length; index += 1) channel[index] *= gain;
+  });
+  return gain;
+}
+
 const fenderRoots = [
   ['c2', 65.406],
   ['a2', 110],

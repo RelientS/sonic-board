@@ -1,5 +1,5 @@
 import { SOURCE_DURATION_SECONDS } from './audio-core.ts';
-import { makeSamplePlaybackPlan } from './sample-library.ts';
+import { applySampleInputHeadroom, makeSamplePlaybackPlan } from './sample-library.ts';
 import { type SourceConfig } from './source-catalog.ts';
 
 const encodedSampleCache = new Map<string, Promise<ArrayBuffer>>();
@@ -58,5 +58,9 @@ export async function renderSampledSourceBuffer(
     player.stop(Math.min(SOURCE_DURATION_SECONDS, end + 0.02));
   });
 
-  return offline.startRendering();
+  const rendered = await offline.startRendering();
+  applySampleInputHeadroom(
+    Array.from({ length: rendered.numberOfChannels }, (_, index) => rendered.getChannelData(index)),
+  );
+  return rendered;
 }
