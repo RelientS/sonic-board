@@ -42,7 +42,7 @@ const pedalKernelReady = new WeakSet<BaseAudioContext>();
 const pedalKernelLoading = new WeakMap<BaseAudioContext, Promise<void>>();
 const pedalKernelModules = new WeakMap<BaseAudioContext, WebAssembly.Module>();
 let pedalKernelModulePromise: Promise<WebAssembly.Module> | null = null;
-const PEDALKERNEL_RUNTIME_VERSION = 2;
+const PEDALKERNEL_RUNTIME_VERSION = 3;
 
 const PEDALKERNEL_MODELS: Record<string, { modelId: number; controls: string[] }> = {
   'studio-comp': { modelId: 0, controls: ['sustain', 'level'] },

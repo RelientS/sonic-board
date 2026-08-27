@@ -34,7 +34,7 @@ test('publishes the PedalKernel runtime ABI used for cache compatibility', async
   const exports = instance.exports as unknown as { runtime_version?: () => number };
 
   assert.equal(typeof exports.runtime_version, 'function');
-  assert.equal(exports.runtime_version?.(), 2);
+  assert.equal(exports.runtime_version?.(), 3);
 });
 
 test('PedalKernel processes a block and responds to pedal controls', async () => {
@@ -94,6 +94,92 @@ test('every upstream circuit initializes and stays audible and bounded after cal
     assert.ok(buffer.every(Number.isFinite), `${MODELS[modelId].name} emitted non-finite audio`);
     assert.ok(rms > 0.002, `${MODELS[modelId].name} lost sustained output (${rms})`);
     assert.ok(peak <= 1.05, `${MODELS[modelId].name} exceeded calibrated bounds (${peak})`);
+  }
+});
+
+test('Dyna Comp keeps a usable default output level', async () => {
+  const { instance } = await WebAssembly.instantiate(readFileSync(wasmUrl), {});
+  const exports = instance.exports as unknown as {
+    memory: WebAssembly.Memory;
+    init_model: (id: number, sampleRate: number) => number;
+    set_control: (id: number, value: number) => number;
+    resize_buffer: (length: number) => number;
+    buffer_ptr: () => number;
+    process_block: (length: number) => number;
+  };
+  const length = 22_050;
+  const inputRms = 0.08 / Math.sqrt(2);
+  assert.equal(exports.init_model(0, 44_100), 1);
+  assert.equal(exports.resize_buffer(length), 1);
+  const buffer = new Float32Array(exports.memory.buffer, exports.buffer_ptr(), length);
+  for (let index = 0; index < length; index += 1) buffer[index] = Math.sin(index * 0.071) * 0.08;
+  MODELS[0].controls.forEach((value, controlId) => exports.set_control(controlId, value));
+  assert.equal(exports.process_block(length), 1);
+  const tail = buffer.subarray(4096);
+  const outputRms = Math.sqrt(tail.reduce((sum, sample) => sum + sample * sample, 0) / tail.length);
+
+  assert.ok(outputRms >= inputRms * 0.5, `Dyna Comp default output is too quiet (${outputRms})`);
+  assert.ok(outputRms <= inputRms * 2, `Dyna Comp default output has unsafe make-up gain (${outputRms})`);
+});
+
+test('default compressor and fuzz levels stay near the clean reference', async () => {
+  const bytes = readFileSync(wasmUrl);
+  const inputRms = 0.08 / Math.sqrt(2);
+  for (const modelId of [0, 3, 6]) {
+    const { instance } = await WebAssembly.instantiate(bytes, {});
+    const exports = instance.exports as unknown as {
+      memory: WebAssembly.Memory;
+      init_model: (id: number, sampleRate: number) => number;
+      set_control: (id: number, value: number) => number;
+      resize_buffer: (length: number) => number;
+      buffer_ptr: () => number;
+      process_block: (length: number) => number;
+    };
+    const length = 22_050;
+    assert.equal(exports.init_model(modelId, 44_100), 1);
+    assert.equal(exports.resize_buffer(length), 1);
+    const buffer = new Float32Array(exports.memory.buffer, exports.buffer_ptr(), length);
+    for (let index = 0; index < length; index += 1) buffer[index] = Math.sin(index * 0.071) * 0.08;
+    MODELS[modelId].controls.forEach((value, controlId) => exports.set_control(controlId, value));
+    assert.equal(exports.process_block(length), 1);
+    const tail = buffer.subarray(4096);
+    const outputRms = Math.sqrt(tail.reduce((sum, sample) => sum + sample * sample, 0) / tail.length);
+    assert.ok(outputRms >= inputRms * 0.5, `${MODELS[modelId].name} default output is too quiet (${outputRms})`);
+    assert.ok(outputRms <= inputRms * 2, `${MODELS[modelId].name} default output is too loud (${outputRms})`);
+  }
+});
+
+test('Big Muff and Fuzz Face fit the AudioWorklet processing budget', async () => {
+  const bytes = readFileSync(wasmUrl);
+  const renderTime = async (modelId: number) => {
+    const { instance } = await WebAssembly.instantiate(bytes, {});
+    const exports = instance.exports as unknown as {
+      memory: WebAssembly.Memory;
+      init_model: (id: number, sampleRate: number) => number;
+      set_control: (id: number, value: number) => number;
+      resize_buffer: (length: number) => number;
+      buffer_ptr: () => number;
+      process_block: (length: number) => number;
+    };
+    const render = (length: number) => {
+      assert.equal(exports.resize_buffer(length), 1);
+      const buffer = new Float32Array(exports.memory.buffer, exports.buffer_ptr(), length);
+      for (let index = 0; index < length; index += 1) buffer[index] = Math.sin(index * 0.071) * 0.08;
+      const startedAt = performance.now();
+      assert.equal(exports.process_block(length), 1);
+      return performance.now() - startedAt;
+    };
+    assert.equal(exports.init_model(modelId, 44_100), 1);
+    MODELS[modelId].controls.forEach((value, controlId) => exports.set_control(controlId, value));
+    render(512);
+    return render(4096);
+  };
+
+  const dynaMs = await renderTime(0);
+  const maximumHeavyModelMs = dynaMs * 4 + 10;
+  for (const modelId of [3, 6]) {
+    const elapsedMs = await renderTime(modelId);
+    assert.ok(elapsedMs <= maximumHeavyModelMs, `${MODELS[modelId].name} blocks the audio thread (${elapsedMs.toFixed(1)} ms vs ${maximumHeavyModelMs.toFixed(1)} ms)`);
   }
 });
 

@@ -40,9 +40,84 @@ const CONTROLS: [&[&str]; 13] = [
 // share a common line-level calibration. These fixed make-up gains were measured
 // with a -22 dBFS DI reference and are followed by a bounded analog-style limiter.
 const OUTPUT_GAINS: [f32; 13] = [
-    1.0, 8.0, 1.0, 30_000.0, 8.0, 8.0, 80.0, 125.0, 8.0, 1.5, 3.0, 35.0,
+    6.0,
+    8.0,
+    1.0,
+    30_000.0,
+    8.0,
+    8.0,
+    80.0,
+    125.0,
+    8.0,
+    1.5,
+    3.0,
+    35.0,
     8_000_000.0,
 ];
+
+#[derive(Default)]
+struct BigMuffRepair {
+    previous_input: f32,
+    high_passed: f32,
+    bass: f32,
+    treble_reference: f32,
+    output: f32,
+}
+
+impl BigMuffRepair {
+    fn process(&mut self, input: f32, sample_rate: f32, controls: &[f32; 3]) -> f32 {
+        let sustain = controls[0].clamp(0.0, 1.0);
+        let tone = controls[1].clamp(0.0, 1.0);
+        let volume = controls[2].clamp(0.0, 1.0);
+        let high_pass_coefficient = (-2.0 * PI * 42.0 / sample_rate).exp();
+        self.high_passed = input - self.previous_input + high_pass_coefficient * self.high_passed;
+        self.previous_input = input;
+
+        // Two saturated gain stages mirror the pair of diode-clipped transistor
+        // stages while avoiding the full multi-device Newton solve per sample.
+        let first = (self.high_passed * (5.0 + sustain * 26.0)).tanh();
+        let clipped = (first * (2.1 + sustain * 5.4)).tanh();
+        let bass_alpha = 1.0 - (-2.0 * PI * 780.0 / sample_rate).exp();
+        let treble_alpha = 1.0 - (-2.0 * PI * 2_200.0 / sample_rate).exp();
+        self.bass += bass_alpha * (clipped - self.bass);
+        self.treble_reference += treble_alpha * (clipped - self.treble_reference);
+        let treble = clipped - self.treble_reference;
+        let tone_stack = self.bass * (1.0 - tone) * 1.18 + treble * tone * 1.52 + clipped * 0.11;
+        let output_alpha = 1.0 - (-2.0 * PI * 7_200.0 / sample_rate).exp();
+        self.output += output_alpha * (tone_stack - self.output);
+        self.output * (0.16 + volume * 0.74) * 0.12
+    }
+}
+
+#[derive(Default)]
+struct FuzzFaceRepair {
+    previous_input: f32,
+    high_passed: f32,
+    output: f32,
+}
+
+impl FuzzFaceRepair {
+    fn process(&mut self, input: f32, sample_rate: f32, controls: &[f32; 3]) -> f32 {
+        let fuzz = controls[0].clamp(0.0, 1.0);
+        let volume = controls[1].clamp(0.0, 1.0);
+        let high_pass_coefficient = (-2.0 * PI * 31.0 / sample_rate).exp();
+        self.high_passed = input - self.previous_input + high_pass_coefficient * self.high_passed;
+        self.previous_input = input;
+
+        // Germanium Fuzz Face clipping is deliberately asymmetric. The two
+        // slopes preserve pick cleanup at low fuzz and the softer negative lobe.
+        let drive = 1.6 + fuzz * 19.0;
+        let shaped = if self.high_passed >= 0.0 {
+            (self.high_passed * drive * 0.82).tanh()
+        } else {
+            (self.high_passed * drive * 1.16).tanh() * 0.78
+        };
+        let cutoff = 6_800.0 - fuzz * 2_100.0;
+        let output_alpha = 1.0 - (-2.0 * PI * cutoff / sample_rate).exp();
+        self.output += output_alpha * (shaped - self.output);
+        self.output * (0.18 + volume * 0.82) * 0.16
+    }
+}
 
 #[derive(Default)]
 struct PhaserRepair {
@@ -81,6 +156,8 @@ struct EngineState {
     dc_output: f32,
     sample_rate: f32,
     controls: [f32; 3],
+    big_muff_repair: BigMuffRepair,
+    fuzz_face_repair: FuzzFaceRepair,
     phaser_repair: PhaserRepair,
     tone_repair: f32,
 }
@@ -91,7 +168,7 @@ thread_local! {
 
 #[no_mangle]
 pub extern "C" fn runtime_version() -> u32 {
-    2
+    3
 }
 
 #[no_mangle]
@@ -114,6 +191,8 @@ pub extern "C" fn init_model(model_id: u32, sample_rate: u32) -> u32 {
         engine.dc_output = 0.0;
         engine.sample_rate = sample_rate as f32;
         engine.controls = [0.0; 3];
+        engine.big_muff_repair = BigMuffRepair::default();
+        engine.fuzz_face_repair = FuzzFaceRepair::default();
         engine.phaser_repair = PhaserRepair::default();
         engine.tone_repair = 0.0;
     });
@@ -168,6 +247,8 @@ pub extern "C" fn process_block(length: u32) -> u32 {
             dc_output,
             sample_rate,
             controls,
+            big_muff_repair,
+            fuzz_face_repair,
             phaser_repair,
             tone_repair,
         } = &mut *engine;
@@ -179,7 +260,11 @@ pub extern "C" fn process_block(length: u32) -> u32 {
         };
         let count = usize::min(length as usize, buffer.len());
         for sample in &mut buffer[..count] {
-            let modeled = processor.process(*sample as f64) as f32 * OUTPUT_GAINS[model_id];
+            let modeled = match model_id {
+                3 => big_muff_repair.process(*sample, *sample_rate, controls),
+                6 => fuzz_face_repair.process(*sample, *sample_rate, controls),
+                _ => processor.process(*sample as f64) as f32 * OUTPUT_GAINS[model_id],
+            };
             let high_passed = modeled - *dc_input + 0.995 * *dc_output;
             *dc_input = modeled;
             *dc_output = high_passed;
