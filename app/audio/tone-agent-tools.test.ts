@@ -27,8 +27,13 @@ test('tool runtime reads the actual board and returns catalog-grounded teaching 
   assert.equal(board.selectedInstanceId, 'fuzz-1');
   assert.match(board.chain[0].name, /Big Muff/);
   assert.equal(effect?.values.mids, 61);
+  assert.equal(effect?.fidelity?.runtime, 'legacy-fallback');
+  assert.equal(effect?.fidelity?.status, 'blocked');
   assert.ok(effect?.controls.some((control) => control.id === 'mids' && control.help.length > 20));
   assert.ok(search.some((item) => item.id === 'slow-phase'));
+  const rat = runtime.searchEffects('RAT')[0];
+  assert.equal(rat.fidelity?.runtime, 'pedalkernel');
+  assert.equal(rat.fidelity?.verifiedScore, null);
 });
 
 test('tool runtime records validated reversible actions instead of mutating context', () => {

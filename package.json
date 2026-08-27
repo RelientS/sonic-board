@@ -10,7 +10,9 @@
     "build": "vinext build",
     "start": "vinext start",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
-    "test": "node --test app/audio/*.test.ts"
+    "test": "node --test app/audio/*.test.ts",
+    "build:dsp": "bash scripts/build-pedalkernel-wasm.sh",
+    "test:dsp": "node --test app/audio/pedalkernel-wasm.test.ts"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "^0.74.2",

@@ -1,0 +1,18 @@
+[package]
+name = "sonic-board-pedalkernel-wasm"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+pedalkernel = { git = "https://github.com/ajmwagar/pedalkernel.git", rev = "0278b397c861b5ebef2e8e38d15ab281b8e669dc", default-features = false, features = ["std"] }
+
+[profile.release]
+lto = "fat"
+opt-level = "s"
+panic = "abort"
+strip = "symbols"

@@ -11,6 +11,7 @@ import {
 } from '../audio/source-catalog.ts';
 import { EFFECT_SPECS, getEffectSpec, instantiatePreset, makeDefaultValues, type EffectCategory, type FactoryPreset } from '../effects/catalog.ts';
 import { getControlHelp } from '../effects/control-help.ts';
+import { getEffectFidelity } from '../effects/fidelity.ts';
 
 export type ToneAgentBoardState = {
   name: string;
@@ -222,6 +223,7 @@ function effectTeaching(specId: string, values: Record<string, number>) {
     category: spec.category,
     family: spec.family,
     description: spec.description,
+    fidelity: getEffectFidelity(spec.id),
     values: { ...values },
     controls: spec.controls.map((control) => {
       const lesson = getControlHelp('effect', spec.id, control);
@@ -271,6 +273,7 @@ export function createToneAgentToolRuntime(context: ToneAgentBoardState) {
         category: spec.category,
         family: spec.family,
         description: spec.description,
+        fidelity: getEffectFidelity(spec.id),
         controls: spec.controls.map((control) => ({ id: control.id, label: control.label, defaultValue: control.defaultValue })),
       }));
     },

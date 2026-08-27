@@ -1,6 +1,7 @@
 import { AMP_SPECS, CAB_SPECS, makeAmpCabConfig } from '../amps/catalog.ts';
 import { CHORD_PROGRESSIONS, GUITAR_VOICES, PERFORMANCE_SPECS, type SourceConfig } from '../audio/source-catalog.ts';
 import { EFFECT_SPECS, type PresetChainItem } from '../effects/catalog.ts';
+import { getEffectFidelity } from '../effects/fidelity.ts';
 import type { ToneAgentPlan } from './tone-agent.ts';
 
 type UnknownRecord = Record<string, unknown>;
@@ -42,7 +43,13 @@ export function buildToneAgentInput(request: string) {
       id: effect.id,
       name: effect.name,
       category: effect.category,
-      modeling: '算法近似·非官方',
+      modeling: getEffectFidelity(effect.id) ?? {
+        engine: 'Legacy Web Audio approximation',
+        runtime: 'legacy-web-audio',
+        status: 'unverified',
+        targetScore: null,
+        verifiedScore: null,
+      },
       controls: effect.controls.map((control) => control.id),
     })),
     amps: AMP_SPECS.map((amp) => ({ id: amp.id, name: amp.name, modeling: amp.modeling, controls: amp.controls.map((control) => control.id) })),

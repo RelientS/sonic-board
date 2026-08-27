@@ -46,6 +46,7 @@ const CONTROL_LABELS: Record<string, string> = {
 };
 
 export function getPedalControlLabel(effectId: string, controlId: string) {
+  if (effectId === 'studio-comp' && controlId === 'sustain') return 'SENS';
   const label = CONTROL_LABELS[controlId];
   if (!label) throw new Error(`Missing pedal control label for ${effectId}.${controlId}`);
   return label;

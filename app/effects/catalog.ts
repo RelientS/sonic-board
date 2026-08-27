@@ -77,7 +77,7 @@ export const EFFECT_SPECS: EffectSpec[] = [
   {
     id: 'studio-comp', name: 'MXR Dyna Comp', maker: 'MXR', category: 'Dynamics', family: 'Dyna Comp 风格压缩',
     description: '均衡拨弦动态，同时保留清音分解的颗粒感。', finish: '#3978b7', ink: '#f4f6f8', accent: '#ef5e47',
-    controls: [level(), tone(52), c('attack', '起音', 58, 1, 80, 'ms', 0, 'exponential'), c('sustain', '延音', 46)],
+    controls: [level(), c('sustain', '灵敏度', 46)],
   },
   {
     id: 'noise-gate', name: 'Boss NS-2 Noise Suppressor', maker: 'BOSS', category: 'Dynamics', family: 'NS-2 风格门限降噪',
@@ -181,7 +181,7 @@ export const FACTORY_PRESETS: FactoryPreset[] = [
     routing: { mode: 'serial', blend: 50, spread: 0 },
     amp: makeAmpCabConfig('brit-20', 'closed-4x12', { gain: 32, mid: 64, presence: 52 }),
     chain: [
-      { specId: 'studio-comp', settings: { sustain: 38, attack: 64 } },
+      { specId: 'studio-comp', settings: { sustain: 38 } },
       { specId: 'soft-detune', settings: { cents: 34, blend: 22, spread: 62 } },
       { specId: 'reverse-space', settings: { mix: 46, decay: 52, preDelay: 18, lowCut: 24, highCut: 58, density: 82 } },
       { specId: 'wall-fuzz', settings: { sustain: 76, tone: 48, mids: 63, gate: 10 } },
@@ -193,7 +193,7 @@ export const FACTORY_PRESETS: FactoryPreset[] = [
     routing: { mode: 'serial', blend: 50, spread: 0 },
     amp: makeAmpCabConfig('glass-120', 'open-2x12', { gain: 14, treble: 61, presence: 58 }),
     chain: [
-      { specId: 'studio-comp', settings: { sustain: 52, tone: 58 } },
+      { specId: 'studio-comp', settings: { sustain: 52 } },
       { specId: 'analog-chorus', settings: { rate: 24, depth: 38, mix: 38 } },
       { specId: 'tape-echo', settings: { time: 42, repeats: 28, mix: 24, wow: 18 } },
       { specId: 'cloud-hall', settings: { mix: 42, decay: 58, motion: 26 } },
@@ -250,7 +250,7 @@ export const FACTORY_PRESETS: FactoryPreset[] = [
     routing: { mode: 'serial', blend: 50, spread: 0 },
     amp: makeAmpCabConfig('american-twin', 'open-2x12', { gain: 22, bass: 52, treble: 61 }),
     chain: [
-      { specId: 'studio-comp', settings: { sustain: 44, attack: 52 } },
+      { specId: 'studio-comp', settings: { sustain: 44 } },
       { specId: 'bias-tremolo', settings: { rate: 39, depth: 52, wave: 28 } },
       { specId: 'reverse-space', settings: { mix: 31, decay: 39, preDelay: 14 } },
       { specId: 'analog-delay', settings: { time: 46, feedback: 28, mix: 25 } },
@@ -261,7 +261,7 @@ export const FACTORY_PRESETS: FactoryPreset[] = [
     routing: { mode: 'parallel', blend: 56, spread: 82 },
     amp: makeAmpCabConfig('glass-120', 'open-2x12', { gain: 17, mid: 55, treble: 59, presence: 57 }, { distance: 22, room: 15 }),
     chain: [
-      { specId: 'studio-comp', lane: 'A', settings: { sustain: 40, attack: 58 } },
+      { specId: 'studio-comp', lane: 'A', settings: { sustain: 40 } },
       { specId: 'analog-chorus', lane: 'A', settings: { rate: 21, depth: 43, mix: 38 } },
       { specId: 'digital-delay', lane: 'A', settings: { time: 36, feedback: 28, mix: 25, width: 76 } },
       { specId: 'reverse-space', lane: 'B', settings: { mix: 54, decay: 52, density: 80, highCut: 55 } },
@@ -313,7 +313,7 @@ export function validateCatalog(catalog: EffectSpec[]) {
   catalog.forEach((effect) => {
     if (effectIds.has(effect.id)) errors.push(`duplicate effect: ${effect.id}`);
     effectIds.add(effect.id);
-    if (effect.controls.length < 3) errors.push(`too few controls: ${effect.id}`);
+    if (effect.controls.length < 2) errors.push(`too few controls: ${effect.id}`);
     const controlIds = new Set<string>();
     effect.controls.forEach((control) => {
       if (controlIds.has(control.id)) errors.push(`duplicate control: ${effect.id}.${control.id}`);

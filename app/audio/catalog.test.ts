@@ -15,13 +15,13 @@ test('catalog contains a complete shoegaze-ready set with valid controls', () =>
   assert.ok(EFFECT_SPECS.length >= 19);
   assert.deepEqual(validateCatalog(EFFECT_SPECS), []);
   assert.ok(new Set(EFFECT_SPECS.map((effect) => effect.category)).size >= 6);
-  assert.ok(EFFECT_SPECS.every((effect) => effect.controls.length >= 3));
+  assert.ok(EFFECT_SPECS.every((effect) => effect.controls.length >= 2));
 });
 
 test('classic-inspired effects preserve their defining control layouts', () => {
   assert.deepEqual(getEffectSpec('wall-fuzz').controls.slice(0, 3).map((control) => control.id), ['volume', 'tone', 'sustain']);
   assert.deepEqual(getEffectSpec('rodent-dist').controls.map((control) => control.id), ['distortion', 'filter', 'volume']);
-  assert.deepEqual(getEffectSpec('studio-comp').controls.map((control) => control.id), ['level', 'tone', 'attack', 'sustain']);
+  assert.deepEqual(getEffectSpec('studio-comp').controls.map((control) => control.id), ['level', 'sustain']);
   assert.equal(getEffectSpec('graphic-eq').controls.length, 8);
   assert.ok(getEffectSpec('reverse-space').controls.some((control) => control.id === 'preDelay'));
   assert.ok(getEffectSpec('reverse-space').controls.some((control) => control.id === 'lowCut'));

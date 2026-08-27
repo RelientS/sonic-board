@@ -15,6 +15,7 @@ import {
 import { sourceConfigKey } from './source-catalog.ts';
 import { renderSampledSourceBuffer } from './sample-renderer.ts';
 import { getEffectSpec, mapControlValue } from '../effects/catalog.ts';
+import { EFFECT_FIDELITY_PROFILES, type EffectFidelityProfile } from '../effects/fidelity.ts';
 import { AMP_SPECS, CAB_SPECS, getAmpSpec, getCabSpec, type AmpCabConfig } from '../amps/catalog.ts';
 import { computeLaneMix, partitionChain } from './routing.ts';
 
@@ -27,9 +28,24 @@ export const SUPPORTED_EFFECT_IDS = new Set([
 ]);
 export const SUPPORTED_AMP_IDS = new Set(AMP_SPECS.map((amp) => amp.id));
 export const SUPPORTED_CAB_IDS = new Set(CAB_SPECS.map((cab) => cab.id));
+export const PEDALKERNEL_EFFECT_IDS: ReadonlySet<string> = new Set([
+  'studio-comp', 'rodent-dist',
+]);
+export { EFFECT_FIDELITY_PROFILES, type EffectFidelityProfile };
 
 const noiseGateReady = new WeakSet<BaseAudioContext>();
 const noiseGateLoading = new WeakMap<BaseAudioContext, Promise<void>>();
+const pedalKernelReady = new WeakSet<BaseAudioContext>();
+const pedalKernelLoading = new WeakMap<BaseAudioContext, Promise<void>>();
+const pedalKernelModules = new WeakMap<BaseAudioContext, WebAssembly.Module>();
+let pedalKernelModulePromise: Promise<WebAssembly.Module> | null = null;
+
+const PEDALKERNEL_MODELS: Record<string, { modelId: number; controls: string[] }> = {
+  'studio-comp': { modelId: 0, controls: ['sustain', 'level'] },
+  'blue-drive': { modelId: 1, controls: ['gain', 'tone', 'level'] },
+  'rodent-dist': { modelId: 2, controls: ['distortion', 'filter', 'volume'] },
+  'wall-fuzz': { modelId: 3, controls: ['sustain', 'tone', 'volume'] },
+};
 
 export function activateMobileAudio(
   context: AudioContext,
@@ -67,6 +83,34 @@ async function prepareNoiseGateProcessor(context: BaseAudioContext) {
       // A calibrated soft gate below keeps preview and export usable on older browsers.
     });
     noiseGateLoading.set(context, pending);
+  }
+  await pending;
+}
+
+async function preparePedalKernelProcessor(context: BaseAudioContext) {
+  if (pedalKernelReady.has(context)) return;
+  const worklet = (context as BaseAudioContext & {
+    audioWorklet?: { addModule: (moduleUrl: string) => Promise<void> };
+  }).audioWorklet;
+  if (!worklet || typeof AudioWorkletNode === 'undefined') return;
+  let pending = pedalKernelLoading.get(context);
+  if (!pending) {
+    pedalKernelModulePromise ??= fetch('/audio/pedalkernel.wasm')
+      .then((response) => {
+        if (!response.ok) throw new Error(`PedalKernel WASM ${response.status}`);
+        return response.arrayBuffer();
+      })
+      .then((bytes) => WebAssembly.compile(bytes));
+    pending = Promise.all([
+      pedalKernelModulePromise,
+      worklet.addModule('/audio/pedalkernel-processor.js'),
+    ]).then(([module]) => {
+      pedalKernelModules.set(context, module);
+      pedalKernelReady.add(context);
+    }).catch(() => {
+      // The legacy Web Audio models below keep playback working on older browsers.
+    });
+    pedalKernelLoading.set(context, pending);
   }
   await pending;
 }
@@ -172,6 +216,30 @@ function mixParallel(
   return sum;
 }
 
+function makePedalKernelNode(
+  context: BaseAudioContext,
+  specId: string,
+  values: Record<string, number>,
+) {
+  const model = PEDALKERNEL_MODELS[specId];
+  const wasmModule = pedalKernelModules.get(context);
+  if (!model || !wasmModule || !pedalKernelReady.has(context) || typeof AudioWorkletNode === 'undefined') return null;
+  try {
+    return new AudioWorkletNode(context, 'sonic-pedalkernel', {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [2],
+      processorOptions: {
+        wasmModule,
+        modelId: model.modelId,
+        controls: model.controls.map((id) => parameter(values, id, 50) / 100),
+      },
+    });
+  } catch {
+    return null;
+  }
+}
+
 function connectEffectChain(
   context: BaseAudioContext,
   input: AudioNode,
@@ -186,6 +254,15 @@ function connectEffectChain(
     if (bypassed.has(item.instanceId)) return;
     const values = config.values[item.instanceId] ?? {};
     const specId = item.specId;
+
+    if (PEDALKERNEL_EFFECT_IDS.has(specId)) {
+      const processor = makePedalKernelNode(context, specId, values);
+      if (processor) {
+        cursor.connect(processor);
+        cursor = processor;
+        return;
+      }
+    }
 
     if (specId === 'studio-comp') {
       const compressor = context.createDynamicsCompressor();
@@ -678,7 +755,7 @@ export async function createLiveSession(config: BoardAudioConfig) {
   const context = new AudioContextClass();
   activateMobileAudio(context, window.navigator);
   await context.resume();
-  await prepareNoiseGateProcessor(context);
+  await Promise.all([prepareNoiseGateProcessor(context), preparePedalKernelProcessor(context)]);
   const session: LiveAudioSession = {
     context,
     source: null,
@@ -699,7 +776,7 @@ export async function createLiveSession(config: BoardAudioConfig) {
 export async function refreshLiveSession(session: LiveAudioSession, config: BoardAudioConfig) {
   if (session.context.state === 'closed') return;
   const revision = ++session.revision;
-  await prepareNoiseGateProcessor(session.context);
+  await Promise.all([prepareNoiseGateProcessor(session.context), preparePedalKernelProcessor(session.context)]);
   const key = sourceConfigKey(config.source);
   const offset = sourceConfigKey(config.source) === session.sourceKey
     ? (session.context.currentTime - session.startedAt) % session.duration
@@ -725,7 +802,7 @@ export async function renderBoardToWav(config: BoardAudioConfig) {
   const tail = estimateTailSeconds(config.chain, config.values, new Set(config.bypassed));
   const totalSeconds = SOURCE_DURATION_SECONDS + tail;
   const offline = new OfflineAudioContext(2, Math.ceil(totalSeconds * sampleRate), sampleRate);
-  await prepareNoiseGateProcessor(offline);
+  await Promise.all([prepareNoiseGateProcessor(offline), preparePedalKernelProcessor(offline)]);
   const source = offline.createBufferSource();
   const input = offline.createGain();
   const scheduled: AudioScheduledSourceNode[] = [];

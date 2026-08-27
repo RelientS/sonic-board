@@ -15,6 +15,7 @@ test('every pedal control has a compact English silk-screen label', () => {
 });
 
 test('classic pedal controls use familiar abbreviations', () => {
+  assert.equal(getPedalControlLabel('studio-comp', 'sustain'), 'SENS');
   assert.equal(getPedalControlLabel('wall-fuzz', 'volume'), 'VOL');
   assert.equal(getPedalControlLabel('wall-fuzz', 'tone'), 'TONE');
   assert.equal(getPedalControlLabel('digital-delay', 'feedback'), 'FDBK');
