@@ -42,6 +42,7 @@ const pedalKernelReady = new WeakSet<BaseAudioContext>();
 const pedalKernelLoading = new WeakMap<BaseAudioContext, Promise<void>>();
 const pedalKernelModules = new WeakMap<BaseAudioContext, WebAssembly.Module>();
 let pedalKernelModulePromise: Promise<WebAssembly.Module> | null = null;
+const PEDALKERNEL_RUNTIME_VERSION = 2;
 
 const PEDALKERNEL_MODELS: Record<string, { modelId: number; controls: string[] }> = {
   'studio-comp': { modelId: 0, controls: ['sustain', 'level'] },
@@ -107,7 +108,7 @@ async function preparePedalKernelProcessor(context: BaseAudioContext) {
   if (!worklet || typeof AudioWorkletNode === 'undefined') return;
   let pending = pedalKernelLoading.get(context);
   if (!pending) {
-    pedalKernelModulePromise ??= fetch('/audio/pedalkernel.wasm')
+    pedalKernelModulePromise ??= fetch(`/audio/pedalkernel.wasm?v=${PEDALKERNEL_RUNTIME_VERSION}`)
       .then((response) => {
         if (!response.ok) throw new Error(`PedalKernel WASM ${response.status}`);
         return response.arrayBuffer();
@@ -115,7 +116,7 @@ async function preparePedalKernelProcessor(context: BaseAudioContext) {
       .then((bytes) => WebAssembly.compile(bytes));
     pending = Promise.all([
       pedalKernelModulePromise,
-      worklet.addModule('/audio/pedalkernel-processor.js'),
+      worklet.addModule(`/audio/pedalkernel-processor.js?v=${PEDALKERNEL_RUNTIME_VERSION}`),
     ]).then(([module]) => {
       pedalKernelModules.set(context, module);
       pedalKernelReady.add(context);
@@ -243,6 +244,7 @@ function makePedalKernelNode(
       outputChannelCount: [2],
       processorOptions: {
         wasmModule,
+        expectedRuntimeVersion: PEDALKERNEL_RUNTIME_VERSION,
         modelId: model.modelId,
         controls: model.controls.map((id) => parameter(values, id, 50) / 100),
       },

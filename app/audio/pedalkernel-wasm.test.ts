@@ -29,6 +29,14 @@ test('ships the PedalKernel circuit runtime as browser WebAssembly', async () =>
   }
 });
 
+test('publishes the PedalKernel runtime ABI used for cache compatibility', async () => {
+  const { instance } = await WebAssembly.instantiate(readFileSync(wasmUrl), {});
+  const exports = instance.exports as unknown as { runtime_version?: () => number };
+
+  assert.equal(typeof exports.runtime_version, 'function');
+  assert.equal(exports.runtime_version?.(), 2);
+});
+
 test('PedalKernel processes a block and responds to pedal controls', async () => {
   assert.ok(existsSync(wasmUrl), 'PedalKernel WASM artifact is missing');
   const { instance } = await WebAssembly.instantiate(readFileSync(wasmUrl), {});

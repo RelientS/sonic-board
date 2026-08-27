@@ -90,6 +90,11 @@ thread_local! {
 }
 
 #[no_mangle]
+pub extern "C" fn runtime_version() -> u32 {
+    2
+}
+
+#[no_mangle]
 pub extern "C" fn init_model(model_id: u32, sample_rate: u32) -> u32 {
     let index = model_id as usize;
     if index >= MODELS.len() || !(8_000..=192_000).contains(&sample_rate) {

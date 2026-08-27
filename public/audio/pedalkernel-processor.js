@@ -1,7 +1,13 @@
+export function isCompatiblePedalKernelRuntime(exports, expectedRuntimeVersion) {
+  return Number.isInteger(expectedRuntimeVersion)
+    && typeof exports?.runtime_version === 'function'
+    && exports.runtime_version() === expectedRuntimeVersion;
+}
+
 class SonicPedalKernelProcessor extends AudioWorkletProcessor {
   constructor(options) {
     super();
-    const { wasmModule, modelId, controls = [] } = options.processorOptions ?? {};
+    const { wasmModule, expectedRuntimeVersion, modelId, controls = [] } = options.processorOptions ?? {};
     this.engines = [];
     this.ready = wasmModule instanceof WebAssembly.Module;
     if (!this.ready) return;
@@ -10,6 +16,10 @@ class SonicPedalKernelProcessor extends AudioWorkletProcessor {
       for (let channel = 0; channel < 2; channel += 1) {
         const instance = new WebAssembly.Instance(wasmModule, {});
         const exports = instance.exports;
+        if (!isCompatiblePedalKernelRuntime(exports, expectedRuntimeVersion)) {
+          this.ready = false;
+          return;
+        }
         if (exports.init_model(modelId, sampleRate) !== 1 || exports.resize_buffer(128) !== 1) {
           this.ready = false;
           return;

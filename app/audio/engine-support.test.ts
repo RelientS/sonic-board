@@ -77,6 +77,26 @@ test('PedalKernel candidates run through a prepared AudioWorklet with legacy fal
   assert.match(workletSource, /destination\.set\(source\)/, 'unsafe WASM output should fail closed to passthrough');
 });
 
+test('PedalKernel cache upgrades reject an older WASM runtime instead of silencing the wet chain', async () => {
+  assert.match(engineSource, /PEDALKERNEL_RUNTIME_VERSION\s*=\s*2/);
+  assert.match(engineSource, /pedalkernel\.wasm\?v=/, 'the WASM URL must change when its ABI changes');
+  assert.match(engineSource, /pedalkernel-processor\.js\?v=/, 'the worklet URL must change with the runtime');
+
+  let registeredProcessor: unknown;
+  const globals = globalThis as unknown as Record<string, unknown>;
+  globals.AudioWorkletProcessor = class {};
+  globals.registerProcessor = (_name: string, processor: unknown) => { registeredProcessor = processor; };
+  globals.sampleRate = 44_100;
+  const worklet = await import(`${pedalKernelWorkletUrl.href}?cache-upgrade-test=${Date.now()}`);
+  const compatible = worklet.isCompatiblePedalKernelRuntime as ((exports: Record<string, unknown>, expected: number) => boolean) | undefined;
+
+  assert.equal(typeof compatible, 'function');
+  assert.equal(compatible?.({ runtime_version: () => 2 }, 2), true);
+  assert.equal(compatible?.({}, 2), false, 'the pre-versioned cached WASM must fail closed to passthrough');
+  assert.equal(compatible?.({ runtime_version: () => 1 }, 2), false);
+  assert.ok(registeredProcessor, 'the worklet should still register its processor');
+});
+
 test('the audio engine renders real guitar samples and keeps synthesis only as fallback', () => {
   assert.match(engineSource, /renderSampledSourceBuffer/);
   assert.match(engineSource, /catch[\s\S]*synthesizeSourceChannels/);
