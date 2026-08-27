@@ -13,6 +13,7 @@ test('agent prompt exposes the bounded catalog and requires strict JSON', () => 
   assert.match(input, /reverse-space/);
   assert.match(input, /gpt-5\.6-terra/);
   assert.match(input, /只输出 JSON/);
+  assert.match(input, /算法近似·非官方/);
   assert.doesNotMatch(input, /sk-/);
 });
 

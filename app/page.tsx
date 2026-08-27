@@ -858,6 +858,7 @@ export default function Home() {
           ) : (
             <div className="library-browser output-browser">
               <div className="library-title"><div><span className="eyebrow">输出模块</span><h1>箱头与箱体</h1></div><b>{AMP_SPECS.length + CAB_SPECS.length}</b></div>
+              <p className="model-disclosure">经典名称仅用于说明参考对象；当前均为非官方算法近似。</p>
               <button
                 type="button"
                 className={'amp-bypass' + (amp.bypassed ? ' active' : '')}
@@ -871,6 +872,7 @@ export default function Home() {
                     <i style={{ background: model.accent }} aria-hidden="true" /><span><strong>{model.name}</strong><small>{model.family}</small></span>
                   </button>
                 ))}</div>
+                <span className="model-method">{ampSpec.modeling}</span>
                 <p className="model-description">{ampSpec.description}</p>
                 <div className="output-knobs">{ampSpec.controls.map((control) => (
                   <KnobControl key={control.id} control={control} value={amp.ampValues[control.id] ?? control.defaultValue} disabled={amp.bypassed} tutorialEnabled={tutorialEnabled} ownerKind="amp" modelId={ampSpec.id} ownerName={ampSpec.name} onChange={(value) => updateAmpValue('ampValues', control.id, value)} onHelp={openControlHelp} />
@@ -883,6 +885,7 @@ export default function Home() {
                     <strong>{model.name}</strong><small>{model.format}</small>
                   </button>
                 ))}</div>
+                <span className="model-method">{cabSpec.modeling}</span>
                 <p className="model-description">{cabSpec.description}</p>
                 <div className="output-knobs cab-knobs">{cabSpec.controls.map((control) => (
                   <KnobControl key={control.id} control={control} value={amp.cabValues[control.id] ?? control.defaultValue} disabled={amp.bypassed} tutorialEnabled={tutorialEnabled} ownerKind="cab" modelId={cabSpec.id} ownerName={cabSpec.name} onChange={(value) => updateAmpValue('cabValues', control.id, value)} onHelp={openControlHelp} />

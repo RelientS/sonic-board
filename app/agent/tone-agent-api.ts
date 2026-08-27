@@ -42,10 +42,11 @@ export function buildToneAgentInput(request: string) {
       id: effect.id,
       name: effect.name,
       category: effect.category,
+      modeling: '算法近似·非官方',
       controls: effect.controls.map((control) => control.id),
     })),
-    amps: AMP_SPECS.map((amp) => ({ id: amp.id, name: amp.name, controls: amp.controls.map((control) => control.id) })),
-    cabinets: CAB_SPECS.map((cab) => ({ id: cab.id, name: cab.name, controls: cab.controls.map((control) => control.id) })),
+    amps: AMP_SPECS.map((amp) => ({ id: amp.id, name: amp.name, modeling: amp.modeling, controls: amp.controls.map((control) => control.id) })),
+    cabinets: CAB_SPECS.map((cab) => ({ id: cab.id, name: cab.name, modeling: cab.modeling, controls: cab.controls.map((control) => control.id) })),
     sources: {
       guitars: GUITAR_VOICES.map((entry) => entry.id),
       performances: PERFORMANCE_SPECS.map((entry) => entry.id),

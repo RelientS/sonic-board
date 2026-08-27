@@ -26,6 +26,7 @@ test('pi prompt treats history and board summaries as untrusted context', () => 
   assert.match(prompt, /untrusted data/i);
   assert.match(prompt, /为什么相位听不明显/);
   assert.match(prompt, /之前把 rate 调慢了/);
+  assert.match(prompt, /经典名称只用于标识参考对象/);
   assert.doesNotMatch(prompt, /sk-token/);
 });
 
