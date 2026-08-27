@@ -25,7 +25,11 @@ test('the high-fidelity analog tier is backed by PedalKernel models', () => {
   }).PEDALKERNEL_EFFECT_IDS;
 
   assert.ok(ids instanceof Set, 'audio engine should expose its PedalKernel-backed effects');
-  assert.deepEqual([...ids].sort(), ['rodent-dist', 'studio-comp']);
+  assert.deepEqual([...ids].sort(), [
+    'analog-chorus', 'analog-delay', 'blue-drive', 'dm2-delay', 'fuzz-face',
+    'klon-centaur', 'ocd-drive', 'phase90', 'rodent-dist', 'sd1-drive',
+    'studio-comp', 'tube-screamer', 'wall-fuzz',
+  ]);
 });
 
 test('PedalKernel candidates disclose their evidence instead of claiming an unmeasured score', () => {
@@ -42,22 +46,20 @@ test('PedalKernel candidates disclose their evidence instead of claiming an unme
   }).EFFECT_FIDELITY_PROFILES;
 
   assert.ok(profiles, 'audio engine should publish fidelity evidence');
-  for (const id of ['studio-comp', 'blue-drive', 'rodent-dist', 'wall-fuzz']) {
+  const ids = [
+    'studio-comp', 'blue-drive', 'rodent-dist', 'wall-fuzz', 'dm2-delay',
+    'analog-delay', 'fuzz-face', 'analog-chorus', 'ocd-drive', 'klon-centaur',
+    'sd1-drive', 'tube-screamer', 'phase90',
+  ];
+  for (const id of ids) {
     assert.equal(profiles[id].targetScore, 8);
     assert.equal(profiles[id].verifiedScore, null);
     assert.ok(profiles[id].evidence.includes('upstream-circuit'));
-  }
-  for (const id of ['studio-comp', 'rodent-dist']) {
-    assert.equal(profiles[id].engine, 'PedalKernel WDF');
+    assert.equal(profiles[id].engine, 'PedalKernel WDF + calibrated corrections');
     assert.equal(profiles[id].runtime, 'pedalkernel');
     assert.equal(profiles[id].status, 'candidate');
     assert.ok(profiles[id].evidence.includes('runtime-regression'));
-  }
-  for (const id of ['blue-drive', 'wall-fuzz']) {
-    assert.equal(profiles[id].engine, 'Legacy Web Audio fallback');
-    assert.equal(profiles[id].runtime, 'legacy-fallback');
-    assert.equal(profiles[id].status, 'blocked');
-    assert.match(profiles[id].note, /持续输出/);
+    assert.match(profiles[id].note, /持续输出|输出校准/);
   }
 });
 
@@ -71,7 +73,6 @@ test('PedalKernel candidates run through a prepared AudioWorklet with legacy fal
   assert.match(engineSource, /PEDALKERNEL_EFFECT_IDS\.has\(specId\)/);
   assert.match(engineSource, /function makePedalKernelNode/);
   assert.match(engineSource, /catch \{[\s\S]*return null;[\s\S]*\}/, 'worklet construction failure should fall back instead of stopping playback');
-  assert.match(engineSource, /if \(specId === 'blue-drive' \|\| specId === 'rodent-dist'\)/, 'legacy Web Audio fallback should remain');
   assert.match(workletSource, /Number\.isFinite/);
   assert.match(workletSource, /destination\.set\(source\)/, 'unsafe WASM output should fail closed to passthrough');
 });

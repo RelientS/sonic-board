@@ -232,11 +232,11 @@ export function estimateTailSeconds(
     if (bypassed.has(item.instanceId)) return;
     const pedalValues = values[item.instanceId] ?? {};
 
-    if (item.specId === 'tape-echo' || item.specId === 'analog-delay' || item.specId === 'digital-delay') {
+    if (item.specId === 'tape-echo' || item.specId === 'analog-delay' || item.specId === 'dm2-delay' || item.specId === 'digital-delay') {
       const timeValue = clampParameter(pedalValues.time ?? 45) / 100;
-      const ranges = item.specId === 'analog-delay' ? [0.04, 0.8] : item.specId === 'digital-delay' ? [0.04, 2] : [0.06, 1.2];
+      const ranges = item.specId === 'analog-delay' ? [0.04, 0.8] : item.specId === 'dm2-delay' ? [0.03, 0.33] : item.specId === 'digital-delay' ? [0.04, 2] : [0.06, 1.2];
       const delay = ranges[0] * (ranges[1] / ranges[0]) ** timeValue;
-      const feedbackValue = item.specId === 'tape-echo' ? pedalValues.repeats : pedalValues.feedback;
+      const feedbackValue = item.specId === 'tape-echo' || item.specId === 'dm2-delay' ? pedalValues.repeats : pedalValues.feedback;
       const feedback = Math.min(item.specId === 'digital-delay' ? 0.86 : 0.78, clampParameter(feedbackValue ?? 30) / 112);
       const repeatsUntilQuiet = feedback > 0.01 ? Math.log(0.01) / Math.log(feedback) : 1;
       tail = Math.max(tail, Math.min(10, delay * repeatsUntilQuiet));

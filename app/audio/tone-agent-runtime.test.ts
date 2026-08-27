@@ -94,7 +94,7 @@ test('agent can replace the whole board with a validated catalog recipe', () => 
       amp: makeAmpCabConfig('brit-20', 'closed-4x12', { gain: 28, mid: 64 }),
       chain: [
         { specId: 'reverse-space', settings: { mix: 48, decay: 56 } },
-        { specId: 'wall-fuzz', settings: { sustain: 74, mids: 64 } },
+        { specId: 'wall-fuzz', settings: { sustain: 74, tone: 48 } },
         { specId: 'graphic-eq', settings: { '800': 61, '1600': 60 } },
       ],
     },
@@ -104,5 +104,5 @@ test('agent can replace the whole board with a validated catalog recipe', () => 
   assert.equal(result.changed, 1);
   assert.equal(result.board.name, '反向教学墙');
   assert.deepEqual(result.board.chain.map((item) => item.specId), ['reverse-space', 'wall-fuzz', 'graphic-eq']);
-  assert.equal(result.board.values[result.board.chain[1].instanceId].mids, 64);
+  assert.equal(result.board.values[result.board.chain[1].instanceId].tone, 48);
 });

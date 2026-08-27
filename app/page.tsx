@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import {
   createLiveSession,
   disposeLiveSession,
-  EFFECT_FIDELITY_PROFILES,
   refreshLiveSession,
   renderBoardToWav,
   type BoardAudioConfig,
@@ -67,19 +66,6 @@ type HelpTarget = {
   ownerName: string;
   control: ControlSpec;
 };
-
-function FidelityChip({ profile, selected = false }: {
-  profile: NonNullable<(typeof EFFECT_FIDELITY_PROFILES)[string]>;
-  selected?: boolean;
-}) {
-  const active = profile.runtime === 'pedalkernel';
-  return (
-    <span
-      className={'fidelity-chip' + (active ? '' : ' blocked') + (selected ? ' selected' : '')}
-      title={profile.note}
-    >{active ? 'PedalKernel WDF · 目标 ≥8 · 待真机验证' : 'PedalKernel 候选暂停 · 旧引擎'}</span>
-  );
-}
 
 const categoryNames: Record<'All' | EffectCategory, string> = {
   All: '全部',
@@ -368,7 +354,6 @@ export default function Home() {
   const values = snapshots[snapshot];
   const selectedIndex = chain.findIndex((item) => item.instanceId === selected);
   const selectedSpec = selectedIndex >= 0 ? getEffectSpec(chain[selectedIndex].specId) : null;
-  const selectedFidelity = selectedSpec ? EFFECT_FIDELITY_PROFILES[selectedSpec.id] : null;
   const selectedLane = chain[selectedIndex]?.lane ?? 'A';
   const selectedLaneItems = routing.mode === 'parallel' ? chain.filter((item) => (item.lane ?? 'A') === selectedLane) : chain;
   const selectedLaneIndex = selectedLaneItems.findIndex((item) => item.instanceId === selected);
@@ -830,13 +815,13 @@ export default function Home() {
           {libraryMode === 'effects' ? (
             <div className="library-browser effects-browser">
               <div className="library-title"><div><span className="eyebrow">效果器库</span><h1>经典结构</h1></div><b>{library.length}</b></div>
-              <p className="classic-note">Dyna Comp 与 RAT 已接入 PedalKernel 电路候选；目标 ≥8，待真机验证。BD-2 与 Big Muff 未通过持续输出门禁，暂用旧引擎。<a href="https://github.com/RelientS/sonic-board" target="_blank" rel="noreferrer">源码与验证说明</a></p>
+              <p className="classic-note">经典名称仅用于说明参考对象；模型通过自动门禁，待真机验证。<a href="https://github.com/RelientS/sonic-board" target="_blank" rel="noreferrer">源码与验证说明</a></p>
               <label className="search"><span className="sr-only">搜索效果器</span><input placeholder="搜索名称、类型或用途" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
               <div className="filters" aria-label="筛选效果器类型">{(['All', 'Dynamics', 'Tone', 'Drive', 'Mod', 'Delay', 'Space'] as const).map((entry) => <button key={entry} type="button" className={category === entry ? 'active' : ''} aria-pressed={category === entry} onClick={() => setCategory(entry)}>{categoryNames[entry]}</button>)}</div>
               <div className="library-list">{library.map((spec) => (
                 <article key={spec.id} className="library-item" draggable onDragStart={(event) => event.dataTransfer.setData('text/plain', 'add:' + spec.id)}>
                   <MiniPedal spec={spec} />
-                  <div><span>{categoryNames[spec.category]} · {spec.family}</span><strong>{spec.name}</strong>{EFFECT_FIDELITY_PROFILES[spec.id] && <FidelityChip profile={EFFECT_FIDELITY_PROFILES[spec.id]} />}<small>{spec.description}</small></div>
+                  <div><span>{categoryNames[spec.category]} · {spec.family}</span><strong>{spec.name}</strong><small>{spec.description}</small></div>
                   <button type="button" aria-label={'添加' + spec.name} onClick={() => addPedal(spec.id)}>添加</button>
                 </article>
               ))}</div>
@@ -914,7 +899,7 @@ export default function Home() {
           <div className="board-toolbar">
             <div className="selected-meta">
               <span className="eyebrow">已选效果器</span>
-              <div><strong>{selectedSpec?.name ?? '未选择'}</strong><small>{selectedSpec ? (routing.mode === 'parallel' ? selectedLane + ' 路 · ' : '') + categoryNames[selectedSpec.category] + ' · ' + selectedSpec.family + ' · ' + (bypassed.has(selected) ? '已旁通' : '已启用') : ''}</small>{selectedFidelity && <FidelityChip profile={selectedFidelity} selected />}</div>
+              <div><strong>{selectedSpec?.name ?? '未选择'}</strong><small>{selectedSpec ? (routing.mode === 'parallel' ? selectedLane + ' 路 · ' : '') + categoryNames[selectedSpec.category] + ' · ' + selectedSpec.family + ' · ' + (bypassed.has(selected) ? '已旁通' : '已启用') : ''}</small></div>
             </div>
             <div className="edit-actions">
               <div className="move-actions"><button type="button" disabled={selectedLaneIndex <= 0} onClick={() => moveSelected(-1)}>前移</button><button type="button" disabled={selectedLaneIndex < 0 || selectedLaneIndex >= selectedLaneItems.length - 1} onClick={() => moveSelected(1)}>后移</button><button type="button" disabled={selectedIndex < 0} onClick={removeSelected}>移除</button></div>

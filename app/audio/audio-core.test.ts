@@ -117,15 +117,18 @@ test('estimateTailSeconds follows active delay and reverb settings', () => {
 test('estimateTailSeconds covers every delay and space family in the expanded catalog', () => {
   const chain = [
     { instanceId: 'analog-1', specId: 'analog-delay' },
+    { instanceId: 'dm2-1', specId: 'dm2-delay' },
     { instanceId: 'digital-1', specId: 'digital-delay' },
     { instanceId: 'gate-1', specId: 'gated-room' },
   ];
   const values = {
     'analog-1': { time: 80, feedback: 70 },
+    'dm2-1': { time: 72, repeats: 68 },
     'digital-1': { time: 76, feedback: 78 },
     'gate-1': { decay: 70, hold: 60, release: 55 },
   };
 
   assert.ok(estimateTailSeconds(chain, values, new Set()) >= 5);
   assert.ok(estimateTailSeconds(chain, values, new Set(['digital-1'])) >= 2);
+  assert.ok(estimateTailSeconds(chain, values, new Set(['analog-1', 'digital-1', 'gate-1'])) >= 0.5);
 });

@@ -14,7 +14,8 @@ test('agent prompt exposes the bounded catalog and requires strict JSON', () => 
   assert.match(input, /gpt-5\.6-terra/);
   assert.match(input, /只输出 JSON/);
   assert.match(input, /PedalKernel WDF/);
-  assert.match(input, /legacy-fallback/);
+  assert.match(input, /phase90/);
+  assert.doesNotMatch(input, /legacy-fallback/);
   assert.match(input, /verifiedScore[^}]*null/);
   assert.doesNotMatch(input, /sk-/);
 });
@@ -41,7 +42,7 @@ test('remote plans are accepted only when every model and control is valid', () 
     output: 64,
     chain: [
       { specId: 'reverse-space', lane: 'A', settings: { mix: 52, decay: 54 } },
-      { specId: 'wall-fuzz', lane: 'B', settings: { sustain: 77, mids: 65 } },
+      { specId: 'wall-fuzz', lane: 'B', settings: { sustain: 77, tone: 48 } },
       { specId: 'graphic-eq', lane: 'B', settings: { '800': 62 } },
     ],
   });

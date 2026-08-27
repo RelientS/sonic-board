@@ -105,8 +105,33 @@ export const EFFECT_SPECS: EffectSpec[] = [
   },
   {
     id: 'wall-fuzz', name: 'Electro-Harmonix Big Muff Pi', maker: 'ELECTRO-HARMONIX', category: 'Drive', family: 'Big Muff 风格持续法兹', wide: true,
-    description: '厚重延音与中频凹陷；加上中频和门限，方便在完整链路里落位。', finish: '#d5d0c1', ink: '#20201e', accent: '#ed4f34',
-    controls: [level('volume', '音量', 58), tone(43), c('sustain', '延音', 67), c('mids', '中频', 54, -12, 12, 'dB', 1), c('attack', '起音', 22), c('gate', '门限', 8)],
+    description: '四级晶体管与被动音色网络带来厚重延音和经典中频凹陷。', finish: '#d5d0c1', ink: '#20201e', accent: '#ed4f34',
+    controls: [level('volume', '音量', 58), tone(43), c('sustain', '延音', 67)],
+  },
+  {
+    id: 'fuzz-face', name: 'Dallas-Arbiter Fuzz Face', maker: 'DALLAS-ARBITER', category: 'Drive', family: 'Fuzz Face 锗管法兹',
+    description: '两级晶体管反馈法兹，能随输入动态从粗粝清理到饱和。', finish: '#bb2f30', ink: '#f8efe2', accent: '#d6b24d',
+    controls: [c('fuzz', '法兹', 70), level('volume', '音量', 60)],
+  },
+  {
+    id: 'ocd-drive', name: 'Fulltone OCD', maker: 'FULLTONE', category: 'Drive', family: 'OCD MOSFET 过载',
+    description: 'MOSFET 硬削波配宽频动态，适合从轻推到颗粒失真。', finish: '#e8e5db', ink: '#202124', accent: '#d13b32',
+    controls: [c('drive', '驱动', 50), tone(50), level('volume', '音量', 62)],
+  },
+  {
+    id: 'klon-centaur', name: 'Klon Centaur', maker: 'KLON', category: 'Drive', family: 'Centaur 双路混合过载',
+    description: '清音与锗二极管削波并行混合，适合保留起音的前级推动。', finish: '#b79b62', ink: '#241d12', accent: '#7c3328',
+    controls: [c('gain', '增益', 45), c('treble', '高频', 50), level('output', '输出', 62)],
+  },
+  {
+    id: 'sd1-drive', name: 'Boss SD-1 Super OverDrive', maker: 'BOSS', category: 'Drive', family: 'SD-1 非对称软削波',
+    description: '非对称二极管软削波和中频聚焦，适合推动后级失真。', finish: '#e7c928', ink: '#27220b', accent: '#d24231',
+    controls: [c('drive', '驱动', 50), tone(50), level('level', '电平', 62)],
+  },
+  {
+    id: 'tube-screamer', name: 'Ibanez TS808 Tube Screamer', maker: 'IBANEZ', category: 'Drive', family: 'TS808 对称软削波',
+    description: '对称反馈削波和经典中频隆起，让失真链更集中。', finish: '#4d9664', ink: '#f2f2dc', accent: '#d24b34',
+    controls: [c('drive', '驱动', 50), tone(50), level('level', '电平', 62)],
   },
   {
     id: 'chainsaw-dist', name: 'Boss HM-2 Heavy Metal', maker: 'BOSS', category: 'Drive', family: 'HM-2 风格双频段高增益',
@@ -120,8 +145,13 @@ export const EFFECT_SPECS: EffectSpec[] = [
   },
   {
     id: 'analog-chorus', name: 'Boss CE-2 Chorus', maker: 'BOSS', category: 'Mod', family: 'CE-2 风格 BBD 合唱',
-    description: '经典双旋钮合唱扩展了混合和高切，适合清音与法兹后。', finish: '#66a7b8', ink: '#10282e', accent: '#e14f3c',
-    controls: [rate(30), c('depth', '深度', 48), mix(42), tone(55)],
+    description: '经典双旋钮 BBD 合唱，用速率和深度控制宽阔的周期漂移。', finish: '#66a7b8', ink: '#10282e', accent: '#e14f3c',
+    controls: [rate(30), c('depth', '深度', 48)],
+  },
+  {
+    id: 'phase90', name: 'MXR Phase 90', maker: 'MXR', category: 'Mod', family: 'Phase 90 四级相位',
+    description: '单旋钮控制四级相移网络的扫动速度，适合缓慢流动的音墙。', finish: '#e46e27', ink: '#24150e', accent: '#f1d24f',
+    controls: [c('speed', '速度', 18, 0.05, 10, 'Hz', 2, 'exponential')],
   },
   {
     id: 'jet-flanger', name: 'Electro-Harmonix Electric Mistress', maker: 'ELECTRO-HARMONIX', category: 'Mod', family: 'Electric Mistress 风格镶边',
@@ -146,7 +176,12 @@ export const EFFECT_SPECS: EffectSpec[] = [
   {
     id: 'analog-delay', name: 'Electro-Harmonix Deluxe Memory Man', maker: 'ELECTRO-HARMONIX', category: 'Delay', family: 'Memory Man 风格 BBD 延迟',
     description: '高频逐次衰减的短到中时值延迟，容易融进乐句。', finish: '#a84236', ink: '#f6e8d4', accent: '#eeb84e', wide: true,
-    controls: [c('time', '时间', 44, 40, 800, 'ms', 0, 'exponential'), c('feedback', '反馈', 32, 0, 88), mix(30), tone(34), c('mod', '漂移', 14)],
+    controls: [c('time', '时间', 44, 40, 800, 'ms', 0, 'exponential'), c('feedback', '反馈', 32, 0, 88), mix(30)],
+  },
+  {
+    id: 'dm2-delay', name: 'Boss DM-2 Delay', maker: 'BOSS', category: 'Delay', family: 'DM-2 BBD 延迟',
+    description: '短时值模拟回声，重复会逐次变暗，适合 slapback 与节奏纹理。', finish: '#b84137', ink: '#f8efe7', accent: '#e9c44c',
+    controls: [c('time', '时间', 40, 30, 330, 'ms', 0, 'exponential'), c('repeats', '重复', 35, 0, 88), mix(40)],
   },
   {
     id: 'tape-echo', name: 'Roland RE-201 Space Echo', maker: 'ROLAND', category: 'Delay', family: 'RE-201 风格磁带多次回声',
@@ -184,7 +219,7 @@ export const FACTORY_PRESETS: FactoryPreset[] = [
       { specId: 'studio-comp', settings: { sustain: 38 } },
       { specId: 'soft-detune', settings: { cents: 34, blend: 22, spread: 62 } },
       { specId: 'reverse-space', settings: { mix: 46, decay: 52, preDelay: 18, lowCut: 24, highCut: 58, density: 82 } },
-      { specId: 'wall-fuzz', settings: { sustain: 76, tone: 48, mids: 63, gate: 10 } },
+      { specId: 'wall-fuzz', settings: { sustain: 76, tone: 48, volume: 58 } },
       { specId: 'graphic-eq', settings: { '100': 44, '200': 48, '400': 58, '800': 62, '1600': 59, '3200': 53, '6400': 45 } },
     ],
   },
@@ -194,7 +229,7 @@ export const FACTORY_PRESETS: FactoryPreset[] = [
     amp: makeAmpCabConfig('glass-120', 'open-2x12', { gain: 14, treble: 61, presence: 58 }),
     chain: [
       { specId: 'studio-comp', settings: { sustain: 52 } },
-      { specId: 'analog-chorus', settings: { rate: 24, depth: 38, mix: 38 } },
+      { specId: 'analog-chorus', settings: { rate: 24, depth: 38 } },
       { specId: 'tape-echo', settings: { time: 42, repeats: 28, mix: 24, wow: 18 } },
       { specId: 'cloud-hall', settings: { mix: 42, decay: 58, motion: 26 } },
     ],
@@ -207,7 +242,7 @@ export const FACTORY_PRESETS: FactoryPreset[] = [
       { specId: 'tape-vibrato', settings: { rate: 16, depth: 34, rise: 18 } },
       { specId: 'blue-drive', settings: { gain: 42, tone: 57, level: 62 } },
       { specId: 'reverse-space', settings: { mix: 40, decay: 47, density: 78 } },
-      { specId: 'wall-fuzz', settings: { sustain: 82, tone: 53, mids: 58 } },
+      { specId: 'wall-fuzz', settings: { sustain: 82, tone: 53, volume: 58 } },
       { specId: 'digital-delay', settings: { time: 34, feedback: 24, mix: 19, width: 72 } },
     ],
   },
@@ -230,7 +265,7 @@ export const FACTORY_PRESETS: FactoryPreset[] = [
     chain: [
       { specId: 'slow-phase', settings: { rate: 10, depth: 34, res: 16, mix: 36 } },
       { specId: 'soft-detune', settings: { cents: 28, blend: 24, spread: 76 } },
-      { specId: 'analog-delay', settings: { time: 54, feedback: 32, mix: 26, mod: 12 } },
+      { specId: 'analog-delay', settings: { time: 54, feedback: 32, mix: 26 } },
       { specId: 'cloud-hall', settings: { mix: 36, decay: 54, motion: 38 } },
     ],
   },
@@ -262,10 +297,10 @@ export const FACTORY_PRESETS: FactoryPreset[] = [
     amp: makeAmpCabConfig('glass-120', 'open-2x12', { gain: 17, mid: 55, treble: 59, presence: 57 }, { distance: 22, room: 15 }),
     chain: [
       { specId: 'studio-comp', lane: 'A', settings: { sustain: 40 } },
-      { specId: 'analog-chorus', lane: 'A', settings: { rate: 21, depth: 43, mix: 38 } },
+      { specId: 'analog-chorus', lane: 'A', settings: { rate: 21, depth: 43 } },
       { specId: 'digital-delay', lane: 'A', settings: { time: 36, feedback: 28, mix: 25, width: 76 } },
       { specId: 'reverse-space', lane: 'B', settings: { mix: 54, decay: 52, density: 80, highCut: 55 } },
-      { specId: 'wall-fuzz', lane: 'B', settings: { sustain: 72, tone: 46, mids: 62, gate: 9 } },
+      { specId: 'wall-fuzz', lane: 'B', settings: { sustain: 72, tone: 46, volume: 57 } },
       { specId: 'cloud-hall', lane: 'B', settings: { mix: 30, decay: 48, motion: 36 } },
     ],
   },
@@ -275,7 +310,7 @@ export const FACTORY_PRESETS: FactoryPreset[] = [
     amp: makeAmpCabConfig('brit-20', 'closed-4x12', { gain: 24, bass: 50, mid: 66, presence: 48 }, { position: 56, distance: 14, room: 6 }),
     chain: [
       { specId: 'blue-drive', lane: 'A', settings: { gain: 36, tone: 54, level: 60 } },
-      { specId: 'wall-fuzz', lane: 'A', settings: { sustain: 76, tone: 49, mids: 63, gate: 12 } },
+      { specId: 'wall-fuzz', lane: 'A', settings: { sustain: 76, tone: 49, volume: 57 } },
       { specId: 'graphic-eq', lane: 'A', settings: { '400': 56, '800': 62, '1600': 58 } },
       { specId: 'rodent-dist', lane: 'B', settings: { distortion: 58, filter: 53, volume: 56 } },
       { specId: 'chainsaw-dist', lane: 'B', settings: { low: 69, high: 72, distortion: 66 } },
@@ -313,7 +348,7 @@ export function validateCatalog(catalog: EffectSpec[]) {
   catalog.forEach((effect) => {
     if (effectIds.has(effect.id)) errors.push(`duplicate effect: ${effect.id}`);
     effectIds.add(effect.id);
-    if (effect.controls.length < 2) errors.push(`too few controls: ${effect.id}`);
+    if (effect.controls.length < 1) errors.push(`too few controls: ${effect.id}`);
     const controlIds = new Set<string>();
     effect.controls.forEach((control) => {
       if (controlIds.has(control.id)) errors.push(`duplicate control: ${effect.id}.${control.id}`);

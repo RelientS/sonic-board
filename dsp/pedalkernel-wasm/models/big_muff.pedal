@@ -107,7 +107,7 @@ pedal "MUFF" {
     C4.b -> Q3.base
     vcc -> R9.a
     R9.b -> Sustain.a
-    Sustain.b -> Q3.collector
+    Sustain.w -> Q3.collector
     Q3.collector -> R8.a, D2.a, C6.a
     R8.b -> Q3.base
     D2.b -> gnd

@@ -22,14 +22,17 @@ import { computeLaneMix, partitionChain } from './routing.ts';
 export const SUPPORTED_EFFECT_IDS = new Set([
   'studio-comp', 'noise-gate', 'graphic-eq',
   'blue-drive', 'rodent-dist', 'wall-fuzz', 'chainsaw-dist',
-  'slow-phase', 'analog-chorus', 'jet-flanger', 'tape-vibrato', 'bias-tremolo', 'soft-detune',
-  'analog-delay', 'tape-echo', 'digital-delay',
+  'fuzz-face', 'ocd-drive', 'klon-centaur', 'sd1-drive', 'tube-screamer',
+  'slow-phase', 'phase90', 'analog-chorus', 'jet-flanger', 'tape-vibrato', 'bias-tremolo', 'soft-detune',
+  'analog-delay', 'dm2-delay', 'tape-echo', 'digital-delay',
   'reverse-space', 'gated-room', 'cloud-hall',
 ]);
 export const SUPPORTED_AMP_IDS = new Set(AMP_SPECS.map((amp) => amp.id));
 export const SUPPORTED_CAB_IDS = new Set(CAB_SPECS.map((cab) => cab.id));
 export const PEDALKERNEL_EFFECT_IDS: ReadonlySet<string> = new Set([
-  'studio-comp', 'rodent-dist',
+  'studio-comp', 'blue-drive', 'rodent-dist', 'wall-fuzz', 'dm2-delay',
+  'analog-delay', 'fuzz-face', 'analog-chorus', 'ocd-drive', 'klon-centaur',
+  'sd1-drive', 'tube-screamer', 'phase90',
 ]);
 export { EFFECT_FIDELITY_PROFILES, type EffectFidelityProfile };
 
@@ -45,6 +48,15 @@ const PEDALKERNEL_MODELS: Record<string, { modelId: number; controls: string[] }
   'blue-drive': { modelId: 1, controls: ['gain', 'tone', 'level'] },
   'rodent-dist': { modelId: 2, controls: ['distortion', 'filter', 'volume'] },
   'wall-fuzz': { modelId: 3, controls: ['sustain', 'tone', 'volume'] },
+  'dm2-delay': { modelId: 4, controls: ['time', 'repeats', 'mix'] },
+  'analog-delay': { modelId: 5, controls: ['time', 'feedback', 'mix'] },
+  'fuzz-face': { modelId: 6, controls: ['fuzz', 'volume'] },
+  'analog-chorus': { modelId: 7, controls: ['rate', 'depth'] },
+  'ocd-drive': { modelId: 8, controls: ['drive', 'tone', 'volume'] },
+  'klon-centaur': { modelId: 9, controls: ['gain', 'treble', 'output'] },
+  'sd1-drive': { modelId: 10, controls: ['drive', 'tone', 'level'] },
+  'tube-screamer': { modelId: 11, controls: ['drive', 'tone', 'level'] },
+  'phase90': { modelId: 12, controls: ['speed'] },
 };
 
 export function activateMobileAudio(

@@ -1,0 +1,206 @@
+# PK:
+# MXR Phase 90 — The phaser. Smooth 4-stage sweep from shimmer to swoosh.
+# Type: phaser
+#
+# MXR Phase 90 Script Logo (1974)
+# 4-stage JFET all-pass phaser with feedback
+#
+# Based on the AURORA implementation (non-trademarked name for Phase 90 Script Logo).
+# Proper active all-pass topology: JFET drain → op-amp inverting input with
+# feedback resistor, not the simplified shunt-to-ground version.
+
+pedal "AURORA" {
+  supply 9V
+
+  components {
+    # === BIASING ===
+    R_bias1: resistor(4.7k)
+    R_bias2: resistor(4.7k)
+
+    # === INPUT ===
+    C_in: cap(10n)
+    R1: resistor(10k)         # Input to inverting summing point
+    R2: resistor(10k)         # Feedback resistor (input stage gain = -1)
+
+    # === OP-AMPS ===
+    U1: opamp(lm741)          # Input / summing stage
+    U2: opamp(lm741)          # All-pass stage 1
+    U3: opamp(lm741)          # All-pass stage 2
+    U4: opamp(lm741)          # All-pass stage 3
+    U5: opamp(lm741)          # All-pass stage 4
+    U6: opamp(lm741)          # Output mixer
+
+    # === ALL-PASS FILTER RESISTORS ===
+    R_ap1: resistor(22k)
+    R_ap2: resistor(22k)
+    R_ap3: resistor(22k)
+    R_ap4: resistor(22k)
+
+    # === ALL-PASS FEEDBACK RESISTORS ===
+    R3: resistor(10k)
+    R4: resistor(10k)
+    R5: resistor(10k)
+    R6: resistor(10k)
+
+    # === ALL-PASS CAPS ===
+    C_ap1: cap(47n)
+    C_ap2: cap(47n)
+    C_ap3: cap(47n)
+    C_ap4: cap(47n)
+
+    # === JFETs (variable resistance in all-pass stages) ===
+    J1: njfet(2sk30a)
+    J2: njfet(2sk30a)
+    J3: njfet(2sk30a)
+    J4: njfet(2sk30a)
+
+    # === JFET GATE BIAS ===
+    R_jbias1: resistor(150k)
+    R_jbias2: resistor(150k)
+    R_jbias3: resistor(150k)
+    R_jbias4: resistor(150k)
+    R_jbias5: resistor(150k)
+    R_jbias6: resistor(150k)
+    R_jbias7: resistor(150k)
+    R_jbias8: resistor(150k)
+
+    # === LFO (replaces discrete PNP oscillator) ===
+    LFO1: lfo(triangle, 3.9M, 47n)   # ~0.9 Hz base rate
+    Speed: pot(1M)
+
+    # === FEEDBACK PATH ===
+    R_fb1: resistor(470k)
+    R_fb2: resistor(470k)
+
+    # === OUTPUT MIXER ===
+    R7: resistor(10k)         # Dry to mixer
+    R8: resistor(10k)         # Wet to mixer
+    R9: resistor(10k)         # Mixer feedback
+    R10: resistor(10k)        # Output series resistor
+
+    # === OUTPUT ===
+    C_out: cap(10n)
+
+    # === POWER SUPPLY FILTERING ===
+    C_pwr1: cap(10u, electrolytic)
+    C_pwr2: cap(15u, electrolytic)
+
+    # === ZENER ===
+    D_zener: zener(5.1)
+  }
+
+  nets {
+    # Power supply filtering
+    vcc -> C_pwr1.a
+    C_pwr1.b -> gnd
+    vcc -> C_pwr2.a
+    C_pwr2.b -> gnd
+    vcc -> D_zener.a
+    D_zener.b -> gnd
+
+    # Virtual ground (Vcc/2 bias)
+    vcc -> R_bias1.a
+    R_bias1.b -> R_bias2.a
+    R_bias2.b -> gnd
+
+    # === INPUT STAGE (U1: inverting summer) ===
+    in -> C_in.a
+    C_in.b -> R1.a
+    R1.b -> U1.neg
+    R2.a -> U1.neg
+    R2.b -> U1.out
+    U1.pos -> R_bias1.b
+
+    # === ALL-PASS STAGE 1 ===
+    U1.out -> R_ap1.a
+    R_ap1.b -> J1.source
+    J1.drain -> U2.neg
+    C_ap1.a -> U2.neg
+    C_ap1.b -> U2.out
+    R3.a -> U2.neg
+    R3.b -> U2.out
+    U2.pos -> R_bias1.b
+
+    # J1 gate bias (resistor divider from vcc to gnd)
+    R_jbias1.a -> vcc
+    R_jbias1.b -> J1.gate
+    R_jbias2.a -> J1.gate
+    R_jbias2.b -> gnd
+
+    # === ALL-PASS STAGE 2 ===
+    U2.out -> R_ap2.a
+    R_ap2.b -> J2.source
+    J2.drain -> U3.neg
+    C_ap2.a -> U3.neg
+    C_ap2.b -> U3.out
+    R4.a -> U3.neg
+    R4.b -> U3.out
+    U3.pos -> R_bias1.b
+
+    R_jbias3.a -> vcc
+    R_jbias3.b -> J2.gate
+    R_jbias4.a -> J2.gate
+    R_jbias4.b -> gnd
+
+    # === ALL-PASS STAGE 3 ===
+    U3.out -> R_ap3.a
+    R_ap3.b -> J3.source
+    J3.drain -> U4.neg
+    C_ap3.a -> U4.neg
+    C_ap3.b -> U4.out
+    R5.a -> U4.neg
+    R5.b -> U4.out
+    U4.pos -> R_bias1.b
+
+    R_jbias5.a -> vcc
+    R_jbias5.b -> J3.gate
+    R_jbias6.a -> J3.gate
+    R_jbias6.b -> gnd
+
+    # === ALL-PASS STAGE 4 ===
+    U4.out -> R_ap4.a
+    R_ap4.b -> J4.source
+    J4.drain -> U5.neg
+    C_ap4.a -> U5.neg
+    C_ap4.b -> U5.out
+    R6.a -> U5.neg
+    R6.b -> U5.out
+    U5.pos -> R_bias1.b
+
+    R_jbias7.a -> vcc
+    R_jbias7.b -> J4.gate
+    R_jbias8.a -> J4.gate
+    R_jbias8.b -> gnd
+
+    # === LFO → JFET GATES ===
+    # LFO modulates all 4 JFET gates simultaneously
+    # The triangle wave shifts the gate bias, changing Rds(on)
+    LFO1.out -> J1.vgs, J2.vgs, J3.vgs, J4.vgs
+
+    # Speed pot controls LFO rate
+    Speed.wiper -> LFO1.rate
+
+    # === FEEDBACK (phased output back to input) ===
+    U5.out -> R_fb1.a
+    R_fb1.b -> R_fb2.a
+    R_fb2.b -> U1.neg
+
+    # === OUTPUT MIXER (U6: dry + wet summing) ===
+    U1.out -> R7.a
+    R7.b -> U6.neg
+    U5.out -> R8.a
+    R8.b -> U6.neg
+    R9.a -> U6.neg
+    R9.b -> U6.out
+    U6.pos -> R_bias1.b
+
+    # === OUTPUT ===
+    U6.out -> R10.a
+    R10.b -> C_out.a
+    C_out.b -> out
+  }
+
+  controls {
+    Speed.position -> "Speed" [0.0, 1.0] = 0.5
+  }
+}

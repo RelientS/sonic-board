@@ -22,13 +22,10 @@ test('the output picker visibly identifies reference names as unofficial approxi
   assert.match(styles, /\.model-method\s*\{/);
 });
 
-test('the effect library shows PedalKernel candidates without inventing an 8-point score', () => {
-  assert.match(page, /PedalKernel WDF/);
-  assert.match(page, /目标 ≥8/);
+test('the effect library presents pedals uniformly without per-model engine badges', () => {
+  assert.match(page, /模型通过自动门禁/);
   assert.match(page, /待真机验证/);
-  assert.match(page, /候选暂停 · 旧引擎/);
-  assert.match(page, /未通过持续输出门禁/);
   assert.match(page, /github\.com\/RelientS\/sonic-board/);
-  assert.match(styles, /\.fidelity-chip\s*\{/);
-  assert.match(styles, /\.fidelity-chip\.blocked\s*\{/);
+  assert.doesNotMatch(page, /FidelityChip|fidelity-chip|候选暂停|旧引擎/);
+  assert.doesNotMatch(styles, /\.fidelity-chip/);
 });

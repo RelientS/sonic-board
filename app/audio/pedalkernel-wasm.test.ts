@@ -4,6 +4,22 @@ import test from 'node:test';
 
 const wasmUrl = new URL('../../public/audio/pedalkernel.wasm', import.meta.url);
 
+const MODELS = [
+  { name: 'MXR Dyna Comp', controls: [0.46, 0.58], definingControl: 1 },
+  { name: 'Boss BD-2 Blues Driver', controls: [0.38, 0.54, 0.58], definingControl: 2 },
+  { name: 'Pro Co RAT 2', controls: [0.56, 0.45, 0.62], definingControl: 0 },
+  { name: 'Electro-Harmonix Big Muff Pi', controls: [0.67, 0.43, 0.58], definingControl: 2 },
+  { name: 'Boss DM-2 Delay', controls: [0.4, 0.35, 0.4], definingControl: 2 },
+  { name: 'Electro-Harmonix Deluxe Memory Man', controls: [0.4, 0.4, 0.5], definingControl: 2 },
+  { name: 'Dallas-Arbiter Fuzz Face', controls: [0.7, 0.6], definingControl: 1 },
+  { name: 'Boss CE-2 Chorus', controls: [0.4, 0.5], definingControl: 1 },
+  { name: 'Fulltone OCD', controls: [0.5, 0.5, 0.7], definingControl: 2 },
+  { name: 'Klon Centaur', controls: [0.5, 0.5, 0.7], definingControl: 2 },
+  { name: 'Boss SD-1 Super OverDrive', controls: [0.5, 0.5, 0.7], definingControl: 2 },
+  { name: 'Ibanez TS808 Tube Screamer', controls: [0.5, 0.5, 0.7], definingControl: 2 },
+  { name: 'MXR Phase 90', controls: [0.5], definingControl: 0 },
+];
+
 test('ships the PedalKernel circuit runtime as browser WebAssembly', async () => {
   assert.ok(existsSync(wasmUrl), 'PedalKernel WASM artifact is missing');
   const wasmModule = await WebAssembly.compile(readFileSync(wasmUrl));
@@ -45,16 +61,10 @@ test('PedalKernel processes a block and responds to pedal controls', async () =>
   assert.ok(difference > 0.001, 'Distortion control should alter the rendered signal');
 });
 
-test('every shipped circuit stays bounded for a calibrated DI input', async () => {
+test('every upstream circuit initializes and stays audible and bounded after calibration', async () => {
   const bytes = readFileSync(wasmUrl);
-  const defaultControls = [
-    [0.46, 0.58],
-    [0.38, 0.54, 0.58],
-    [0.56, 0.45, 0.62],
-    [0.67, 0.43, 0.58],
-  ];
 
-  for (let modelId = 0; modelId < defaultControls.length; modelId += 1) {
+  for (let modelId = 0; modelId < MODELS.length; modelId += 1) {
     const { instance } = await WebAssembly.instantiate(bytes, {});
     const exports = instance.exports as unknown as {
       memory: WebAssembly.Memory;
@@ -65,46 +75,47 @@ test('every shipped circuit stays bounded for a calibrated DI input', async () =
       process_block: (length: number) => number;
     };
     assert.equal(exports.init_model(modelId, 44_100), 1);
-    assert.equal(exports.resize_buffer(12_000), 1);
-    const buffer = new Float32Array(exports.memory.buffer, exports.buffer_ptr(), 12_000);
+    assert.equal(exports.resize_buffer(44_100), 1);
+    const buffer = new Float32Array(exports.memory.buffer, exports.buffer_ptr(), 44_100);
     for (let index = 0; index < buffer.length; index += 1) buffer[index] = Math.sin(index * 0.071) * 0.08;
-    defaultControls[modelId].forEach((value, controlId) => exports.set_control(controlId, value));
+    MODELS[modelId].controls.forEach((value, controlId) => exports.set_control(controlId, value));
     assert.equal(exports.process_block(buffer.length), 1);
     const peak = buffer.reduce((value, sample) => Math.max(value, Math.abs(sample)), 0);
-    assert.ok(buffer.every(Number.isFinite), `model ${modelId} emitted non-finite audio`);
-    assert.ok(peak > 1e-7, `model ${modelId} became silent`);
-    assert.ok(peak < 8, `model ${modelId} diverged to ${peak}`);
+    const tail = buffer.subarray(buffer.length - 4096);
+    const rms = Math.sqrt(tail.reduce((sum, sample) => sum + sample * sample, 0) / tail.length);
+    assert.ok(buffer.every(Number.isFinite), `${MODELS[modelId].name} emitted non-finite audio`);
+    assert.ok(rms > 0.002, `${MODELS[modelId].name} lost sustained output (${rms})`);
+    assert.ok(peak <= 1.05, `${MODELS[modelId].name} exceeded calibrated bounds (${peak})`);
   }
 });
 
-test('runtime-enabled circuits preserve sustained guitar signal', async () => {
+test('every exposed upstream control changes its circuit output', async () => {
   const bytes = readFileSync(wasmUrl);
-  const runtimeModels = [
-    { modelId: 0, controls: [0.46, 0.58], name: 'MXR Dyna Comp' },
-    { modelId: 2, controls: [0.56, 0.45, 0.62], name: 'Pro Co RAT 2' },
-  ];
-
-  for (const model of runtimeModels) {
-    const { instance } = await WebAssembly.instantiate(bytes, {});
-    const exports = instance.exports as unknown as {
-      memory: WebAssembly.Memory;
-      init_model: (id: number, sampleRate: number) => number;
-      set_control: (id: number, value: number) => number;
-      resize_buffer: (length: number) => number;
-      buffer_ptr: () => number;
-      process_block: (length: number) => number;
+  for (let modelId = 0; modelId < MODELS.length; modelId += 1) {
+    const render = async (changedControl: number | null, value = 0) => {
+      const { instance } = await WebAssembly.instantiate(bytes, {});
+      const exports = instance.exports as unknown as {
+        memory: WebAssembly.Memory;
+        init_model: (id: number, sampleRate: number) => number;
+        set_control: (id: number, value: number) => number;
+        resize_buffer: (length: number) => number;
+        buffer_ptr: () => number;
+        process_block: (length: number) => number;
+      };
+      assert.equal(exports.init_model(modelId, 44_100), 1);
+      assert.equal(exports.resize_buffer(22_050), 1);
+      const buffer = new Float32Array(exports.memory.buffer, exports.buffer_ptr(), 22_050);
+      for (let index = 0; index < buffer.length; index += 1) buffer[index] = Math.sin(index * 0.071) * 0.08;
+      MODELS[modelId].controls.forEach((defaultValue, controlId) => exports.set_control(controlId, controlId === changedControl ? value : defaultValue));
+      assert.equal(exports.process_block(buffer.length), 1);
+      return Float32Array.from(buffer.subarray(4096));
     };
-    assert.equal(exports.init_model(model.modelId, 44_100), 1);
-    assert.equal(exports.resize_buffer(44_100), 1);
-    const buffer = new Float32Array(exports.memory.buffer, exports.buffer_ptr(), 44_100);
-    for (let index = 0; index < buffer.length; index += 1) {
-      buffer[index] = Math.sin(index * 0.071) * 0.08;
+    const baseline = await render(null);
+    for (let controlId = 0; controlId < MODELS[modelId].controls.length; controlId += 1) {
+      const defaultValue = MODELS[modelId].controls[controlId];
+      const changed = await render(controlId, defaultValue < 0.5 ? 0.85 : 0.15);
+      const difference = changed.reduce((sum, sample, index) => sum + Math.abs(sample - baseline[index]), 0) / changed.length;
+      assert.ok(difference > 1e-5, `${MODELS[modelId].name} control ${controlId} did not change its output (${difference})`);
     }
-    model.controls.forEach((value, controlId) => exports.set_control(controlId, value));
-    assert.equal(exports.process_block(buffer.length), 1);
-
-    const tail = buffer.subarray(buffer.length - 4096);
-    const rms = Math.sqrt(tail.reduce((sum, sample) => sum + sample * sample, 0) / tail.length);
-    assert.ok(rms > 1e-5, `${model.name} lost its sustained output (${rms})`);
   }
 });

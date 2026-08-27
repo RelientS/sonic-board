@@ -12,16 +12,20 @@ import {
 } from '../effects/catalog.ts';
 
 test('catalog contains a complete shoegaze-ready set with valid controls', () => {
-  assert.ok(EFFECT_SPECS.length >= 19);
+  assert.ok(EFFECT_SPECS.length >= 26);
   assert.deepEqual(validateCatalog(EFFECT_SPECS), []);
   assert.ok(new Set(EFFECT_SPECS.map((effect) => effect.category)).size >= 6);
-  assert.ok(EFFECT_SPECS.every((effect) => effect.controls.length >= 2));
+  assert.ok(EFFECT_SPECS.every((effect) => effect.controls.length >= 1));
 });
 
 test('classic-inspired effects preserve their defining control layouts', () => {
-  assert.deepEqual(getEffectSpec('wall-fuzz').controls.slice(0, 3).map((control) => control.id), ['volume', 'tone', 'sustain']);
+  assert.deepEqual(getEffectSpec('wall-fuzz').controls.map((control) => control.id), ['volume', 'tone', 'sustain']);
   assert.deepEqual(getEffectSpec('rodent-dist').controls.map((control) => control.id), ['distortion', 'filter', 'volume']);
   assert.deepEqual(getEffectSpec('studio-comp').controls.map((control) => control.id), ['level', 'sustain']);
+  assert.deepEqual(getEffectSpec('analog-delay').controls.map((control) => control.id), ['time', 'feedback', 'mix']);
+  assert.deepEqual(getEffectSpec('analog-chorus').controls.map((control) => control.id), ['rate', 'depth']);
+  assert.deepEqual(getEffectSpec('fuzz-face').controls.map((control) => control.id), ['fuzz', 'volume']);
+  assert.deepEqual(getEffectSpec('phase90').controls.map((control) => control.id), ['speed']);
   assert.equal(getEffectSpec('graphic-eq').controls.length, 8);
   assert.ok(getEffectSpec('reverse-space').controls.some((control) => control.id === 'preDelay'));
   assert.ok(getEffectSpec('reverse-space').controls.some((control) => control.id === 'lowCut'));
@@ -34,6 +38,13 @@ test('pedals use the classic model names shown on the physical board', () => {
   assert.equal(getEffectSpec('wall-fuzz').name, 'Electro-Harmonix Big Muff Pi');
   assert.equal(getEffectSpec('slow-phase').name, 'Electro-Harmonix Small Stone');
   assert.equal(getEffectSpec('analog-chorus').name, 'Boss CE-2 Chorus');
+  assert.equal(getEffectSpec('dm2-delay').name, 'Boss DM-2 Delay');
+  assert.equal(getEffectSpec('fuzz-face').name, 'Dallas-Arbiter Fuzz Face');
+  assert.equal(getEffectSpec('ocd-drive').name, 'Fulltone OCD');
+  assert.equal(getEffectSpec('klon-centaur').name, 'Klon Centaur');
+  assert.equal(getEffectSpec('sd1-drive').name, 'Boss SD-1 Super OverDrive');
+  assert.equal(getEffectSpec('tube-screamer').name, 'Ibanez TS808 Tube Screamer');
+  assert.equal(getEffectSpec('phase90').name, 'MXR Phase 90');
   assert.equal(getEffectSpec('reverse-space').name, 'Yamaha SPX90 Reverse Gate');
 });
 

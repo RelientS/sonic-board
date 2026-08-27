@@ -46,6 +46,11 @@ function cloneAmp(amp: AmpCabConfig): AmpCabConfig {
   };
 }
 
+function normalizeEffectSettings(specId: string, settings: Record<string, number>) {
+  const defaults = makeDefaultValues(specId);
+  return Object.fromEntries(Object.keys(defaults).map((id) => [id, settings[id] ?? defaults[id]]));
+}
+
 export function captureUserPreset(board: BoardCapture, id = `preset-${Date.now()}`, createdAt = Date.now()): UserPreset {
   return {
     id,
@@ -62,7 +67,7 @@ export function captureUserPreset(board: BoardCapture, id = `preset-${Date.now()
     chain: board.chain.map((item) => ({
       specId: item.specId,
       lane: item.lane ?? 'A',
-      settings: { ...makeDefaultValues(item.specId), ...board.values[item.instanceId] },
+      settings: normalizeEffectSettings(item.specId, board.values[item.instanceId] ?? {}),
       bypassed: board.bypassed.has(item.instanceId),
     })),
   };
@@ -77,7 +82,7 @@ export function instantiateUserPreset(preset: UserPreset): InstantiatedPreset {
   }));
   const values = Object.fromEntries(chain.map((item, index) => [
     item.instanceId,
-    { ...makeDefaultValues(item.specId), ...preset.chain[index].settings },
+    normalizeEffectSettings(item.specId, preset.chain[index].settings),
   ]));
   const bypassed = chain.filter((_, index) => preset.chain[index].bypassed).map((item) => item.instanceId);
   return {
@@ -129,7 +134,7 @@ function normalizeUserPreset(value: unknown): UserPreset | null {
     return {
       specId: item.specId,
       lane: item.lane === 'B' ? 'B' as const : 'A' as const,
-      settings: { ...item.settings },
+      settings: normalizeEffectSettings(item.specId, item.settings),
       bypassed: item.bypassed,
     };
   });

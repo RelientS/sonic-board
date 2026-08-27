@@ -22,7 +22,7 @@ test('captureUserPreset stores portable chain settings without runtime instance 
 
   assert.equal(preset.id, 'preset-1');
   assert.equal(preset.createdAt, 1234);
-  assert.deepEqual(preset.chain[0], { specId: 'wall-fuzz', lane: 'B', settings: { volume: 61, tone: 42, sustain: 80, mids: 58, attack: 20, gate: 10 }, bypassed: true });
+  assert.deepEqual(preset.chain[0], { specId: 'wall-fuzz', lane: 'B', settings: { volume: 61, tone: 42, sustain: 80 }, bypassed: true });
   assert.deepEqual(preset.routing, { mode: 'parallel', blend: 62, spread: 78 });
   assert.equal(preset.amp.ampId, 'glass-120');
   assert.equal(preset.source.guitar, 'humbucker');

@@ -10,6 +10,19 @@ Copied circuit definitions:
 - `examples/pedals/overdrive/blues_driver.pedal`
 - `examples/pedals/distortion/proco_rat.pedal`
 - `examples/pedals/fuzz/big_muff.pedal`
+- `examples/pedals/delay/boss_dm2.pedal`
+- `examples/pedals/delay/memory_man.pedal`
+- `examples/pedals/fuzz/fuzz_face.pedal`
+- `examples/pedals/modulation/boss_ce2.pedal`
+- `examples/pedals/overdrive/fulltone_ocd.pedal`
+- `examples/pedals/overdrive/klon_centaur.pedal`
+- `examples/pedals/overdrive/sd1.pedal`
+- `examples/pedals/overdrive/tube_screamer.pedal`
+- `examples/pedals/phaser/phase90.pedal`
+
+The copies include clearly commented Sonic Board corrections for browser runtime
+stability, control binding, and output calibration. Corresponding source is kept
+next to the wrapper and generated WebAssembly.
 
 The PedalKernel runtime, copied circuit definitions, and the generated `public/audio/pedalkernel.wasm` are governed by the pinned upstream license in `THIRD_PARTY_LICENSES/PedalKernel-LICENSE.txt`. That license includes an additional condition under AGPLv3 Section 7 for incorporation into certain hardware products. Review it before hardware or commercial-device distribution.
 

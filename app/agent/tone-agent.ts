@@ -40,10 +40,10 @@ function makeWallChain(wide: boolean): PresetChainItem[] {
   if (wide) {
     return [
       { specId: 'studio-comp', lane: 'A', settings: { sustain: 42 } },
-      { specId: 'analog-chorus', lane: 'A', settings: { rate: 21, depth: 38, mix: 34, tone: 57 } },
+      { specId: 'analog-chorus', lane: 'A', settings: { rate: 21, depth: 38 } },
       { specId: 'digital-delay', lane: 'A', settings: { time: 35, feedback: 27, mix: 23, tone: 62, width: 78 } },
       { specId: 'reverse-space', lane: 'B', settings: { mix: 54, decay: 55, preDelay: 15, lowCut: 24, highCut: 57, density: 84 } },
-      { specId: 'wall-fuzz', lane: 'B', settings: { volume: 57, tone: 48, sustain: 76, mids: 66, attack: 20, gate: 10 } },
+      { specId: 'wall-fuzz', lane: 'B', settings: { volume: 57, tone: 48, sustain: 76 } },
       { specId: 'graphic-eq', lane: 'B', settings: { '100': 43, '200': 49, '400': 58, '800': 64, '1600': 62, '3200': 53, '6400': 45, level: 57 } },
       { specId: 'cloud-hall', lane: 'B', settings: { mix: 31, decay: 50, preDelay: 18, tone: 55, motion: 33 } },
     ];
@@ -52,7 +52,7 @@ function makeWallChain(wide: boolean): PresetChainItem[] {
     { specId: 'studio-comp', settings: { sustain: 40 } },
     { specId: 'soft-detune', settings: { cents: 34, blend: 24, spread: 66, tone: 55 } },
     { specId: 'reverse-space', settings: { mix: 47, decay: 53, preDelay: 17, lowCut: 24, highCut: 58, density: 82 } },
-    { specId: 'wall-fuzz', settings: { volume: 58, tone: 48, sustain: 77, mids: 65, attack: 21, gate: 10 } },
+    { specId: 'wall-fuzz', settings: { volume: 58, tone: 48, sustain: 77 } },
     { specId: 'graphic-eq', settings: { '100': 43, '200': 49, '400': 58, '800': 64, '1600': 61, '3200': 53, '6400': 45, level: 58 } },
   ];
 }
@@ -60,7 +60,7 @@ function makeWallChain(wide: boolean): PresetChainItem[] {
 function makeCleanChain(wide: boolean): PresetChainItem[] {
   const chain: PresetChainItem[] = [
     { specId: 'studio-comp', lane: 'A', settings: { sustain: 52, level: 59 } },
-    { specId: 'analog-chorus', lane: wide ? 'A' : undefined, settings: { rate: 23, depth: 41, mix: 36, tone: 59 } },
+    { specId: 'analog-chorus', lane: wide ? 'A' : undefined, settings: { rate: 23, depth: 41 } },
     { specId: 'tape-echo', lane: wide ? 'B' : undefined, settings: { time: 43, repeats: 29, mix: 25, wow: 19, tone: 42 } },
     { specId: 'cloud-hall', lane: wide ? 'B' : undefined, settings: { mix: 41, decay: 60, preDelay: 20, tone: 61, motion: 28 } },
   ];
@@ -93,7 +93,7 @@ function makeMotionChain(wide: boolean): PresetChainItem[] {
     { specId: 'studio-comp', lane: 'A', settings: { sustain: 43, level: 58 } },
     { specId: 'slow-phase', lane: 'A', settings: { rate: 11, depth: 39, res: 18, mix: 37 } },
     { specId: 'soft-detune', lane: wide ? 'B' : undefined, settings: { cents: 30, blend: 25, spread: 77, tone: 57 } },
-    { specId: 'analog-delay', lane: wide ? 'B' : undefined, settings: { time: 52, feedback: 31, mix: 27, tone: 39, mod: 15 } },
+    { specId: 'analog-delay', lane: wide ? 'B' : undefined, settings: { time: 52, feedback: 31, mix: 27 } },
     { specId: 'cloud-hall', lane: wide ? 'B' : undefined, settings: { mix: 37, decay: 56, preDelay: 18, tone: 57, motion: 40 } },
   ];
 }

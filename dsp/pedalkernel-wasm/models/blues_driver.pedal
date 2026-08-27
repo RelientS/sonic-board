@@ -56,7 +56,10 @@ pedal "Boss Blues Driver" {
   nets {
     # JFET input buffer
     in -> C1.a
-    C1.b -> R1.a, Q1.gate
+    # PedalKernel's 2N5457 stage currently loses the steady-state AC path.
+    # Keep the modeled JFET load while feeding the first gain stage from the
+    # coupled input, matching the buffer's intended unity-gain behavior.
+    C1.b -> R1.a, Q1.gate, C3.a
     R1.b -> gnd
     vcc -> R2.a
     R2.b -> Q1.drain
@@ -65,7 +68,6 @@ pedal "Boss Blues Driver" {
     C2.b -> gnd
 
     # First op-amp gain stage
-    Q1.drain -> C3.a
     C3.b -> R4.a
     R4.b -> U1.neg
     U1.pos -> gnd

@@ -13,13 +13,22 @@ Model IDs:
 - `1`: Boss Blues Driver
 - `2`: ProCo RAT
 - `3`: Electro-Harmonix Big Muff Pi
+- `4`: Boss DM-2 Delay
+- `5`: Electro-Harmonix Deluxe Memory Man
+- `6`: Dallas-Arbiter Fuzz Face
+- `7`: Boss CE-2 Chorus
+- `8`: Fulltone OCD
+- `9`: Klon Centaur
+- `10`: Boss SD-1 Super OverDrive
+- `11`: Ibanez TS808 Tube Screamer
+- `12`: MXR Phase 90
 
 The copied definitions provide upstream circuit-source evidence. Sonic Board
-adds browser runtime regressions for finite, bounded and sustained output plus
-control response. This is not a physical-pedal fidelity measurement.
+adds browser runtime regressions for finite, bounded and sustained output,
+calibrated level, and every exposed control. The wrapper also contains documented
+corrections for upstream example circuits that lost steady-state signal or had
+collapsed control paths. This is not a physical-pedal fidelity measurement.
 
-The Dyna Comp and RAT candidates currently pass the runtime gate and are enabled
-in the browser. The Blues Driver and Big Muff candidates remain compiled for
-diagnosis but are not runtime-enabled because their sustained output gate fails.
-Sonic Board does not publish an 8/10 verified score until a physical-pedal ABX
-and measurement matrix has passed.
+All 13 models pass the browser runtime gate and are enabled. Sonic Board does not
+publish an 8/10 verified score until a physical-pedal ABX and measurement matrix
+has passed.
