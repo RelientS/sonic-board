@@ -78,7 +78,7 @@ test('PedalKernel candidates run through a prepared AudioWorklet with legacy fal
 });
 
 test('PedalKernel cache upgrades reject an older WASM runtime instead of silencing the wet chain', async () => {
-  assert.match(engineSource, /PEDALKERNEL_RUNTIME_VERSION\s*=\s*3/);
+  assert.match(engineSource, /PEDALKERNEL_RUNTIME_VERSION\s*=\s*4/);
   assert.match(engineSource, /pedalkernel\.wasm\?v=/, 'the WASM URL must change when its ABI changes');
   assert.match(engineSource, /pedalkernel-processor\.js\?v=/, 'the worklet URL must change with the runtime');
 
@@ -91,9 +91,9 @@ test('PedalKernel cache upgrades reject an older WASM runtime instead of silenci
   const compatible = worklet.isCompatiblePedalKernelRuntime as ((exports: Record<string, unknown>, expected: number) => boolean) | undefined;
 
   assert.equal(typeof compatible, 'function');
-  assert.equal(compatible?.({ runtime_version: () => 3 }, 3), true);
-  assert.equal(compatible?.({}, 3), false, 'the pre-versioned cached WASM must fail closed to passthrough');
-  assert.equal(compatible?.({ runtime_version: () => 2 }, 3), false);
+  assert.equal(compatible?.({ runtime_version: () => 4 }, 4), true);
+  assert.equal(compatible?.({}, 4), false, 'the pre-versioned cached WASM must fail closed to passthrough');
+  assert.equal(compatible?.({ runtime_version: () => 3 }, 4), false);
   assert.ok(registeredProcessor, 'the worklet should still register its processor');
 });
 

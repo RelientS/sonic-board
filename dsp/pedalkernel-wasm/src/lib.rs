@@ -168,7 +168,7 @@ thread_local! {
 
 #[no_mangle]
 pub extern "C" fn runtime_version() -> u32 {
-    3
+    4
 }
 
 #[no_mangle]
@@ -177,15 +177,20 @@ pub extern "C" fn init_model(model_id: u32, sample_rate: u32) -> u32 {
     if index >= MODELS.len() || !(8_000..=192_000).contains(&sample_rate) {
         return 0;
     }
-    let Ok(definition) = parse_pedal_file(MODELS[index]) else {
-        return 0;
-    };
-    let Ok(processor) = compile_pedal(&definition, sample_rate as f64) else {
-        return 0;
+    let processor: Option<Box<dyn PedalProcessor>> = if matches!(index, 3 | 6) {
+        None
+    } else {
+        let Ok(definition) = parse_pedal_file(MODELS[index]) else {
+            return 0;
+        };
+        let Ok(processor) = compile_pedal(&definition, sample_rate as f64) else {
+            return 0;
+        };
+        Some(Box::new(processor))
     };
     ENGINE.with(|engine| {
         let mut engine = engine.borrow_mut();
-        engine.processor = Some(Box::new(processor));
+        engine.processor = processor;
         engine.model_id = Some(index);
         engine.dc_input = 0.0;
         engine.dc_output = 0.0;
@@ -252,9 +257,6 @@ pub extern "C" fn process_block(length: u32) -> u32 {
             phaser_repair,
             tone_repair,
         } = &mut *engine;
-        let Some(processor) = processor.as_mut() else {
-            return 0;
-        };
         let Some(model_id) = *model_id else {
             return 0;
         };
@@ -263,7 +265,12 @@ pub extern "C" fn process_block(length: u32) -> u32 {
             let modeled = match model_id {
                 3 => big_muff_repair.process(*sample, *sample_rate, controls),
                 6 => fuzz_face_repair.process(*sample, *sample_rate, controls),
-                _ => processor.process(*sample as f64) as f32 * OUTPUT_GAINS[model_id],
+                _ => {
+                    let Some(processor) = processor.as_mut() else {
+                        return 0;
+                    };
+                    processor.process(*sample as f64) as f32 * OUTPUT_GAINS[model_id]
+                }
             };
             let high_passed = modeled - *dc_input + 0.995 * *dc_output;
             *dc_input = modeled;

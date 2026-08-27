@@ -34,7 +34,7 @@ test('publishes the PedalKernel runtime ABI used for cache compatibility', async
   const exports = instance.exports as unknown as { runtime_version?: () => number };
 
   assert.equal(typeof exports.runtime_version, 'function');
-  assert.equal(exports.runtime_version?.(), 3);
+  assert.equal(exports.runtime_version?.(), 4);
 });
 
 test('PedalKernel processes a block and responds to pedal controls', async () => {
@@ -180,6 +180,24 @@ test('Big Muff and Fuzz Face fit the AudioWorklet processing budget', async () =
   for (const modelId of [3, 6]) {
     const elapsedMs = await renderTime(modelId);
     assert.ok(elapsedMs <= maximumHeavyModelMs, `${MODELS[modelId].name} blocks the audio thread (${elapsedMs.toFixed(1)} ms vs ${maximumHeavyModelMs.toFixed(1)} ms)`);
+  }
+});
+
+test('realtime fuzz repairs initialize without compiling the heavy circuit solver', async () => {
+  const bytes = readFileSync(wasmUrl);
+  const initializeTime = async (modelId: number) => {
+    const { instance } = await WebAssembly.instantiate(bytes, {});
+    const exports = instance.exports as unknown as { init_model: (id: number, sampleRate: number) => number };
+    const startedAt = performance.now();
+    assert.equal(exports.init_model(modelId, 44_100), 1);
+    return performance.now() - startedAt;
+  };
+
+  const dynaMs = await initializeTime(0);
+  const maximumRepairInitMs = dynaMs * 4 + 10;
+  for (const modelId of [3, 6]) {
+    const elapsedMs = await initializeTime(modelId);
+    assert.ok(elapsedMs <= maximumRepairInitMs, `${MODELS[modelId].name} delays playback startup (${elapsedMs.toFixed(1)} ms vs ${maximumRepairInitMs.toFixed(1)} ms)`);
   }
 });
 
