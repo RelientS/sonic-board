@@ -148,3 +148,14 @@ test('mobile audio activation happens before the first asynchronous resume bound
   assert.ok(activation >= 0, 'createLiveSession should activate mobile audio');
   assert.ok(activation < firstAwait, 'activation must remain inside the tap call stack');
 });
+
+test('wet monitoring compensates the measured effect and amp-chain level loss', () => {
+  const monitorMakeupGain = (audioEngine as typeof audioEngine & {
+    monitorMakeupGain?: (mode: 'dry' | 'wet') => number;
+  }).monitorMakeupGain;
+
+  assert.equal(typeof monitorMakeupGain, 'function');
+  assert.equal(monitorMakeupGain?.('dry'), 1);
+  assert.ok((monitorMakeupGain?.('wet') ?? 0) >= 2.5, 'wet monitoring needs roughly 9 dB of make-up gain');
+  assert.ok((monitorMakeupGain?.('wet') ?? Infinity) <= 3, 'make-up gain should leave compressor headroom');
+});

@@ -165,6 +165,10 @@ function dbToGain(db: number) {
   return 10 ** (db / 20);
 }
 
+export function monitorMakeupGain(mode: 'dry' | 'wet') {
+  return mode === 'wet' ? 2.8 : 1;
+}
+
 function seededRandom(seed: number) {
   let state = seed >>> 0;
   return () => {
@@ -699,7 +703,11 @@ function connectBoardGraph(
     effected = sum;
   }
 
-  return connectAmpCab(context, effected, config.amp);
+  const modeled = connectAmpCab(context, effected, config.amp);
+  const monitorMakeup = context.createGain();
+  monitorMakeup.gain.value = monitorMakeupGain(config.mode);
+  modeled.connect(monitorMakeup);
+  return monitorMakeup;
 }
 
 function connectMaster(
