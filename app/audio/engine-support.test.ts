@@ -55,11 +55,13 @@ test('PedalKernel candidates disclose their evidence instead of claiming an unme
     assert.equal(profiles[id].targetScore, 8);
     assert.equal(profiles[id].verifiedScore, null);
     assert.ok(profiles[id].evidence.includes('upstream-circuit'));
-    assert.equal(profiles[id].engine, 'PedalKernel WDF + calibrated corrections');
+    const isRealtimeCorrection = id === 'wall-fuzz' || id === 'fuzz-face';
+    assert.equal(profiles[id].engine, isRealtimeCorrection ? 'PedalKernel realtime correction' : 'PedalKernel WDF + calibrated corrections');
     assert.equal(profiles[id].runtime, 'pedalkernel');
     assert.equal(profiles[id].status, 'candidate');
     assert.ok(profiles[id].evidence.includes('runtime-regression'));
-    assert.match(profiles[id].note, /持续输出|输出校准/);
+    assert.match(profiles[id].note, isRealtimeCorrection ? /实时修正路径|完整 WDF/ : /持续输出|输出校准/);
+    if (isRealtimeCorrection) assert.doesNotMatch(profiles[id].note, /完整 WDF 求解通过|WDF 模型已验证/);
   }
 });
 

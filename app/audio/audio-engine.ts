@@ -7,6 +7,7 @@ import {
   makeNoiseGateCurve,
   SOURCE_DURATION_SECONDS,
   synthesizeSourceChannels,
+  trimRenderedTail,
   type AudioChainItem,
   type AudioValues,
   type RoutingConfig,
@@ -14,6 +15,7 @@ import {
 } from './audio-core.ts';
 import { sourceConfigKey } from './source-catalog.ts';
 import { renderSampledSourceBuffer } from './sample-renderer.ts';
+import { applySampleInputHeadroom } from './sample-library.ts';
 import { getEffectSpec, mapControlValue } from '../effects/catalog.ts';
 import { EFFECT_FIDELITY_PROFILES, type EffectFidelityProfile } from '../effects/fidelity.ts';
 import { AMP_SPECS, CAB_SPECS, getAmpSpec, getCabSpec, type AmpCabConfig } from '../amps/catalog.ts';
@@ -34,8 +36,18 @@ export const PEDALKERNEL_EFFECT_IDS: ReadonlySet<string> = new Set([
   'analog-delay', 'fuzz-face', 'analog-chorus', 'ocd-drive', 'klon-centaur',
   'sd1-drive', 'tube-screamer', 'phase90',
 ]);
+export const PEDALKERNEL_FALLBACK_EFFECT_IDS: ReadonlySet<string> = new Set(PEDALKERNEL_EFFECT_IDS);
 export { EFFECT_FIDELITY_PROFILES, type EffectFidelityProfile };
 
+const MAX_CURVE_CACHE_ENTRIES = 32;
+const MAX_IMPULSE_CACHE_ENTRIES = 8;
+const MAX_CABINET_CACHE_ENTRIES = 4;
+const MAX_SOURCE_BUFFER_ENTRIES = 4;
+const driveCurveCache = new Map<string, Float32Array<ArrayBuffer>>();
+const gateCurveCache = new Map<string, Float32Array<ArrayBuffer>>();
+const noiseGateCurveCache = new Map<string, Float32Array<ArrayBuffer>>();
+const impulseCaches = new WeakMap<BaseAudioContext, Map<string, AudioBuffer>>();
+const cabinetImpulseCaches = new WeakMap<BaseAudioContext, Map<string, AudioBuffer>>();
 const noiseGateReady = new WeakSet<BaseAudioContext>();
 const noiseGateLoading = new WeakMap<BaseAudioContext, Promise<void>>();
 const pedalKernelReady = new WeakSet<BaseAudioContext>();
@@ -58,6 +70,47 @@ const PEDALKERNEL_MODELS: Record<string, { modelId: number; controls: string[] }
   'sd1-drive': { modelId: 10, controls: ['drive', 'tone', 'level'] },
   'tube-screamer': { modelId: 11, controls: ['drive', 'tone', 'level'] },
   'phase90': { modelId: 12, controls: ['speed'] },
+};
+
+const LEGACY_DRIVE_MODELS: Record<string, {
+  driveControl: string;
+  driveDefault: number;
+  outputControl: string;
+  preGainBase: number;
+  preGainScale: number;
+  curveScale: number;
+  highPassHz: number;
+  lowPassHz: number;
+  midHz: number;
+  midGainDb: number;
+  outputTrim: number;
+  toneControl?: 'tone' | 'treble';
+}> = {
+  'fuzz-face': {
+    driveControl: 'fuzz', driveDefault: 70, outputControl: 'volume',
+    preGainBase: 1.8, preGainScale: 0.11, curveScale: 0.95,
+    highPassHz: 45, lowPassHz: 7_000, midHz: 950, midGainDb: -1, outputTrim: 0.36,
+  },
+  'ocd-drive': {
+    driveControl: 'drive', driveDefault: 50, outputControl: 'volume', toneControl: 'tone',
+    preGainBase: 1.2, preGainScale: 0.08, curveScale: 0.78,
+    highPassHz: 70, lowPassHz: 8_000, midHz: 900, midGainDb: 1.5, outputTrim: 0.5,
+  },
+  'klon-centaur': {
+    driveControl: 'gain', driveDefault: 45, outputControl: 'output', toneControl: 'treble',
+    preGainBase: 1, preGainScale: 0.055, curveScale: 0.52,
+    highPassHz: 90, lowPassHz: 11_000, midHz: 1_000, midGainDb: 2, outputTrim: 0.62,
+  },
+  'sd1-drive': {
+    driveControl: 'drive', driveDefault: 50, outputControl: 'level', toneControl: 'tone',
+    preGainBase: 1.4, preGainScale: 0.07, curveScale: 0.65,
+    highPassHz: 120, lowPassHz: 7_500, midHz: 720, midGainDb: 4, outputTrim: 0.48,
+  },
+  'tube-screamer': {
+    driveControl: 'drive', driveDefault: 50, outputControl: 'level', toneControl: 'tone',
+    preGainBase: 1.3, preGainScale: 0.065, curveScale: 0.62,
+    highPassHz: 140, lowPassHz: 7_200, midHz: 720, midGainDb: 5, outputTrim: 0.48,
+  },
 };
 
 export function activateMobileAudio(
@@ -100,6 +153,21 @@ async function prepareNoiseGateProcessor(context: BaseAudioContext) {
   await pending;
 }
 
+function loadPedalKernelModule() {
+  if (pedalKernelModulePromise) return pedalKernelModulePromise;
+  const pending = fetch(`/audio/pedalkernel.wasm?v=${PEDALKERNEL_RUNTIME_VERSION}`)
+    .then((response) => {
+      if (!response.ok) throw new Error(`PedalKernel WASM ${response.status}`);
+      return response.arrayBuffer();
+    })
+    .then((bytes) => WebAssembly.compile(bytes));
+  pedalKernelModulePromise = pending;
+  void pending.catch(() => {
+    if (pedalKernelModulePromise === pending) pedalKernelModulePromise = null;
+  });
+  return pending;
+}
+
 async function preparePedalKernelProcessor(context: BaseAudioContext) {
   if (pedalKernelReady.has(context)) return;
   const worklet = (context as BaseAudioContext & {
@@ -108,19 +176,14 @@ async function preparePedalKernelProcessor(context: BaseAudioContext) {
   if (!worklet || typeof AudioWorkletNode === 'undefined') return;
   let pending = pedalKernelLoading.get(context);
   if (!pending) {
-    pedalKernelModulePromise ??= fetch(`/audio/pedalkernel.wasm?v=${PEDALKERNEL_RUNTIME_VERSION}`)
-      .then((response) => {
-        if (!response.ok) throw new Error(`PedalKernel WASM ${response.status}`);
-        return response.arrayBuffer();
-      })
-      .then((bytes) => WebAssembly.compile(bytes));
     pending = Promise.all([
-      pedalKernelModulePromise,
+      loadPedalKernelModule(),
       worklet.addModule(`/audio/pedalkernel-processor.js?v=${PEDALKERNEL_RUNTIME_VERSION}`),
     ]).then(([module]) => {
       pedalKernelModules.set(context, module);
       pedalKernelReady.add(context);
     }).catch(() => {
+      pedalKernelLoading.delete(context);
       // The legacy Web Audio models below keep playback working on older browsers.
     });
     pedalKernelLoading.set(context, pending);
@@ -145,6 +208,7 @@ export type LiveAudioSession = {
   output: AudioNode | null;
   scheduled: AudioScheduledSourceNode[];
   buffers: Map<string, AudioBuffer>;
+  bufferLoads: Map<string, Promise<AudioBuffer>>;
   startedAt: number;
   duration: number;
   sourceKey: string;
@@ -165,8 +229,55 @@ function dbToGain(db: number) {
   return 10 ** (db / 20);
 }
 
+function cachedValue<K, V>(cache: Map<K, V>, key: K, limit: number, create: () => V) {
+  const cached = cache.get(key);
+  if (cached !== undefined) {
+    cache.delete(key);
+    cache.set(key, cached);
+    return cached;
+  }
+  const value = create();
+  cache.set(key, value);
+  if (cache.size > limit) {
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
+  return value;
+}
+
+function cachedDriveCurve(value: number, length = 2048) {
+  return cachedValue(
+    driveCurveCache,
+    `${clampParameter(value)}:${length}`,
+    MAX_CURVE_CACHE_ENTRIES,
+    () => makeDriveCurve(value, length),
+  );
+}
+
+function cachedGateCurve(value: number, length = 2048) {
+  return cachedValue(
+    gateCurveCache,
+    `${clampParameter(value)}:${length}`,
+    MAX_CURVE_CACHE_ENTRIES,
+    () => makeGateCurve(value, length),
+  );
+}
+
+function cachedNoiseGateCurve(thresholdDb: number, length = 65_537) {
+  return cachedValue(
+    noiseGateCurveCache,
+    `${thresholdDb}:${length}`,
+    MAX_CURVE_CACHE_ENTRIES,
+    () => makeNoiseGateCurve(thresholdDb, length),
+  );
+}
+
 export function monitorMakeupGain(mode: 'dry' | 'wet') {
   return mode === 'wet' ? 2.8 : 1;
+}
+
+function isClosedAudioContext(context: BaseAudioContext) {
+  return context.state === 'closed';
 }
 
 function seededRandom(seed: number) {
@@ -182,10 +293,44 @@ async function makeAudioBuffer(context: BaseAudioContext, source: SourceConfig) 
     return await renderSampledSourceBuffer(context, source);
   } catch {
     const channels = synthesizeSourceChannels(source, context.sampleRate);
+    applySampleInputHeadroom(channels);
     const buffer = context.createBuffer(channels.length, channels[0].length, context.sampleRate);
     channels.forEach((channel, index) => buffer.copyToChannel(channel, index));
     return buffer;
   }
+}
+
+function cachedSessionBuffer(session: LiveAudioSession, key: string) {
+  const buffer = session.buffers.get(key);
+  if (!buffer) return undefined;
+  session.buffers.delete(key);
+  session.buffers.set(key, buffer);
+  return buffer;
+}
+
+function rememberSessionBuffer(session: LiveAudioSession, key: string, buffer: AudioBuffer) {
+  session.buffers.delete(key);
+  session.buffers.set(key, buffer);
+  while (session.buffers.size > MAX_SOURCE_BUFFER_ENTRIES) {
+    const oldest = session.buffers.keys().next().value;
+    if (oldest === undefined) break;
+    session.buffers.delete(oldest);
+  }
+}
+
+function loadSessionBuffer(session: LiveAudioSession, key: string, source: SourceConfig) {
+  const cached = cachedSessionBuffer(session, key);
+  if (cached) return Promise.resolve(cached);
+  let pending = session.bufferLoads.get(key);
+  if (!pending) {
+    pending = makeAudioBuffer(session.context, source);
+    session.bufferLoads.set(key, pending);
+    void pending.then(
+      () => { if (session.bufferLoads.get(key) === pending) session.bufferLoads.delete(key); },
+      () => { if (session.bufferLoads.get(key) === pending) session.bufferLoads.delete(key); },
+    );
+  }
+  return pending;
 }
 
 function makeImpulse(
@@ -195,25 +340,33 @@ function makeImpulse(
   seed: number,
   density = 100,
 ) {
-  const length = Math.max(1, Math.floor(context.sampleRate * seconds));
-  const buffer = context.createBuffer(2, length, context.sampleRate);
-  const random = seededRandom(seed);
-
-  for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
-    const data = buffer.getChannelData(channel);
-    for (let index = 0; index < length; index += 1) {
-      const phase = index / length;
-      const envelope = kind === 'reverse'
-        ? phase ** 2.2
-        : kind === 'gate'
-          ? phase < 0.58 ? (1 - phase * 0.72) : ((1 - phase) / 0.42) ** 2
-          : (1 - phase) ** 2.5;
-      const active = Math.abs(random()) <= density / 100;
-      data[index] = active ? random() * envelope * 0.72 : 0;
-    }
+  let cache = impulseCaches.get(context);
+  if (!cache) {
+    cache = new Map();
+    impulseCaches.set(context, cache);
   }
+  const key = `${seconds}:${kind}:${seed}:${density}`;
+  return cachedValue(cache, key, MAX_IMPULSE_CACHE_ENTRIES, () => {
+    const length = Math.max(1, Math.floor(context.sampleRate * seconds));
+    const buffer = context.createBuffer(2, length, context.sampleRate);
+    const random = seededRandom(seed);
 
-  return buffer;
+    for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
+      const data = buffer.getChannelData(channel);
+      for (let index = 0; index < length; index += 1) {
+        const phase = index / length;
+        const envelope = kind === 'reverse'
+          ? phase ** 2.2
+          : kind === 'gate'
+            ? phase < 0.58 ? (1 - phase * 0.72) : ((1 - phase) / 0.42) ** 2
+            : (1 - phase) ** 2.5;
+        const active = Math.abs(random()) <= density / 100;
+        data[index] = active ? random() * envelope * 0.72 : 0;
+      }
+    }
+
+    return buffer;
+  });
 }
 
 function mixParallel(
@@ -250,7 +403,10 @@ function makePedalKernelNode(
         wasmModule,
         expectedRuntimeVersion: PEDALKERNEL_RUNTIME_VERSION,
         modelId: model.modelId,
-        controls: model.controls.map((id) => parameter(values, id, 50) / 100),
+        controls: model.controls.map((id) => {
+          const fallback = getEffectSpec(specId).controls.find((control) => control.id === id)?.defaultValue ?? 50;
+          return parameter(values, id, fallback) / 100;
+        }),
       },
     });
   } catch {
@@ -258,7 +414,7 @@ function makePedalKernelNode(
   }
 }
 
-function connectEffectChain(
+export function connectEffectChain(
   context: BaseAudioContext,
   input: AudioNode,
   config: BoardAudioConfig,
@@ -272,6 +428,7 @@ function connectEffectChain(
     if (bypassed.has(item.instanceId)) return;
     const values = config.values[item.instanceId] ?? {};
     const specId = item.specId;
+    const effectInput = cursor;
 
     if (PEDALKERNEL_EFFECT_IDS.has(specId)) {
       const processor = makePedalKernelNode(context, specId, values);
@@ -306,20 +463,27 @@ function connectEffectChain(
       const thresholdDb = physical(specId, values, 'threshold', -55);
       const releaseMs = physical(specId, values, 'release', 180);
       output.gain.value = dbToGain(physical(specId, values, 'level', 0));
+      let gate: AudioWorkletNode | null = null;
       if (noiseGateReady.has(context) && typeof AudioWorkletNode !== 'undefined') {
-        const gate = new AudioWorkletNode(context, 'sonic-noise-gate', {
-          numberOfInputs: 1,
-          numberOfOutputs: 1,
-          outputChannelCount: [2],
-          parameterData: {
-            thresholdDb,
-            releaseMs,
-          },
-        });
+        try {
+          gate = new AudioWorkletNode(context, 'sonic-noise-gate', {
+            numberOfInputs: 1,
+            numberOfOutputs: 1,
+            outputChannelCount: [2],
+            parameterData: {
+              thresholdDb,
+              releaseMs,
+            },
+          });
+        } catch {
+          // The static curve is less expressive, but it keeps the chain usable.
+        }
+      }
+      if (gate) {
         cursor.connect(gate).connect(output);
       } else {
         const fallbackGate = context.createWaveShaper();
-        fallbackGate.curve = makeNoiseGateCurve(thresholdDb);
+        fallbackGate.curve = cachedNoiseGateCurve(thresholdDb);
         cursor.connect(fallbackGate).connect(output);
       }
       cursor = output;
@@ -352,7 +516,7 @@ function connectEffectChain(
       const output = context.createGain();
       const drive = parameter(values, specId === 'blue-drive' ? 'gain' : 'distortion', 45);
       preGain.gain.value = specId === 'blue-drive' ? 1 + drive / 20 : 1.8 + drive / 10;
-      shaper.curve = makeDriveCurve(specId === 'blue-drive' ? drive * 0.58 : drive * 1.08);
+      shaper.curve = cachedDriveCurve(specId === 'blue-drive' ? drive * 0.58 : drive * 1.08);
       shaper.oversample = '4x';
       highPass.type = 'highpass';
       highPass.frequency.value = specId === 'blue-drive' ? 72 : 48;
@@ -377,8 +541,8 @@ function connectEffectChain(
       const output = context.createGain();
       const sustain = parameter(values, 'sustain', 67);
       preGain.gain.value = 2.2 + sustain / 9;
-      gate.curve = makeGateCurve(parameter(values, 'gate', 8) * 0.65);
-      shaper.curve = makeDriveCurve(sustain * 1.15);
+      gate.curve = cachedGateCurve(parameter(values, 'gate', 8) * 0.65);
+      shaper.curve = cachedDriveCurve(sustain * 1.15);
       shaper.oversample = '4x';
       toneFilter.type = 'lowpass';
       toneFilter.frequency.value = physical(specId, values, 'tone', 4_200);
@@ -402,6 +566,43 @@ function connectEffectChain(
       return;
     }
 
+    const legacyDrive = LEGACY_DRIVE_MODELS[specId];
+    if (legacyDrive) {
+      const preGain = context.createGain();
+      const shaper = context.createWaveShaper();
+      const highPass = context.createBiquadFilter();
+      const toneFilter = context.createBiquadFilter();
+      const mids = context.createBiquadFilter();
+      const output = context.createGain();
+      const drive = parameter(values, legacyDrive.driveControl, legacyDrive.driveDefault);
+      preGain.gain.value = legacyDrive.preGainBase + drive * legacyDrive.preGainScale;
+      shaper.curve = cachedDriveCurve(drive * legacyDrive.curveScale);
+      shaper.oversample = '4x';
+      highPass.type = 'highpass';
+      highPass.frequency.value = legacyDrive.highPassHz;
+      if (legacyDrive.toneControl === 'tone') {
+        toneFilter.type = 'lowpass';
+        toneFilter.frequency.value = physical(specId, values, 'tone', legacyDrive.lowPassHz);
+        toneFilter.Q.value = 0.68;
+      } else if (legacyDrive.toneControl === 'treble') {
+        toneFilter.type = 'highshelf';
+        toneFilter.frequency.value = 1_800;
+        toneFilter.gain.value = (parameter(values, 'treble', 50) - 50) * 0.16;
+      } else {
+        toneFilter.type = 'lowpass';
+        toneFilter.frequency.value = legacyDrive.lowPassHz;
+        toneFilter.Q.value = 0.68;
+      }
+      mids.type = 'peaking';
+      mids.frequency.value = legacyDrive.midHz;
+      mids.Q.value = 0.82;
+      mids.gain.value = legacyDrive.midGainDb;
+      output.gain.value = dbToGain(physical(specId, values, legacyDrive.outputControl, -1)) * legacyDrive.outputTrim;
+      cursor.connect(preGain).connect(shaper).connect(highPass).connect(toneFilter).connect(mids).connect(output);
+      cursor = output;
+      return;
+    }
+
     if (specId === 'chainsaw-dist') {
       const preGain = context.createGain();
       const shaper = context.createWaveShaper();
@@ -411,7 +612,7 @@ function connectEffectChain(
       const output = context.createGain();
       const distortion = parameter(values, 'distortion', 78);
       preGain.gain.value = 2.4 + distortion / 8;
-      shaper.curve = makeDriveCurve(distortion * 1.2);
+      shaper.curve = cachedDriveCurve(distortion * 1.2);
       shaper.oversample = '4x';
       low.type = 'lowshelf'; low.frequency.value = 120; low.gain.value = (parameter(values, 'low', 72) - 50) * 0.24;
       highMid.type = 'peaking'; highMid.frequency.value = 1_050; highMid.Q.value = 0.82; highMid.gain.value = (parameter(values, 'high', 76) - 50) * 0.28;
@@ -442,6 +643,33 @@ function connectEffectChain(
       lfo.start(0); scheduled.push(lfo);
       cursor.connect(first).connect(second).connect(third).connect(fourth);
       cursor = mixParallel(context, cursor, fourth, parameter(values, 'mix', 44));
+      return;
+    }
+
+    if (specId === 'phase90') {
+      const filters = [
+        context.createBiquadFilter(),
+        context.createBiquadFilter(),
+        context.createBiquadFilter(),
+        context.createBiquadFilter(),
+      ];
+      const lfo = context.createOscillator();
+      const depths = [180, 300, 480, 720].map((depth) => {
+        const modulation = context.createGain();
+        modulation.gain.value = depth;
+        lfo.connect(modulation);
+        return modulation;
+      });
+      filters.forEach((filter, index) => {
+        filter.type = 'allpass';
+        filter.frequency.value = [360, 680, 1_150, 1_900][index];
+        filter.Q.value = 1.15;
+        depths[index].connect(filter.frequency);
+      });
+      lfo.frequency.value = physical(specId, values, 'speed', 0.25);
+      lfo.start(0); scheduled.push(lfo);
+      cursor.connect(filters[0]).connect(filters[1]).connect(filters[2]).connect(filters[3]);
+      cursor = mixParallel(context, cursor, filters[3], 50);
       return;
     }
 
@@ -514,7 +742,7 @@ function connectEffectChain(
       const depth = parameter(values, 'depth', 48) / 100;
       tremolo.gain.value = 1 - depth * 0.5;
       lfo.frequency.value = physical(specId, values, 'rate', 1.2);
-      shape.curve = makeDriveCurve(parameter(values, 'wave', 35) * 0.75, 1024);
+      shape.curve = cachedDriveCurve(parameter(values, 'wave', 35) * 0.75, 1024);
       modulation.gain.value = depth * 0.5;
       lfo.connect(shape).connect(modulation).connect(tremolo.gain);
       lfo.start(0); scheduled.push(lfo);
@@ -525,22 +753,28 @@ function connectEffectChain(
       return;
     }
 
-    if (specId === 'analog-delay' || specId === 'tape-echo') {
-      const delay = context.createDelay(1.3);
+    if (specId === 'analog-delay' || specId === 'dm2-delay' || specId === 'tape-echo') {
+      const delay = context.createDelay(specId === 'dm2-delay' ? 0.34 : specId === 'analog-delay' ? 0.81 : 1.3);
       const feedback = context.createGain();
       const damping = context.createBiquadFilter();
-      const lfo = context.createOscillator();
-      const modulation = context.createGain();
+      const feedbackControl = specId === 'analog-delay' ? 'feedback' : 'repeats';
+      const feedbackDefault = specId === 'dm2-delay' ? 35 : specId === 'tape-echo' ? 34 : 32;
+      const mixDefault = specId === 'dm2-delay' ? 40 : specId === 'tape-echo' ? 27 : 30;
       delay.delayTime.value = physical(specId, values, 'time', 380) / 1000;
-      feedback.gain.value = Math.min(0.78, parameter(values, specId === 'tape-echo' ? 'repeats' : 'feedback', 32) / 112);
-      damping.type = 'lowpass'; damping.frequency.value = physical(specId, values, 'tone', 3_500);
-      lfo.frequency.value = specId === 'tape-echo' ? 0.42 : 0.18;
-      modulation.gain.value = parameter(values, specId === 'tape-echo' ? 'wow' : 'mod', 14) / 38_000;
-      lfo.connect(modulation).connect(delay.delayTime);
-      lfo.start(0); scheduled.push(lfo);
+      feedback.gain.value = Math.min(0.78, parameter(values, feedbackControl, feedbackDefault) / 112);
+      damping.type = 'lowpass';
+      damping.frequency.value = specId === 'dm2-delay' ? 2_200 : physical(specId, values, 'tone', 3_500);
+      if (specId !== 'dm2-delay') {
+        const lfo = context.createOscillator();
+        const modulation = context.createGain();
+        lfo.frequency.value = specId === 'tape-echo' ? 0.42 : 0.18;
+        modulation.gain.value = parameter(values, specId === 'tape-echo' ? 'wow' : 'mod', 14) / 38_000;
+        lfo.connect(modulation).connect(delay.delayTime);
+        lfo.start(0); scheduled.push(lfo);
+      }
       delay.connect(damping).connect(feedback).connect(delay);
       cursor.connect(delay);
-      cursor = mixParallel(context, cursor, delay, parameter(values, 'mix', 28));
+      cursor = mixParallel(context, cursor, delay, parameter(values, 'mix', mixDefault));
       return;
     }
 
@@ -601,30 +835,42 @@ function connectEffectChain(
       }
       cursor = mixParallel(context, cursor, lowPass, parameter(values, 'mix', 40));
     }
+
+    if (PEDALKERNEL_EFFECT_IDS.has(specId) && cursor === effectInput) {
+      throw new Error(`PedalKernel fallback missing: ${specId}`);
+    }
   });
 
   return cursor;
 }
 
 function makeCabinetImpulse(context: BaseAudioContext, seconds: number, distance: number, room: number, seed: number) {
-  const roomTail = room / 100 * 0.055;
-  const length = Math.max(1, Math.ceil(context.sampleRate * (seconds + roomTail)));
-  const buffer = context.createBuffer(2, length, context.sampleRate);
-  const random = seededRandom(seed);
-  const distanceDelay = Math.floor((0.0004 + distance / 100 * 0.0045) * context.sampleRate);
-
-  for (let channel = 0; channel < 2; channel += 1) {
-    const data = buffer.getChannelData(channel);
-    data[Math.min(length - 1, distanceDelay + channel * 2)] = 0.92;
-    for (let index = distanceDelay + 1; index < length; index += 1) {
-      const phase = (index - distanceDelay) / Math.max(1, length - distanceDelay);
-      const cabinetDecay = Math.exp(-phase * (7.5 - room / 24));
-      const earlyReflection = index % Math.max(7, Math.floor(context.sampleRate * 0.0017)) === 0 ? 0.34 : 0.08;
-      data[index] += random() * cabinetDecay * earlyReflection * (0.42 + room / 180);
-    }
+  let cache = cabinetImpulseCaches.get(context);
+  if (!cache) {
+    cache = new Map();
+    cabinetImpulseCaches.set(context, cache);
   }
+  const key = `${seconds}:${distance}:${room}:${seed}`;
+  return cachedValue(cache, key, MAX_CABINET_CACHE_ENTRIES, () => {
+    const roomTail = room / 100 * 0.055;
+    const length = Math.max(1, Math.ceil(context.sampleRate * (seconds + roomTail)));
+    const buffer = context.createBuffer(2, length, context.sampleRate);
+    const random = seededRandom(seed);
+    const distanceDelay = Math.floor((0.0004 + distance / 100 * 0.0045) * context.sampleRate);
 
-  return buffer;
+    for (let channel = 0; channel < 2; channel += 1) {
+      const data = buffer.getChannelData(channel);
+      data[Math.min(length - 1, distanceDelay + channel * 2)] = 0.92;
+      for (let index = distanceDelay + 1; index < length; index += 1) {
+        const phase = (index - distanceDelay) / Math.max(1, length - distanceDelay);
+        const cabinetDecay = Math.exp(-phase * (7.5 - room / 24));
+        const earlyReflection = index % Math.max(7, Math.floor(context.sampleRate * 0.0017)) === 0 ? 0.34 : 0.08;
+        data[index] += random() * cabinetDecay * earlyReflection * (0.42 + room / 180);
+      }
+    }
+
+    return buffer;
+  });
 }
 
 function connectAmpCab(context: BaseAudioContext, input: AudioNode, ampConfig: AmpCabConfig) {
@@ -647,7 +893,7 @@ function connectAmpCab(context: BaseAudioContext, input: AudioNode, ampConfig: A
   bass.type = 'lowshelf'; bass.frequency.value = amp.voicing.lowHz; bass.gain.value = (parameter(ampValues, 'bass', 50) - 50) * 0.22;
   mids.type = 'peaking'; mids.frequency.value = amp.voicing.midHz; mids.Q.value = 0.72; mids.gain.value = (parameter(ampValues, 'mid', 50) - 50) * 0.25;
   treble.type = 'highshelf'; treble.frequency.value = amp.voicing.highHz; treble.gain.value = (parameter(ampValues, 'treble', 50) - 50) * 0.2;
-  shaper.curve = makeDriveCurve(Math.max(1, gainValue * amp.voicing.drive));
+  shaper.curve = cachedDriveCurve(Math.max(1, gainValue * amp.voicing.drive));
   shaper.oversample = '4x';
   presence.type = 'peaking'; presence.frequency.value = amp.voicing.presenceHz; presence.Q.value = 0.72; presence.gain.value = (parameter(ampValues, 'presence', 50) - 50) * 0.17;
   ampCut.type = 'lowpass'; ampCut.frequency.value = amp.voicing.highCut; ampCut.Q.value = 0.62;
@@ -750,19 +996,34 @@ function startLiveGraph(
   offsetSeconds: number,
   buffer: AudioBuffer,
 ) {
-  stopLiveGraph(session);
   const key = sourceConfigKey(config.source);
+  const scheduled: AudioScheduledSourceNode[] = [];
   const source = session.context.createBufferSource();
-  const input = session.context.createGain();
-  source.buffer = buffer;
-  source.loop = true;
-  source.loopEnd = buffer.duration;
-  source.connect(input);
-  const effected = connectBoardGraph(session.context, input, config, session.scheduled);
-  const master = connectMaster(session.context, effected, config.output);
-  master.connect(session.context.destination);
+  let master: AudioNode | null = null;
   const safeOffset = offsetSeconds % buffer.duration;
-  source.start(0, safeOffset);
+  try {
+    const input = session.context.createGain();
+    source.buffer = buffer;
+    source.loop = true;
+    source.loopEnd = buffer.duration;
+    source.connect(input);
+    const effected = connectBoardGraph(session.context, input, config, scheduled);
+    master = connectMaster(session.context, effected, config.output);
+    source.start(0, safeOffset);
+    master.connect(session.context.destination);
+  } catch (error) {
+    scheduled.forEach((node) => {
+      try { node.stop(); } catch { /* already stopped */ }
+      node.disconnect();
+    });
+    try { source.stop(); } catch { /* not started or already stopped */ }
+    source.disconnect();
+    master?.disconnect();
+    throw error;
+  }
+
+  stopLiveGraph(session);
+  session.scheduled = scheduled;
   session.source = source;
   session.output = master;
   session.startedAt = session.context.currentTime - safeOffset;
@@ -775,40 +1036,43 @@ export async function createLiveSession(config: BoardAudioConfig) {
     (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
   if (!AudioContextClass) throw new Error('当前浏览器不支持音频预览');
   const context = new AudioContextClass();
-  activateMobileAudio(context, window.navigator);
-  await context.resume();
-  await Promise.all([prepareNoiseGateProcessor(context), preparePedalKernelProcessor(context)]);
-  const session: LiveAudioSession = {
-    context,
-    source: null,
-    output: null,
-    scheduled: [],
-    buffers: new Map(),
-    startedAt: 0,
-    duration: SOURCE_DURATION_SECONDS,
-    sourceKey: sourceConfigKey(config.source),
-    revision: 0,
-  };
-  const buffer = await makeAudioBuffer(context, config.source);
-  session.buffers.set(session.sourceKey, buffer);
-  startLiveGraph(session, config, 0, buffer);
-  return session;
+  try {
+    activateMobileAudio(context, window.navigator);
+    await context.resume();
+    await Promise.all([prepareNoiseGateProcessor(context), preparePedalKernelProcessor(context)]);
+    const session: LiveAudioSession = {
+      context,
+      source: null,
+      output: null,
+      scheduled: [],
+      buffers: new Map(),
+      bufferLoads: new Map(),
+      startedAt: 0,
+      duration: SOURCE_DURATION_SECONDS,
+      sourceKey: sourceConfigKey(config.source),
+      revision: 0,
+    };
+    const buffer = await loadSessionBuffer(session, session.sourceKey, config.source);
+    rememberSessionBuffer(session, session.sourceKey, buffer);
+    startLiveGraph(session, config, 0, buffer);
+    return session;
+  } catch (error) {
+    try { await context.close(); } catch { /* preserve the original creation failure */ }
+    throw error;
+  }
 }
 
 export async function refreshLiveSession(session: LiveAudioSession, config: BoardAudioConfig) {
-  if (session.context.state === 'closed') return;
+  if (isClosedAudioContext(session.context)) return;
   const revision = ++session.revision;
   await Promise.all([prepareNoiseGateProcessor(session.context), preparePedalKernelProcessor(session.context)]);
   const key = sourceConfigKey(config.source);
   const offset = sourceConfigKey(config.source) === session.sourceKey
     ? (session.context.currentTime - session.startedAt) % session.duration
     : 0;
-  let buffer = session.buffers.get(key);
-  if (!buffer) {
-    buffer = await makeAudioBuffer(session.context, config.source);
-    session.buffers.set(key, buffer);
-  }
-  if (session.revision !== revision || session.context.state === 'closed') return;
+  const buffer = await loadSessionBuffer(session, key, config.source);
+  if (session.revision !== revision || isClosedAudioContext(session.context)) return;
+  rememberSessionBuffer(session, key, buffer);
   startLiveGraph(session, config, offset, buffer);
 }
 
@@ -816,12 +1080,17 @@ export async function disposeLiveSession(session: LiveAudioSession | null) {
   if (!session) return;
   session.revision += 1;
   stopLiveGraph(session);
+  session.buffers.clear();
+  session.bufferLoads.clear();
   await session.context.close();
 }
 
 export async function renderBoardToWav(config: BoardAudioConfig) {
   const sampleRate = 44_100;
-  const tail = estimateTailSeconds(config.chain, config.values, new Set(config.bypassed));
+  const tail = estimateTailSeconds(config.chain, config.values, new Set(config.bypassed), {
+    mode: config.mode,
+    routing: config.routing,
+  });
   const totalSeconds = SOURCE_DURATION_SECONDS + tail;
   const offline = new OfflineAudioContext(2, Math.ceil(totalSeconds * sampleRate), sampleRate);
   await Promise.all([prepareNoiseGateProcessor(offline), preparePedalKernelProcessor(offline)]);
@@ -835,5 +1104,8 @@ export async function renderBoardToWav(config: BoardAudioConfig) {
   source.start(0);
   const rendered = await offline.startRendering();
   const channels = Array.from({ length: rendered.numberOfChannels }, (_, index) => rendered.getChannelData(index));
-  return new Blob([encodePcm16Wav(channels, rendered.sampleRate)], { type: 'audio/wav' });
+  const exportChannels = config.mode === 'wet'
+    ? trimRenderedTail(channels, rendered.sampleRate)
+    : channels;
+  return new Blob([encodePcm16Wav(exportChannels, rendered.sampleRate)], { type: 'audio/wav' });
 }

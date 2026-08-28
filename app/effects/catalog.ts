@@ -5,6 +5,25 @@ import { makeAmpCabConfig, type AmpCabConfig } from '../amps/catalog.ts';
 export type EffectCategory = 'Dynamics' | 'Tone' | 'Drive' | 'Mod' | 'Delay' | 'Space';
 export type ControlCurve = 'linear' | 'exponential';
 
+export const STYLE_TAGS = ['clean', 'blues', 'indie', 'funk', 'metal', 'shoegaze', 'ambient', 'rhythm', 'experimental'] as const;
+export type StyleTag = typeof STYLE_TAGS[number];
+
+export const STYLE_TAG_LABELS: Record<StyleTag, string> = {
+  clean: '清音',
+  blues: '布鲁斯',
+  indie: '独立',
+  funk: '放克',
+  metal: '金属',
+  shoegaze: '盯鞋',
+  ambient: '氛围',
+  rhythm: '节奏',
+  experimental: '实验',
+};
+
+const MAX_SEARCH_TERMS = 18;
+const MAX_SEARCH_TERM_LENGTH = 40;
+const MAX_STYLE_TAGS = 5;
+
 export type ControlSpec = {
   id: string;
   label: string;
@@ -23,6 +42,10 @@ export type EffectSpec = {
   category: EffectCategory;
   family: string;
   description: string;
+  /** Bounded aliases and use-case phrases used by library and agent search. */
+  searchTerms?: string[];
+  /** Stable style/use identifiers; labels are available through STYLE_TAG_LABELS. */
+  styleTags?: StyleTag[];
   finish: string;
   ink: string;
   accent: string;
@@ -40,6 +63,8 @@ export type FactoryPreset = {
   id: string;
   name: string;
   description: string;
+  /** Stable style/use identifiers for preset discovery. */
+  styleTags?: StyleTag[];
   source: SourceKind | SourceConfig;
   output: number;
   routing: RoutingConfig;
@@ -48,6 +73,7 @@ export type FactoryPreset = {
 };
 
 export type InstantiatedPreset = {
+  selectedInstanceId?: string;
   chain: Array<{ instanceId: string; specId: string; lane?: SignalLane }>;
   values: Record<string, Record<string, number>>;
   bypassed: string[];
@@ -73,7 +99,7 @@ const mix = (defaultValue = 40) => c('mix', '混合', defaultValue);
 const rate = (defaultValue = 25) => c('rate', '速率', defaultValue, 0.05, 10, 'Hz', 2, 'exponential');
 const tone = (defaultValue = 50) => c('tone', '音色', defaultValue, 800, 12_000, 'Hz', 0, 'exponential');
 
-export const EFFECT_SPECS: EffectSpec[] = [
+const EFFECT_SPECS_BASE: EffectSpec[] = [
   {
     id: 'studio-comp', name: 'MXR Dyna Comp', maker: 'MXR', category: 'Dynamics', family: 'Dyna Comp 风格压缩',
     description: '均衡拨弦动态，同时保留清音分解的颗粒感。', finish: '#3978b7', ink: '#f4f6f8', accent: '#ef5e47',
@@ -210,7 +236,121 @@ export const EFFECT_SPECS: EffectSpec[] = [
   },
 ];
 
-export const FACTORY_PRESETS: FactoryPreset[] = [
+type EffectDiscovery = Pick<EffectSpec, 'searchTerms' | 'styleTags'>;
+
+const effectDiscovery: Record<string, EffectDiscovery> = {
+  'studio-comp': {
+    searchTerms: ['compressor', 'compression', 'dynamics', '压缩', '动态', 'clean', '清音', 'blues', '布鲁斯', 'funk', '放克', 'rhythm', 'rhythmic', '节奏', '律动'],
+    styleTags: ['clean', 'blues', 'funk', 'rhythm'],
+  },
+  'noise-gate': {
+    searchTerms: ['noise gate', 'gate', 'suppression', '降噪', '门限', 'metal', '金属', 'rhythm', 'rhythmic', '节奏', 'tight', '紧实', 'experimental', '实验'],
+    styleTags: ['metal', 'rhythm', 'experimental'],
+  },
+  'graphic-eq': {
+    searchTerms: ['equalizer', 'eq', 'tone shaping', '均衡', '音色塑形', 'clean', '清音', 'indie', '独立', 'metal', '金属', 'experimental', '实验', 'mix', '混音'],
+    styleTags: ['clean', 'indie', 'metal', 'experimental'],
+  },
+  'blue-drive': {
+    searchTerms: ['overdrive', 'drive', 'blues', 'blue', '布鲁斯', '蓝调', '过载', 'indie', '独立', 'clean boost', '清音推动', 'rhythm', '节奏'],
+    styleTags: ['blues', 'indie', 'clean', 'rhythm'],
+  },
+  'rodent-dist': {
+    searchTerms: ['distortion', '失真', 'overdrive', '过载', 'indie', '独立', 'metal', '金属', 'experimental', '实验', 'grunge', '粗粝'],
+    styleTags: ['indie', 'metal', 'experimental'],
+  },
+  'wall-fuzz': {
+    searchTerms: ['fuzz', '法兹', 'fuzz pedal', 'sustain', '延音', 'shoegaze', '盯鞋', 'ambient', '氛围', 'indie', '独立', 'wall of sound', '音墙', 'experimental', '实验'],
+    styleTags: ['shoegaze', 'ambient', 'indie', 'experimental'],
+  },
+  'fuzz-face': {
+    searchTerms: ['fuzz', '法兹', 'germanium', '锗管', 'clean up', '动态清理', 'blues', '布鲁斯', '蓝调', 'indie', '独立', 'vintage', '复古'],
+    styleTags: ['blues', 'indie', 'clean'],
+  },
+  'ocd-drive': {
+    searchTerms: ['overdrive', '过载', 'drive', '驱动', 'blues', '布鲁斯', 'indie', '独立', 'rhythm', '节奏', 'rock', '摇滚'],
+    styleTags: ['blues', 'indie', 'rhythm'],
+  },
+  'klon-centaur': {
+    searchTerms: ['overdrive', '过载', 'clean boost', '清音推动', 'transparent', '透明', 'blues', '布鲁斯', 'indie', '独立', 'always on', '常开'],
+    styleTags: ['clean', 'blues', 'indie'],
+  },
+  'sd1-drive': {
+    searchTerms: ['overdrive', '过载', 'boost', '推动', 'blues', '布鲁斯', 'metal', '金属', 'rhythm', '节奏', 'tight', '紧实'],
+    styleTags: ['blues', 'metal', 'rhythm'],
+  },
+  'tube-screamer': {
+    searchTerms: ['overdrive', '过载', 'boost', '推动', 'blues', '布鲁斯', 'metal', '金属', 'rhythm', '节奏', 'mid boost', '中频推动'],
+    styleTags: ['blues', 'metal', 'rhythm'],
+  },
+  'chainsaw-dist': {
+    searchTerms: ['distortion', '失真', 'metal', 'heavy metal', '金属', '重金属', 'rhythm', 'rhythmic', '节奏', '律动', 'noise', '噪音', 'experimental', '实验', 'chainsaw', '电锯'],
+    styleTags: ['metal', 'rhythm', 'experimental'],
+  },
+  'slow-phase': {
+    searchTerms: ['phaser', 'phase', '相位', 'modulation', '调制', 'ambient', '氛围', 'indie', '独立', 'funk', '放克', 'rhythm', '节奏', 'swirl', '旋转'],
+    styleTags: ['ambient', 'indie', 'funk', 'rhythm'],
+  },
+  'analog-chorus': {
+    searchTerms: ['chorus', '合唱', 'clean', '清音', 'indie', '独立', 'ambient', '氛围', 'shoegaze', '盯鞋', 'funk', '放克', 'width', '拓宽'],
+    styleTags: ['clean', 'indie', 'ambient', 'shoegaze'],
+  },
+  phase90: {
+    searchTerms: ['phaser', 'phase', '相位', 'funk', '放克', 'rhythm', '节奏', 'indie', '独立', 'ambient', '氛围', 'swirl', '旋转'],
+    styleTags: ['funk', 'rhythm', 'indie', 'ambient'],
+  },
+  'jet-flanger': {
+    searchTerms: ['flanger', '镶边', 'jet', '喷气', 'experimental', '实验', 'indie', '独立', 'ambient', '氛围', 'rhythm', '律动', 'metal', '金属'],
+    styleTags: ['experimental', 'indie', 'ambient', 'rhythm'],
+  },
+  'tape-vibrato': {
+    searchTerms: ['vibrato', '颤音', 'pitch modulation', '音高调制', 'ambient', '氛围', 'indie', '独立', 'experimental', '实验', 'shoegaze', '盯鞋', 'tape', '磁带'],
+    styleTags: ['ambient', 'indie', 'experimental', 'shoegaze'],
+  },
+  'bias-tremolo': {
+    searchTerms: ['tremolo', '抖音', 'volume modulation', '音量调制', 'rhythm', 'rhythmic', '节奏', '律动', 'funk', '放克', 'indie', '独立', 'ambient', '氛围'],
+    styleTags: ['rhythm', 'funk', 'indie', 'ambient'],
+  },
+  'soft-detune': {
+    searchTerms: ['detune', '失谐', 'chorus', '合唱', 'shoegaze', '盯鞋', 'ambient', '氛围', 'indie', '独立', 'experimental', '实验', 'wide', '宽声场'],
+    styleTags: ['shoegaze', 'ambient', 'indie', 'experimental'],
+  },
+  'analog-delay': {
+    searchTerms: ['delay', '延迟', 'echo', '回声', 'analog', '模拟', 'ambient', '氛围', 'indie', '独立', 'shoegaze', '盯鞋', 'blues', '布鲁斯', 'space', '空间'],
+    styleTags: ['ambient', 'indie', 'shoegaze', 'blues'],
+  },
+  'dm2-delay': {
+    searchTerms: ['delay', '延迟', 'echo', '回声', 'slapback', '短回声', 'blues', '布鲁斯', 'rhythm', '节奏', 'rockabilly', '复古', 'clean', '清音'],
+    styleTags: ['blues', 'rhythm', 'clean'],
+  },
+  'tape-echo': {
+    searchTerms: ['delay', '延迟', 'echo', '回声', 'tape echo', '磁带回声', 'ambient', '氛围', 'indie', '独立', 'experimental', '实验', 'dub', '回响'],
+    styleTags: ['ambient', 'indie', 'experimental'],
+  },
+  'digital-delay': {
+    searchTerms: ['delay', '延迟', 'digital', '数字', 'rhythm', '节奏', 'clean', '清音', 'indie', '独立', 'ambient', '氛围', 'tempo', '拍点'],
+    styleTags: ['rhythm', 'clean', 'indie', 'ambient'],
+  },
+  'reverse-space': {
+    searchTerms: ['reverb', '混响', 'reverse', '反向', 'shoegaze', '盯鞋', 'ambient', '氛围', 'experimental', '实验', 'indie', '独立', 'space', '空间'],
+    styleTags: ['shoegaze', 'ambient', 'experimental', 'indie'],
+  },
+  'gated-room': {
+    searchTerms: ['reverb', '混响', 'gate', '门限', 'gated', '门限空间', 'metal', '金属', 'rhythm', '节奏', 'experimental', '实验', '80s', '八十年代'],
+    styleTags: ['metal', 'rhythm', 'experimental'],
+  },
+  'cloud-hall': {
+    searchTerms: ['reverb', '混响', 'space', '空间', 'hall', '大厅', 'ambient', '氛围', 'shoegaze', '盯鞋', 'indie', '独立', 'experimental', '实验', 'clean', '清音'],
+    styleTags: ['ambient', 'shoegaze', 'indie', 'experimental'],
+  },
+};
+
+export const EFFECT_SPECS: EffectSpec[] = EFFECT_SPECS_BASE.map((effect) => ({
+  ...effect,
+  ...(effectDiscovery[effect.id] ?? {}),
+}));
+
+const FACTORY_PRESETS_BASE: FactoryPreset[] = [
   {
     id: 'reverse-wall', name: '反向音墙', description: '反向空间先进法兹，厚、黏、带吸入感。', source: 'chords', output: 66,
     routing: { mode: 'serial', blend: 50, spread: 0 },
@@ -274,7 +414,7 @@ export const FACTORY_PRESETS: FactoryPreset[] = [
     routing: { mode: 'serial', blend: 50, spread: 0 },
     amp: makeAmpCabConfig('class-a-30', 'blue-2x12', { gain: 33, treble: 62, presence: 56 }),
     chain: [
-      { specId: 'blue-drive', settings: { gain: 34, tone: 48, level: 64 } },
+      { specId: 'blue-drive', settings: { gain: 34, tone: 48, level: 88 } },
       { specId: 'jet-flanger', settings: { manual: 46, rate: 18, depth: 72, res: 54, mix: 44 } },
       { specId: 'tape-echo', settings: { time: 58, repeats: 42, mix: 28, wow: 31 } },
       { specId: 'cloud-hall', settings: { mix: 43, decay: 67, motion: 42 } },
@@ -319,6 +459,23 @@ export const FACTORY_PRESETS: FactoryPreset[] = [
   },
 ];
 
+const presetStyleTags: Record<string, StyleTag[]> = {
+  'reverse-wall': ['shoegaze', 'ambient', 'indie', 'experimental'],
+  'soft-focus': ['clean', 'ambient', 'indie'],
+  'glide-bloom': ['blues', 'shoegaze', 'ambient', 'indie'],
+  'grey-machine': ['metal', 'rhythm', 'experimental'],
+  'slow-orbit': ['ambient', 'indie', 'experimental'],
+  'jet-cloud': ['indie', 'funk', 'ambient', 'experimental'],
+  'pulse-haze': ['rhythm', 'funk', 'ambient'],
+  'stereo-bloom': ['clean', 'shoegaze', 'ambient', 'experimental'],
+  'dual-wall': ['metal', 'rhythm', 'shoegaze', 'experimental'],
+};
+
+export const FACTORY_PRESETS: FactoryPreset[] = FACTORY_PRESETS_BASE.map((preset) => ({
+  ...preset,
+  styleTags: presetStyleTags[preset.id] ?? [],
+}));
+
 const byId = new Map(EFFECT_SPECS.map((effect) => [effect.id, effect]));
 let presetSerial = 0;
 
@@ -326,6 +483,20 @@ export function getEffectSpec(id: string) {
   const effect = byId.get(id);
   if (!effect) throw new Error(`Unknown effect: ${id}`);
   return effect;
+}
+
+export function getEffectSearchText(effect: EffectSpec) {
+  const styleTerms = (effect.styleTags ?? []).flatMap((tag) => [tag, STYLE_TAG_LABELS[tag]]);
+  return [effect.id, effect.name, effect.maker, effect.family, effect.description, ...(effect.searchTerms ?? []), ...styleTerms].join(' ');
+}
+
+export function getPresetSearchText(preset: FactoryPreset) {
+  const styleTerms = (preset.styleTags ?? []).flatMap((tag) => [tag, STYLE_TAG_LABELS[tag]]);
+  const chainTerms = preset.chain.flatMap((item) => {
+    const effect = byId.get(item.specId);
+    return effect ? [effect.id, effect.name, effect.family, ...(effect.searchTerms ?? [])] : [item.specId];
+  });
+  return [preset.id, preset.name, preset.description, ...chainTerms, ...styleTerms].join(' ');
 }
 
 export function mapControlValue(control: ControlSpec, normalizedValue: number) {
@@ -342,6 +513,44 @@ export function formatControlValue(control: ControlSpec, normalizedValue: number
   return `${prefix}${value} ${control.unit}`.trim();
 }
 
+function validateSearchTerms(ownerId: string, terms: unknown, errors: string[]) {
+  if (terms === undefined) return;
+  if (!Array.isArray(terms)) {
+    errors.push(`invalid search terms: ${ownerId}`);
+    return;
+  }
+  if (terms.length > MAX_SEARCH_TERMS) errors.push(`too many search terms: ${ownerId}`);
+  const seen = new Set<string>();
+  terms.forEach((term) => {
+    if (typeof term !== 'string' || !term.trim()) {
+      errors.push(`invalid search term: ${ownerId}`);
+      return;
+    }
+    const normalized = term.trim().toLocaleLowerCase();
+    if (seen.has(normalized)) errors.push(`duplicate search term: ${ownerId}.${term}`);
+    seen.add(normalized);
+    if (term.trim().length > MAX_SEARCH_TERM_LENGTH) errors.push(`search term too long: ${ownerId}.${term}`);
+  });
+}
+
+function validateStyleTags(ownerId: string, tags: unknown, errors: string[]) {
+  if (tags === undefined) return;
+  if (!Array.isArray(tags)) {
+    errors.push(`invalid style tags: ${ownerId}`);
+    return;
+  }
+  if (tags.length > MAX_STYLE_TAGS) errors.push(`too many style tags: ${ownerId}`);
+  const seen = new Set<string>();
+  tags.forEach((tag) => {
+    if (typeof tag !== 'string' || !STYLE_TAGS.includes(tag as StyleTag)) {
+      errors.push(`invalid style tag: ${ownerId}.${String(tag)}`);
+      return;
+    }
+    if (seen.has(tag)) errors.push(`duplicate style tag: ${ownerId}.${tag}`);
+    seen.add(tag);
+  });
+}
+
 export function validateCatalog(catalog: EffectSpec[]) {
   const errors: string[] = [];
   const effectIds = new Set<string>();
@@ -349,6 +558,8 @@ export function validateCatalog(catalog: EffectSpec[]) {
     if (effectIds.has(effect.id)) errors.push(`duplicate effect: ${effect.id}`);
     effectIds.add(effect.id);
     if (effect.controls.length < 1) errors.push(`too few controls: ${effect.id}`);
+    validateSearchTerms(effect.id, effect.searchTerms, errors);
+    validateStyleTags(effect.id, effect.styleTags, errors);
     const controlIds = new Set<string>();
     effect.controls.forEach((control) => {
       if (controlIds.has(control.id)) errors.push(`duplicate control: ${effect.id}.${control.id}`);
@@ -356,6 +567,17 @@ export function validateCatalog(catalog: EffectSpec[]) {
       if (control.defaultValue < 0 || control.defaultValue > 100) errors.push(`invalid default: ${effect.id}.${control.id}`);
       if (control.min >= control.max) errors.push(`invalid range: ${effect.id}.${control.id}`);
     });
+  });
+  return errors;
+}
+
+export function validateFactoryPresets(presets: FactoryPreset[]) {
+  const errors: string[] = [];
+  const presetIds = new Set<string>();
+  presets.forEach((preset) => {
+    if (presetIds.has(preset.id)) errors.push(`duplicate preset: ${preset.id}`);
+    presetIds.add(preset.id);
+    validateStyleTags(preset.id, preset.styleTags, errors);
   });
   return errors;
 }

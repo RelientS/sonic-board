@@ -97,7 +97,9 @@ export function instantiateUserPreset(preset: UserPreset): InstantiatedPreset {
 }
 
 function isFiniteNumberMap(value: unknown): value is Record<string, number> {
-  return Boolean(value) && typeof value === 'object' && Object.values(value).every((setting) => typeof setting === 'number' && Number.isFinite(setting));
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  return Object.values(value as Record<string, unknown>)
+    .every((setting) => typeof setting === 'number' && Number.isFinite(setting));
 }
 
 function normalizeAmp(value: unknown) {

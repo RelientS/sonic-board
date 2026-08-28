@@ -27,7 +27,7 @@ test('pi prompt treats history and board summaries as untrusted context', () => 
   assert.match(prompt, /为什么相位听不明显/);
   assert.match(prompt, /之前把 rate 调慢了/);
   assert.match(prompt, /经典名称只用于标识参考对象/);
-  assert.match(prompt, /13.*PedalKernel WDF/s);
+  assert.match(prompt, /11.*PedalKernel WDF.*实时修正/s);
   assert.doesNotMatch(prompt, /旧引擎/);
   assert.match(prompt, /没有真机盲测分数/);
   assert.doesNotMatch(prompt, /sk-token/);
@@ -53,6 +53,14 @@ test('pi request normalization rejects forged catalog state and bounds conversat
     history: [],
   }), null);
   assert.equal(normalizeToneAgentRequest({ instruction: '读取', context: { ...context, output: -2 }, history: [] }), null);
+  const legacyAmp = {
+    ampId: context.amp.ampId,
+    cabId: context.amp.cabId,
+    ampValues: context.amp.ampValues,
+    cabValues: context.amp.cabValues,
+  };
+  const legacyContext = { ...context, amp: legacyAmp };
+  assert.ok(normalizeToneAgentRequest({ instruction: '读取', context: legacyContext, history: [] }));
   const longChain = Array.from({ length: 16 }, (_, index) => ({ instanceId: `phase-${index}`, specId: 'slow-phase', lane: 'A' as const }));
   const longValues = Object.fromEntries(longChain.map((item) => [item.instanceId, { rate: 18, depth: 38, res: 18, mix: 44 }]));
   assert.equal(normalizeToneAgentRequest({
@@ -89,4 +97,52 @@ test('pi tools emit visible call/result traces and validated actions', async () 
   assert.equal(traces[0].kind, 'observe');
   assert.equal(traces[3].kind, 'tool-result');
   assert.deepEqual(runtime.actions, [{ type: 'update_effect', instanceId: 'phase-1', values: { rate: 9, mix: 31 } }]);
+});
+
+test('pi tools enforce inspect-first and project accepted actions into later observations', async () => {
+  const runtime = createToneAgentTools(context);
+  const inspect = runtime.tools.find((tool) => tool.name === 'inspect_board');
+  const update = runtime.tools.find((tool) => tool.name === 'update_effect');
+  assert.ok(inspect && update);
+
+  await assert.rejects(
+    update.execute('call-before-inspect', { instanceId: 'phase-1', values: { rate: 9 } } as never, undefined as never, undefined as never),
+    /先调用 inspect_board/,
+  );
+  await inspect.execute('call-inspect', {} as never, undefined as never, undefined as never);
+  await update.execute('call-update', { instanceId: 'phase-1', values: { rate: 9 } } as never, undefined as never, undefined as never);
+  const result = await inspect.execute('call-inspect-again', {} as never, undefined as never, undefined as never);
+  const text = result.content.find((entry) => entry.type === 'text')?.text;
+  assert.ok(text);
+  const board = JSON.parse(text);
+  assert.equal(board.chain[0].values.rate, 9);
+});
+
+test('pi tools cap update actions and preserve amp bypass state', async () => {
+  const ampRuntime = createToneAgentTools({ ...context, amp: { ...context.amp, bypassed: true } });
+  const ampInspect = ampRuntime.tools.find((tool) => tool.name === 'inspect_board');
+  const setAmp = ampRuntime.tools.find((tool) => tool.name === 'set_amp_cab');
+  assert.ok(ampInspect && setAmp);
+
+  const initial = await ampInspect.execute('call-inspect', {} as never, undefined as never, undefined as never);
+  const initialText = initial.content.find((entry) => entry.type === 'text')?.text;
+  assert.ok(initialText);
+  assert.equal(JSON.parse(initialText).amp.bypassed, true);
+  await setAmp.execute('call-set-amp', { ampId: 'brit-20', cabId: 'closed-4x12' } as never, undefined as never, undefined as never);
+  const ampAction = ampRuntime.actions.at(-1);
+  assert.equal(ampAction?.type, 'set_amp_cab');
+  assert.equal(ampAction?.type === 'set_amp_cab' ? ampAction.amp.bypassed : undefined, true);
+
+  const runtime = createToneAgentTools(context);
+  const inspect = runtime.tools.find((tool) => tool.name === 'inspect_board');
+  const update = runtime.tools.find((tool) => tool.name === 'update_effect');
+  assert.ok(inspect && update);
+  await inspect.execute('call-inspect', {} as never, undefined as never, undefined as never);
+  for (let index = 0; index < 16; index += 1) {
+    await update.execute(`call-update-${index}`, { instanceId: 'phase-1', values: { rate: index } } as never, undefined as never, undefined as never);
+  }
+  await assert.rejects(
+    update.execute('call-update-over-cap', { instanceId: 'phase-1', values: { rate: 20 } } as never, undefined as never, undefined as never),
+    /最多执行 16 个/,
+  );
 });

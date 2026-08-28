@@ -2,17 +2,54 @@ import { SOURCE_DURATION_SECONDS } from './audio-core.ts';
 import { REAL_GUITAR_SAMPLE_BANKS, applySampleInputHeadroom, makeSamplePlaybackPlan } from './sample-library.ts';
 import { type SourceConfig } from './source-catalog.ts';
 
-const encodedSampleCache = new Map<string, Promise<ArrayBuffer>>();
+// A render uses at most eleven roots; retain a little room without keeping all 48 files.
+export const MAX_ENCODED_SAMPLE_CACHE_ENTRIES = 16;
 
-async function fetchSample(url: string) {
-  let pending = encodedSampleCache.get(url);
-  if (!pending) {
-    pending = fetch(url).then(async (response) => {
+const encodedSampleCache = new Map<string, ArrayBuffer>();
+const inFlightSampleFetches = new Map<string, Promise<ArrayBuffer>>();
+
+function rememberEncodedSample(url: string, encoded: ArrayBuffer) {
+  encodedSampleCache.delete(url);
+  encodedSampleCache.set(url, encoded);
+  while (encodedSampleCache.size > MAX_ENCODED_SAMPLE_CACHE_ENTRIES) {
+    const oldest = encodedSampleCache.keys().next().value;
+    if (oldest === undefined) break;
+    encodedSampleCache.delete(oldest);
+  }
+}
+
+export function getEncodedSampleCacheSize() {
+  return encodedSampleCache.size;
+}
+
+function fetchSample(url: string) {
+  const cached = encodedSampleCache.get(url);
+  if (cached !== undefined) {
+    rememberEncodedSample(url, cached);
+    return Promise.resolve(cached);
+  }
+
+  const inFlight = inFlightSampleFetches.get(url);
+  if (inFlight) return inFlight;
+
+  const pending = fetch(url)
+    .then(async (response) => {
       if (!response.ok) throw new Error(`采样加载失败：${response.status} ${url}`);
       return response.arrayBuffer();
+    })
+    .then((encoded) => {
+      rememberEncodedSample(url, encoded);
+      return encoded;
     });
-    encodedSampleCache.set(url, pending);
-  }
+  inFlightSampleFetches.set(url, pending);
+  void pending.then(
+    () => {
+      if (inFlightSampleFetches.get(url) === pending) inFlightSampleFetches.delete(url);
+    },
+    () => {
+      if (inFlightSampleFetches.get(url) === pending) inFlightSampleFetches.delete(url);
+    },
+  );
   return pending;
 }
 

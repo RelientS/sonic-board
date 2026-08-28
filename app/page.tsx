@@ -39,14 +39,19 @@ import {
 import {
   EFFECT_SPECS,
   FACTORY_PRESETS,
+  STYLE_TAGS,
+  STYLE_TAG_LABELS,
   formatControlValue,
+  getEffectSearchText,
   getEffectSpec,
+  getPresetSearchText,
   instantiatePreset,
   makeDefaultValues,
   type ControlSpec,
   type EffectCategory,
   type EffectSpec,
   type InstantiatedPreset,
+  type StyleTag,
 } from './effects/catalog';
 import { getControlHelp, type ControlOwnerKind } from './effects/control-help';
 import { getPedalControlLabel } from './effects/control-labels';
@@ -59,7 +64,25 @@ import {
 
 type ChainItem = AudioChainItem;
 type Values = Record<string, Record<string, number>>;
+type BoardUiState = {
+  chain: ChainItem[];
+  snapshots: Record<'A' | 'B', Values>;
+  snapshot: 'A' | 'B';
+  selected: string;
+  bypassed: Set<string>;
+  source: SourceConfig;
+  routing: RoutingConfig;
+  amp: AmpCabConfig;
+  output: number;
+  mode: 'dry' | 'wet';
+  activePresetName: string;
+};
+type AgentUndoEntry = {
+  baseline: BoardUiState;
+  appliedRevision: number;
+};
 type LibraryMode = 'effects' | 'presets' | 'output';
+type StyleFilter = 'All' | StyleTag;
 type HelpTarget = {
   kind: ControlOwnerKind;
   modelId: string;
@@ -82,6 +105,38 @@ const initialBoard = instantiatePreset(initialFactoryPreset);
 
 function cloneValues(values: Values) {
   return Object.fromEntries(Object.entries(values).map(([id, controls]) => [id, { ...controls }]));
+}
+
+function cloneBoardUiState(state: BoardUiState): BoardUiState {
+  return {
+    chain: state.chain.map((item) => ({ ...item })),
+    snapshots: { A: cloneValues(state.snapshots.A), B: cloneValues(state.snapshots.B) },
+    snapshot: state.snapshot,
+    selected: state.selected,
+    bypassed: new Set(state.bypassed),
+    source: { ...state.source },
+    routing: { ...state.routing },
+    amp: { ...state.amp, ampValues: { ...state.amp.ampValues }, cabValues: { ...state.amp.cabValues } },
+    output: state.output,
+    mode: state.mode,
+    activePresetName: state.activePresetName,
+  };
+}
+
+function removeInstanceValues(values: Values, instanceId: string) {
+  const next = cloneValues(values);
+  delete next[instanceId];
+  return next;
+}
+
+function getPlaybackProgress(session: LiveAudioSession | null) {
+  if (!session || session.context.state === 'closed' || !Number.isFinite(session.duration) || session.duration <= 0 || !Number.isFinite(session.startedAt)) return null;
+  const currentTime = session.context.currentTime;
+  if (!Number.isFinite(currentTime)) return null;
+  const elapsed = currentTime - session.startedAt;
+  if (!Number.isFinite(elapsed)) return null;
+  const offset = ((elapsed % session.duration) + session.duration) % session.duration;
+  return (offset / session.duration) * 100;
 }
 
 function makeSnapshots(board: InstantiatedPreset) {
@@ -239,6 +294,19 @@ function MiniPedal({ spec }: { spec: EffectSpec }) {
   return <span className={'mini-pedal' + (isWide ? ' is-wide' : '')} style={style} aria-hidden="true"><i /><i /><i /><b /></span>;
 }
 
+function StyleFilters({ value, onChange }: { value: StyleFilter; onChange: (value: StyleFilter) => void }) {
+  return (
+    <div className="style-filters" role="group" aria-label="按风格筛选">
+      <button type="button" className={value === 'All' ? 'active' : ''} aria-pressed={value === 'All'} onClick={() => onChange('All')}><span>全部</span><small>All</small></button>
+      {STYLE_TAGS.map((tag) => (
+        <button key={tag} type="button" className={value === tag ? 'active' : ''} aria-pressed={value === tag} onClick={() => onChange(tag)}>
+          <span>{STYLE_TAG_LABELS[tag]}</span><small>{tag}</small>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function DemoPedal({ item, index, values, selected, bypassed, tutorialEnabled, onSelect, onValue, onBypass, onDrop, onHelp }: {
   item: ChainItem;
   index: number;
@@ -269,7 +337,13 @@ function DemoPedal({ item, index, values, selected, bypassed, tutorialEnabled, o
       draggable
       tabIndex={0}
       aria-label={String(index + 1) + '. ' + spec.name + (bypassed ? '，已旁通' : '')}
+      aria-current={selected ? 'true' : undefined}
       onClick={onSelect}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget || (event.key !== 'Enter' && event.key !== ' ')) return;
+        event.preventDefault();
+        onSelect();
+      }}
       onDragStart={(event) => event.dataTransfer.setData('text/plain', 'move:' + item.instanceId)}
       onDragOver={(event) => event.preventDefault()}
       onDrop={(event) => { event.preventDefault(); onDrop(event.dataTransfer.getData('text/plain')); }}
@@ -322,7 +396,9 @@ export default function Home() {
   const [bypassed, setBypassed] = useState<Set<string>>(new Set(initialBoard.bypassed));
   const [libraryMode, setLibraryMode] = useState<LibraryMode>('effects');
   const [category, setCategory] = useState<'All' | EffectCategory>('All');
+  const [styleFilter, setStyleFilter] = useState<StyleFilter>('All');
   const [search, setSearch] = useState('');
+  const [presetSearch, setPresetSearch] = useState('');
   const [zoom, setZoom] = useState(0.94);
   const [mode, setMode] = useState<'dry' | 'wet'>('wet');
   const [routing, setRouting] = useState<RoutingConfig>(initialBoard.routing);
@@ -333,6 +409,7 @@ export default function Home() {
   const [presetName, setPresetName] = useState('我的音色');
   const [userPresets, setUserPresets] = useState<UserPreset[]>([]);
   const [playing, setPlaying] = useState(false);
+  const [playbackLoading, setPlaybackLoading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [render, setRender] = useState<'idle' | 'busy' | 'ready'>('idle');
   const [saveState, setSaveState] = useState<'idle' | 'saved'>('idle');
@@ -349,7 +426,11 @@ export default function Home() {
   const previousMonitorMode = useRef(mode);
   const helpInvoker = useRef<HTMLElement | null>(null);
   const agentAbort = useRef<AbortController | null>(null);
-  const agentUndo = useRef(new Map<string, ToneAgentBoardState>());
+  const playbackLoadingRef = useRef(false);
+  const boardRevision = useRef(0);
+  const playbackRefreshSerial = useRef(0);
+  const agentTurnSerial = useRef(0);
+  const agentUndo = useRef(new Map<string, AgentUndoEntry>());
   const manualPedalSerial = useRef(0);
   const values = snapshots[snapshot];
   const selectedIndex = chain.findIndex((item) => item.instanceId === selected);
@@ -364,10 +445,30 @@ export default function Home() {
     const query = search.trim().toLowerCase();
     return EFFECT_SPECS.filter((spec) => {
       const categoryMatches = category === 'All' || spec.category === category;
-      const queryMatches = !query || [spec.name, spec.maker, spec.family, spec.description].some((text) => text.toLowerCase().includes(query));
-      return categoryMatches && queryMatches;
+      const styleMatches = styleFilter === 'All' || spec.styleTags?.includes(styleFilter);
+      const queryMatches = !query || getEffectSearchText(spec).toLowerCase().includes(query);
+      return categoryMatches && styleMatches && queryMatches;
     });
-  }, [category, search]);
+  }, [category, search, styleFilter]);
+
+  const factoryPresetLibrary = useMemo(() => {
+    const query = presetSearch.trim().toLowerCase();
+    return FACTORY_PRESETS.filter((preset) => {
+      const styleMatches = styleFilter === 'All' || preset.styleTags?.includes(styleFilter);
+      const queryMatches = !query || getPresetSearchText(preset).toLowerCase().includes(query);
+      return styleMatches && queryMatches;
+    });
+  }, [presetSearch, styleFilter]);
+
+  const userPresetLibrary = useMemo(() => {
+    const query = presetSearch.trim().toLowerCase();
+    return userPresets.filter((preset) => {
+      const effects = preset.chain.map((item) => getEffectSpec(item.specId));
+      const styleMatches = styleFilter === 'All' || effects.some((effect) => effect.styleTags?.includes(styleFilter));
+      const queryMatches = !query || [preset.name, ...effects.map(getEffectSearchText)].join(' ').toLowerCase().includes(query);
+      return styleMatches && queryMatches;
+    });
+  }, [presetSearch, styleFilter, userPresets]);
 
   const audioConfig = useMemo<BoardAudioConfig>(() => ({
     chain,
@@ -392,15 +493,10 @@ export default function Home() {
     monitorMode: mode,
   }), [activePresetName, selected, chain, values, bypassed, source, routing, amp, output, mode]);
   const latestAudioConfig = useRef(audioConfig);
-  const latestToneAgentBoard = useRef(toneAgentBoard);
 
   useEffect(() => {
     latestAudioConfig.current = audioConfig;
   }, [audioConfig]);
-
-  useEffect(() => {
-    latestToneAgentBoard.current = toneAgentBoard;
-  }, [toneAgentBoard]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setUserPresets(parseUserPresets(window.localStorage.getItem('sonic-board-user-presets'))), 0);
@@ -409,11 +505,27 @@ export default function Home() {
 
   useEffect(() => {
     if (!playing) return;
-    const timer = window.setInterval(() => setProgress((value) => (value + 1.35) % 100), 80);
+    const updateProgress = () => {
+      const session = playback.current;
+      if (session?.context.state === 'closed') {
+        setPlaying(false);
+        setProgress(0);
+        setAudioError('试听已停止，请重试。');
+        void playback.stop().catch(() => {
+          // The controller invalidates the session before disposal begins.
+        });
+        return;
+      }
+      const nextProgress = getPlaybackProgress(session);
+      if (nextProgress !== null) setProgress(nextProgress);
+    };
+    updateProgress();
+    const timer = window.setInterval(updateProgress, 80);
     return () => window.clearInterval(timer);
-  }, [playing]);
+  }, [playback, playing]);
 
   useEffect(() => {
+    const refreshSerial = ++playbackRefreshSerial.current;
     const session = playback.current;
     if (!playing || !session) {
       previousMonitorMode.current = mode;
@@ -422,7 +534,19 @@ export default function Home() {
     const delay = previousMonitorMode.current === mode ? 140 : 0;
     previousMonitorMode.current = mode;
     const timer = window.setTimeout(() => {
-      if (playback.current === session) void refreshLiveSession(session, audioConfig);
+      if (playback.current !== session || !playback.requested) return;
+      void refreshLiveSession(session, audioConfig).catch(async () => {
+        if (refreshSerial !== playbackRefreshSerial.current || playback.current !== session || !playback.requested) return;
+        try {
+          await playback.stop();
+        } catch {
+          // The controller has already invalidated the failed session.
+        }
+        if (refreshSerial !== playbackRefreshSerial.current || playback.current !== null || playback.requested) return;
+        setPlaying(false);
+        setProgress(0);
+        setAudioError('试听更新失败，请重试。');
+      });
     }, delay);
     return () => window.clearTimeout(timer);
   }, [audioConfig, mode, playback, playing]);
@@ -432,7 +556,34 @@ export default function Home() {
     void playback.dispose();
   }, [playback]);
 
+  function markBoardChanged() {
+    boardRevision.current += 1;
+  }
+
+  function captureCurrentBoardUiState(): BoardUiState {
+    return cloneBoardUiState({
+      chain,
+      snapshots,
+      snapshot,
+      selected,
+      bypassed,
+      source,
+      routing,
+      amp,
+      output,
+      mode,
+      activePresetName,
+    });
+  }
+
+  function selectPedal(instanceId: string) {
+    if (selected === instanceId) return;
+    markBoardChanged();
+    setSelected(instanceId);
+  }
+
   function applyBoard(board: InstantiatedPreset, name: string) {
+    markBoardChanged();
     setChain(board.chain);
     setSnapshots(makeSnapshots(board));
     setSnapshot('A');
@@ -462,11 +613,27 @@ export default function Home() {
     setPresetName(preset.name);
   }
 
-  function applyToneAgentBoard(board: ToneAgentBoardState) {
+  function applyToneAgentBoard(board: ToneAgentBoardState, replaceSnapshots = false) {
+    markBoardChanged();
     const nextValues = cloneValues(board.values);
     setChain(board.chain.map((item) => ({ ...item })));
-    setSnapshots({ A: nextValues, B: cloneValues(nextValues) });
-    setSnapshot('A');
+    setSnapshots((current) => {
+      if (replaceSnapshots) return { A: nextValues, B: cloneValues(nextValues) };
+      const inactiveSnapshot = snapshot === 'A' ? 'B' : 'A';
+      const boardIds = new Set(board.chain.map((item) => item.instanceId));
+      const preservedInactive = Object.fromEntries(
+        Object.entries(current[inactiveSnapshot])
+          .filter(([instanceId]) => boardIds.has(instanceId))
+          .map(([instanceId, values]) => [instanceId, { ...values }]),
+      ) as Values;
+      board.chain.forEach((item) => {
+        if (!preservedInactive[item.instanceId]) preservedInactive[item.instanceId] = { ...(nextValues[item.instanceId] ?? {}) };
+      });
+      return snapshot === 'A'
+        ? { A: nextValues, B: preservedInactive }
+        : { A: preservedInactive, B: nextValues };
+    });
+    if (replaceSnapshots) setSnapshot('A');
     setSelected(board.chain[0]?.instanceId ?? '');
     setBypassed(new Set(board.bypassed));
     setSource({ ...board.source });
@@ -479,11 +646,32 @@ export default function Home() {
     setAudioError('');
   }
 
+  function restoreBoardUiState(state: BoardUiState) {
+    const restored = cloneBoardUiState(state);
+    markBoardChanged();
+    setChain(restored.chain);
+    setSnapshots(restored.snapshots);
+    setSnapshot(restored.snapshot);
+    setSelected(restored.selected);
+    setBypassed(restored.bypassed);
+    setSource(restored.source);
+    setRouting(restored.routing);
+    setAmp(restored.amp);
+    setOutput(restored.output);
+    setMode(restored.mode);
+    setActivePresetName(restored.activePresetName);
+    setRender('idle');
+    setAudioError('');
+  }
+
   async function runToneAgent() {
     const instruction = agentInput.trim();
     if (!instruction || agentBusy) return;
-    const turnId = `tone-agent-${Date.now()}`;
-    const context = captureToneAgentBoard(latestToneAgentBoard.current);
+    agentTurnSerial.current += 1;
+    const turnId = `tone-agent-${agentTurnSerial.current}`;
+    const requestRevision = boardRevision.current;
+    const undoBaseline = captureCurrentBoardUiState();
+    const context = captureToneAgentBoard(toneAgentBoard);
     const history = agentTurns.flatMap<ToneAgentMessage>((turn) => {
       const result: ToneAgentMessage[] = [{ role: 'user', content: turn.userMessage }];
       if (turn.message) result.push({ role: 'assistant', content: turn.message });
@@ -515,11 +703,26 @@ export default function Home() {
           }));
         },
       });
-      const before = captureToneAgentBoard(latestToneAgentBoard.current);
-      const applied = applyToneAgentActions(before, plan.actions);
+      if (boardRevision.current !== requestRevision) {
+        const staleMessage = '当前音色在 Agent 调整期间已发生变化，已忽略这次过期结果。';
+        setAgentError(staleMessage);
+        setAgentTurns((current) => current.map((turn) => turn.id === turnId ? {
+          ...turn,
+          status: 'failed',
+          message: undefined,
+          streamingMessage: undefined,
+          trace: plan.trace.length ? plan.trace : turn.trace,
+          actions: [],
+          appliedCount: 0,
+          applyErrors: [],
+        } : turn));
+        return;
+      }
+      const applied = applyToneAgentActions(context, plan.actions);
       if (applied.changed > 0) {
-        agentUndo.current.set(turnId, before);
-        applyToneAgentBoard(applied.board);
+        const replaceSnapshots = plan.actions.some((action) => action.type === 'replace_board');
+        applyToneAgentBoard(applied.board, replaceSnapshots);
+        agentUndo.current.set(turnId, { baseline: undoBaseline, appliedRevision: boardRevision.current });
       }
       setAgentTurns((current) => current.map((turn) => turn.id === turnId ? {
         ...turn,
@@ -550,9 +753,14 @@ export default function Home() {
   }
 
   function undoToneAgentTurn(turnId: string) {
-    const before = agentUndo.current.get(turnId);
-    if (!before) return;
-    applyToneAgentBoard(before);
+    const entry = agentUndo.current.get(turnId);
+    if (!entry) return;
+    if (boardRevision.current !== entry.appliedRevision) {
+      agentUndo.current.delete(turnId);
+      setAgentError('当前音色已发生新的调整，无法撤销这次 Agent 操作。');
+      return;
+    }
+    restoreBoardUiState(entry.baseline);
     agentUndo.current.delete(turnId);
     setAgentTurns((current) => current.map((turn) => turn.id === turnId ? { ...turn, undone: true } : turn));
   }
@@ -565,12 +773,14 @@ export default function Home() {
   }
 
   function updateSource(next: SourceConfig) {
+    markBoardChanged();
     setSource(next);
     setActivePresetName('已修改');
     setRender('idle');
   }
 
   function updateValue(instanceId: string, controlId: string, value: number) {
+    markBoardChanged();
     setSnapshots((current) => ({
       ...current,
       [snapshot]: {
@@ -587,6 +797,7 @@ export default function Home() {
       setAudioError('当前板面最多放 16 块效果器，请先移除一块。');
       return;
     }
+    markBoardChanged();
     manualPedalSerial.current += 1;
     const instanceId = `${specId}-manual-${manualPedalSerial.current}`;
     const defaults = makeDefaultValues(specId);
@@ -600,13 +811,17 @@ export default function Home() {
 
   function moveItem(instanceId: string, targetId: string) {
     if (instanceId === targetId) return;
+    const from = chain.findIndex((item) => item.instanceId === instanceId);
+    const to = chain.findIndex((item) => item.instanceId === targetId);
+    if (from < 0 || to < 0) return;
+    markBoardChanged();
     setChain((current) => {
-      const from = current.findIndex((item) => item.instanceId === instanceId);
-      const to = current.findIndex((item) => item.instanceId === targetId);
-      if (from < 0 || to < 0) return current;
+      const currentFrom = current.findIndex((item) => item.instanceId === instanceId);
+      const currentTo = current.findIndex((item) => item.instanceId === targetId);
+      if (currentFrom < 0 || currentTo < 0) return current;
       const next = [...current];
-      const moved = next.splice(from, 1)[0];
-      next.splice(to, 0, moved);
+      const moved = next.splice(currentFrom, 1)[0];
+      next.splice(currentTo, 0, moved);
       return next;
     });
     setActivePresetName('已修改');
@@ -625,30 +840,35 @@ export default function Home() {
 
   function assignSelectedLane(lane: SignalLane) {
     if (selectedIndex < 0) return;
+    markBoardChanged();
     setChain((current) => current.map((item) => item.instanceId === selected ? { ...item, lane } : item));
     setActivePresetName('已修改');
     setRender('idle');
   }
 
   function updateRouting(next: Partial<RoutingConfig>) {
+    markBoardChanged();
     setRouting((current) => ({ ...current, ...next }));
     setActivePresetName('已修改');
     setRender('idle');
   }
 
   function selectAmp(ampId: string) {
+    markBoardChanged();
     setAmp((current) => ({ ...current, ampId, ampValues: makeDefaultAmpValues(ampId) }));
     setActivePresetName('已修改');
     setRender('idle');
   }
 
   function selectCab(cabId: string) {
+    markBoardChanged();
     setAmp((current) => ({ ...current, cabId, cabValues: makeDefaultCabValues(cabId) }));
     setActivePresetName('已修改');
     setRender('idle');
   }
 
   function updateAmpValue(section: 'ampValues' | 'cabValues', controlId: string, value: number) {
+    markBoardChanged();
     setAmp((current) => ({ ...current, [section]: { ...current[section], [controlId]: value } }));
     setActivePresetName('已修改');
     setRender('idle');
@@ -665,14 +885,27 @@ export default function Home() {
   }
 
   function removeSelected() {
+    if (selectedIndex < 0) return;
+    const removedInstanceId = selected;
     const nextSelected = chain[selectedIndex - 1]?.instanceId ?? chain[selectedIndex + 1]?.instanceId ?? '';
-    setChain((current) => current.filter((item) => item.instanceId !== selected));
+    markBoardChanged();
+    setChain((current) => current.filter((item) => item.instanceId !== removedInstanceId));
+    setSnapshots((current) => ({
+      A: removeInstanceValues(current.A, removedInstanceId),
+      B: removeInstanceValues(current.B, removedInstanceId),
+    }));
+    setBypassed((current) => {
+      const next = new Set(current);
+      next.delete(removedInstanceId);
+      return next;
+    });
     setSelected(nextSelected);
     setActivePresetName('已修改');
     setRender('idle');
   }
 
   function toggleBypass(instanceId: string) {
+    markBoardChanged();
     setBypassed((current) => {
       const next = new Set(current);
       if (next.has(instanceId)) next.delete(instanceId);
@@ -683,14 +916,50 @@ export default function Home() {
     setRender('idle');
   }
 
+  function selectSnapshot(next: 'A' | 'B') {
+    if (snapshot === next) return;
+    markBoardChanged();
+    setSnapshot(next);
+    setRender('idle');
+  }
+
+  function setMonitorMode(next: 'dry' | 'wet') {
+    if (mode === next) return;
+    markBoardChanged();
+    setMode(next);
+    setRender('idle');
+  }
+
+  function updateOutput(next: number) {
+    if (output === next) return;
+    markBoardChanged();
+    setOutput(next);
+    setActivePresetName('已修改');
+    setRender('idle');
+  }
+
+  function toggleAmpBypass() {
+    markBoardChanged();
+    setAmp((current) => ({ ...current, bypassed: !current.bypassed }));
+    setActivePresetName('已修改');
+    setRender('idle');
+  }
+
   async function togglePlayback() {
+    if (playbackLoading || playbackLoadingRef.current) return;
     setAudioError('');
     if (playback.requested) {
       setPlaying(false);
       setProgress(0);
-      await playback.stop();
+      try {
+        await playback.stop();
+      } catch {
+        setAudioError('试听已停止，请重试。');
+      }
       return;
     }
+    playbackLoadingRef.current = true;
+    setPlaybackLoading(true);
     try {
       const session = await playback.start(audioConfig);
       if (!session) return;
@@ -700,9 +969,16 @@ export default function Home() {
       setProgress(0);
       setPlaying(true);
     } catch {
-      await playback.stop();
+      try {
+        await playback.stop();
+      } catch {
+        // The controller invalidates a failed startup before disposal begins.
+      }
       setPlaying(false);
       setAudioError('当前浏览器无法启动试听，请检查声音权限。');
+    } finally {
+      playbackLoadingRef.current = false;
+      setPlaybackLoading(false);
     }
   }
 
@@ -715,6 +991,7 @@ export default function Home() {
       const captured = captureUserPreset({ name: presetName, chain, values, bypassed, source, output, routing, amp });
       const next = [captured, ...userPresets].slice(0, 24);
       window.localStorage.setItem('sonic-board-user-presets', JSON.stringify(next));
+      markBoardChanged();
       setUserPresets(next);
       setActivePresetName(captured.name);
       setSaveState('saved');
@@ -741,7 +1018,7 @@ export default function Home() {
       const anchor = document.createElement('a');
       anchor.href = url;
       anchor.download = 'Sonic-Board-' + activePresetName + '-' + snapshot + '.wav';
-      document.body.append(anchor);
+      document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
@@ -763,7 +1040,7 @@ export default function Home() {
           selected={selected === item.instanceId}
           bypassed={bypassed.has(item.instanceId)}
           tutorialEnabled={tutorialEnabled}
-          onSelect={() => setSelected(item.instanceId)}
+          onSelect={() => selectPedal(item.instanceId)}
           onValue={(id, value) => updateValue(item.instanceId, id, value)}
           onBypass={() => toggleBypass(item.instanceId)}
           onDrop={(payload) => handleDrop(payload, item.instanceId)}
@@ -786,6 +1063,7 @@ export default function Home() {
             type="button"
             className={'agent-open-button' + (agentOpen ? ' active' : '')}
             aria-label={agentOpen ? '关闭音色 Agent' : '打开音色 Agent'}
+            aria-controls="tone-agent-dock"
             aria-expanded={agentOpen}
             onClick={() => setAgentOpen((current) => !current)}
           >音色 Agent</button>
@@ -816,42 +1094,55 @@ export default function Home() {
             <div className="library-browser effects-browser">
               <div className="library-title"><div><span className="eyebrow">效果器库</span><h1>经典结构</h1></div><b>{library.length}</b></div>
               <p className="classic-note">经典名称仅用于说明参考对象；模型通过自动门禁，待真机验证。<a href="https://github.com/RelientS/sonic-board" target="_blank" rel="noreferrer">源码与验证说明</a></p>
-              <label className="search"><span className="sr-only">搜索效果器</span><input placeholder="搜索名称、类型或用途" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
+              <label className="search"><span className="sr-only">搜索效果器</span><input placeholder="搜索名称、类型、风格或用途" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
               <div className="filters" aria-label="筛选效果器类型">{(['All', 'Dynamics', 'Tone', 'Drive', 'Mod', 'Delay', 'Space'] as const).map((entry) => <button key={entry} type="button" className={category === entry ? 'active' : ''} aria-pressed={category === entry} onClick={() => setCategory(entry)}>{categoryNames[entry]}</button>)}</div>
-              <div className="library-list">{library.map((spec) => (
-                <article key={spec.id} className="library-item" draggable onDragStart={(event) => event.dataTransfer.setData('text/plain', 'add:' + spec.id)}>
-                  <MiniPedal spec={spec} />
-                  <div><span>{categoryNames[spec.category]} · {spec.family}</span><strong>{spec.name}</strong><small>{spec.description}</small></div>
-                  <button type="button" aria-label={'添加' + spec.name} onClick={() => addPedal(spec.id)}>添加</button>
-                </article>
-              ))}</div>
+              <StyleFilters value={styleFilter} onChange={setStyleFilter} />
+              {library.length === 0 ? <p className="library-empty">没有匹配这个搜索、类型或风格的效果器。</p> : (
+                <div className="library-list">{library.map((spec) => (
+                  <article key={spec.id} className="library-item" draggable onDragStart={(event) => event.dataTransfer.setData('text/plain', 'add:' + spec.id)}>
+                    <MiniPedal spec={spec} />
+                    <div><span>{categoryNames[spec.category]} · {spec.family}</span><strong>{spec.name}</strong><small>{spec.description}</small></div>
+                    <button type="button" aria-label={'添加' + spec.name} onClick={() => addPedal(spec.id)}>添加</button>
+                  </article>
+                ))}</div>
+              )}
             </div>
           ) : libraryMode === 'presets' ? (
             <div className="library-browser preset-browser">
-              <div className="library-title"><div><span className="eyebrow">音色库</span><h1>盯鞋起点</h1></div><b>{FACTORY_PRESETS.length + userPresets.length}</b></div>
+              <div className="library-title"><div><span className="eyebrow">音色库</span><h1>风格起点</h1></div><b>{factoryPresetLibrary.length + userPresetLibrary.length}</b></div>
+              <label className="search preset-search"><span className="sr-only">搜索音色</span><input placeholder="搜索名称、风格或用途" value={presetSearch} onChange={(event) => setPresetSearch(event.target.value)} /></label>
+              <StyleFilters value={styleFilter} onChange={setStyleFilter} />
               <div className="preset-editor">
                 <label><span>音色名称</span><input value={presetName} maxLength={28} onChange={(event) => setPresetName(event.target.value)} /></label>
                 <button type="button" className="accent" onClick={saveCurrentPreset}>保存当前链</button>
               </div>
               <section className="preset-section">
                 <h2>内置音色</h2>
-                <div className="preset-list">{FACTORY_PRESETS.map((preset) => (
-                  <article className="preset-card" key={preset.id}>
-                    <div><strong>{preset.name}</strong><small>{preset.description}</small><span>{preset.chain.length} 块 · {preset.routing.mode === 'parallel' ? '双路并联' : '串联'} · {getAmpSpec(preset.amp.ampId).name}</span></div>
-                    <button type="button" onClick={() => loadFactoryPreset(preset.id)}>载入</button>
-                  </article>
-                ))}</div>
+                {factoryPresetLibrary.length === 0 ? <p className="preset-empty">没有匹配这个搜索或风格的内置音色。</p> : (
+                  <div className="preset-list">{factoryPresetLibrary.map((preset) => {
+                    const isCurrent = activePresetName === preset.name;
+                    return <article className={'preset-card' + (isCurrent ? ' active' : '')} key={preset.id}>
+                      <div>
+                        <strong>{preset.name}</strong><small>{preset.description}</small>
+                        <div className="preset-style-tags" role="list" aria-label={`${preset.name} 风格`}>{preset.styleTags?.map((tag) => <span key={tag} role="listitem" title={tag}>{STYLE_TAG_LABELS[tag]}</span>)}</div>
+                        <span>{preset.chain.length} 块 · {preset.routing.mode === 'parallel' ? '双路并联' : '串联'} · {getAmpSpec(preset.amp.ampId).name}</span>
+                      </div>
+                      <button type="button" aria-label={'载入 ' + preset.name} aria-current={isCurrent ? 'true' : undefined} onClick={() => loadFactoryPreset(preset.id)}>载入</button>
+                    </article>;
+                  })}</div>
+                )}
               </section>
               <section className="preset-section">
                 <h2>我的音色</h2>
-                {userPresets.length === 0 ? <p className="preset-empty">还没有保存在本机的音色。</p> : (
-                  <div className="preset-list">{userPresets.map((preset) => (
-                    <article className="preset-card user" key={preset.id}>
+                {userPresets.length === 0 ? <p className="preset-empty">还没有保存在本机的音色。</p> : userPresetLibrary.length === 0 ? <p className="preset-empty">本机音色中没有匹配项。</p> : (
+                  <div className="preset-list">{userPresetLibrary.map((preset) => {
+                    const isCurrent = activePresetName === preset.name;
+                    return <article className={'preset-card user' + (isCurrent ? ' active' : '')} key={preset.id}>
                       <div><strong>{preset.name}</strong><small>{preset.chain.map((item) => getEffectSpec(item.specId).name).join(' → ')}</small><span>{preset.chain.length} 块 · {preset.routing.mode === 'parallel' ? '双路并联' : '串联'} · {formatSourceConfig(preset.source)}</span></div>
-                      <button type="button" onClick={() => loadUserPreset(preset)}>载入</button>
+                      <button type="button" aria-label={'载入 ' + preset.name} aria-current={isCurrent ? 'true' : undefined} onClick={() => loadUserPreset(preset)}>载入</button>
                       <button type="button" className="delete-preset" aria-label={'删除' + preset.name} onClick={() => deleteUserPreset(preset)}>删除</button>
-                    </article>
-                  ))}</div>
+                    </article>;
+                  })}</div>
                 )}
               </section>
             </div>
@@ -863,7 +1154,7 @@ export default function Home() {
                 type="button"
                 className={'amp-bypass' + (amp.bypassed ? ' active' : '')}
                 aria-pressed={amp.bypassed}
-                onClick={() => { setAmp((current) => ({ ...current, bypassed: !current.bypassed })); setRender('idle'); }}
+                onClick={toggleAmpBypass}
               >{amp.bypassed ? '输出模拟已旁通' : '输出模拟已启用'}</button>
               <section className="output-section">
                 <div className="section-heading"><h2>箱头</h2><span>{ampSpec.family}</span></div>
@@ -895,11 +1186,12 @@ export default function Home() {
           )}
         </aside>
 
-        <section id="pedalboard" className="board-stage" aria-label="效果器板画布" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); handleDrop(event.dataTransfer.getData('text/plain')); }}>
+        <section id="pedalboard" className={'board-stage ' + routing.mode} aria-label="效果器板画布" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); handleDrop(event.dataTransfer.getData('text/plain')); }}>
           <div className="board-toolbar">
             <div className="selected-meta">
               <span className="eyebrow">已选效果器</span>
               <div><strong>{selectedSpec?.name ?? '未选择'}</strong><small>{selectedSpec ? (routing.mode === 'parallel' ? selectedLane + ' 路 · ' : '') + categoryNames[selectedSpec.category] + ' · ' + selectedSpec.family + ' · ' + (bypassed.has(selected) ? '已旁通' : '已启用') : ''}</small></div>
+              <span className="current-tone-indicator" aria-live="polite"><small>当前音色</small><strong>{activePresetName}</strong></span>
             </div>
             <div className="edit-actions">
               <div className="move-actions"><button type="button" disabled={selectedLaneIndex <= 0} onClick={() => moveSelected(-1)}>前移</button><button type="button" disabled={selectedLaneIndex < 0 || selectedLaneIndex >= selectedLaneItems.length - 1} onClick={() => moveSelected(1)}>后移</button><button type="button" disabled={selectedIndex < 0} onClick={removeSelected}>移除</button></div>
@@ -912,7 +1204,9 @@ export default function Home() {
             </div>
             <div className="zoom"><button type="button" aria-label="缩小板面" onClick={() => setZoom((value) => Math.max(.7, value - .08))}>−</button><span>{Math.round(zoom * 100)}%</span><button type="button" aria-label="放大板面" onClick={() => setZoom((value) => Math.min(1.1, value + .08))}>+</button></div>
           </div>
-          <div className="board-scroll"><div className={'board-frame ' + routing.mode}><div className={'chain ' + routing.mode} style={{ '--scale': zoom } as CSSProperties}>
+          <div className="board-scroll">
+            {routing.mode === 'parallel' && <p className="board-pan-hint" aria-live="polite">左右滑动查看 A / B 路效果器</p>}
+            <div className={'board-frame ' + routing.mode}><div className={'chain ' + routing.mode} style={{ '--scale': zoom } as CSSProperties}>
             <div className="input-box">输入</div><Cable />
             {routing.mode === 'serial' ? chain.map(renderPedal) : (
               <>
@@ -933,14 +1227,17 @@ export default function Home() {
 
       <footer className="transport">
         <button className="source-trigger" type="button" aria-label="选择清音输入" onClick={() => setSourcePickerOpen(true)}><span>清音输入</span><strong>{formatSourceConfig(source)}</strong><small>{getChordProgression(source.progression).name}</small></button>
-        <button className={'play' + (playing ? ' active' : '')} type="button" aria-label={playing ? '停止试听' : '开始试听'} onClick={() => void togglePlayback()}>{playing ? '■' : '▶'}</button>
-        <div className="waveform" aria-label={'试听进度 ' + Math.round(progress) + '%'}><i style={{ width: String(progress) + '%' }} />{wave.map((height, index) => <b key={String(height) + '-' + String(index)} style={{ height: String(height) + '%' }} />)}</div>
-        <div className="segments" aria-label="干声或效果声">{(['dry', 'wet'] as const).map((entry) => <button key={entry} type="button" className={mode === entry ? 'active' : ''} aria-pressed={mode === entry} onClick={() => { setMode(entry); setRender('idle'); }}>{entry === 'dry' ? '干声' : '效果'}</button>)}</div>
-        <div className="segments ab" aria-label="参数快照 A 或 B">{(['A', 'B'] as const).map((entry) => <button key={entry} type="button" className={snapshot === entry ? 'active' : ''} aria-pressed={snapshot === entry} onClick={() => { setSnapshot(entry); setRender('idle'); }}>快照 {entry}</button>)}</div>
-        <label className="output"><span>输出音量</span><input type="range" min="0" max="100" value={output} aria-label="输出音量" onChange={(event) => { setOutput(Number(event.target.value)); setRender('idle'); }} /></label>
+        <button className={'play' + (playing ? ' active' : '') + (playbackLoading ? ' is-loading' : '')} type="button" aria-label={playbackLoading ? '正在加载试听' : playing ? '停止试听' : '开始试听'} aria-busy={playbackLoading} disabled={playbackLoading} onClick={() => void togglePlayback()}>{playbackLoading ? '…' : playing ? '■' : '▶'}</button>
+        <div className={'waveform' + (playbackLoading ? ' is-loading' : '')} role="progressbar" aria-label="试听进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress)} aria-valuetext={playbackLoading ? '正在加载试听' : '试听进度 ' + Math.round(progress) + '%'}>
+          <i style={{ width: String(progress) + '%' }} />{wave.map((height, index) => <b key={String(height) + '-' + String(index)} style={{ height: String(height) + '%' }} />)}
+          {playbackLoading && <span className="waveform-status">正在加载试听…</span>}
+        </div>
+        <div className="segments" aria-label="干声或效果声">{(['dry', 'wet'] as const).map((entry) => <button key={entry} type="button" className={mode === entry ? 'active' : ''} aria-pressed={mode === entry} onClick={() => setMonitorMode(entry)}>{entry === 'dry' ? '干声' : '效果'}</button>)}</div>
+        <div className="segments ab" aria-label="参数快照 A 或 B">{(['A', 'B'] as const).map((entry) => <button key={entry} type="button" className={snapshot === entry ? 'active' : ''} aria-pressed={snapshot === entry} onClick={() => selectSnapshot(entry)}>快照 {entry}</button>)}</div>
+        <label className="output"><span>输出音量</span><input type="range" min="0" max="100" value={output} aria-label="输出音量" onChange={(event) => updateOutput(Number(event.target.value))} /></label>
         <button type="button" className="render" disabled={render === 'busy'} onClick={() => void exportWav()}>{render === 'busy' ? '正在导出…' : render === 'ready' ? '已下载' : '导出 WAV'}</button>
         {audioError && <span className="audio-error" role="alert">{audioError}</span>}
-        <span className="sr-only" role="status" aria-live="polite">{render === 'ready' ? 'WAV 音频已下载' : saveState === 'saved' ? '音色已保存在当前浏览器' : ''}</span>
+        <span className="sr-only" role="status" aria-live="polite">{playbackLoading ? '正在加载试听，请稍候；重复点击不会中断加载。' : render === 'ready' ? 'WAV 音频已下载' : saveState === 'saved' ? '音色已保存在当前浏览器' : ''}</span>
       </footer>
       <ControlHelpDialog target={helpTarget} onClose={closeControlHelp} />
       <ToneAgentDock

@@ -78,6 +78,13 @@ const overrides: Record<string, Partial<LessonText>> = {
   'reverse-space.preDelay': { summary: '控制干声与反向混响上升包络之间的间隔，决定吸入感是否紧贴拨弦。' },
   'rodent-dist.filter': { summary: '控制失真后的低通滤波，方向与普通音色旋钮相反：向右会削掉更多高频。' },
   'soft-detune.cents': { tip: '日常增厚先从 5–10 音分附近开始，超过约 15 音分会明显像跑调。' },
+  'studio-comp.sustain': { tip: '清音、布鲁斯和放克先从中低位置开始；需要更长的分解尾音时再逐步提高。' },
+  'blue-drive.gain': { tip: '布鲁斯和独立摇滚可从轻推开始；若后面已有失真，保留起音通常比继续加增益更清楚。' },
+  'fuzz-face.fuzz': { tip: '布鲁斯或复古清理先从中低位置开始，再用吉他音量退回清音；满法兹更适合需要持续的段落。' },
+  'chainsaw-dist.distortion': { tip: '金属节奏先用中高位置并检查低频余量；过高会让快速闷音失去轮廓。' },
+  'bias-tremolo.rate': { tip: '放克和节奏型先把速率对齐歌曲拍点；铺底时放慢，避免调制抢过拨弦。' },
+  'digital-delay.time': { tip: '清音分解可按拍点设定；节奏型先让重复落在空拍，再用混合控制清晰度。' },
+  'cloud-hall.decay': { tip: '氛围和盯鞋可逐步延长尾音，但先降低混合，避免连续和弦完全叠成一团。' },
 };
 
 function bandLesson(id: string): LessonText {
