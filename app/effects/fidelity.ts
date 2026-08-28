@@ -1,5 +1,7 @@
+export type EffectFidelityEngine = 'PedalKernel WDF + calibrated corrections' | 'PedalKernel realtime correction';
+
 export type EffectFidelityProfile = {
-  engine: 'PedalKernel WDF + calibrated corrections';
+  engine: EffectFidelityEngine;
   upstreamCommit: string;
   upstreamModel: string;
   targetScore: number;
@@ -12,8 +14,11 @@ export type EffectFidelityProfile = {
 
 const PEDALKERNEL_COMMIT = '0278b397c861b5ebef2e8e38d15ab281b8e669dc';
 
-const fidelityProfile = (upstreamModel: string): EffectFidelityProfile => ({
-  engine: 'PedalKernel WDF + calibrated corrections',
+const fidelityProfile = (
+  upstreamModel: string,
+  engine: EffectFidelityEngine = 'PedalKernel WDF + calibrated corrections',
+): EffectFidelityProfile => ({
+  engine,
   upstreamCommit: PEDALKERNEL_COMMIT,
   upstreamModel,
   targetScore: 8,
@@ -21,17 +26,19 @@ const fidelityProfile = (upstreamModel: string): EffectFidelityProfile => ({
   evidence: ['upstream-circuit', 'runtime-regression'],
   runtime: 'pedalkernel',
   status: 'candidate',
-  note: '持续输出、有限值、输出校准和控制响应门禁已通过；仍需与真实硬件盲测后才能给出还原分。',
+  note: engine === 'PedalKernel realtime correction'
+    ? '浏览器使用实时修正路径而非完整 WDF 求解；持续输出、有限值、输出校准和控制响应门禁已通过，仍需与真实硬件盲测后才能给出还原分。'
+    : '持续输出、有限值、输出校准和控制响应门禁已通过；仍需与真实硬件盲测后才能给出还原分。',
 });
 
 export const EFFECT_FIDELITY_PROFILES: Record<string, EffectFidelityProfile> = {
   'studio-comp': fidelityProfile('examples/pedals/compressor/dyna_comp.pedal'),
   'blue-drive': fidelityProfile('examples/pedals/overdrive/blues_driver.pedal'),
   'rodent-dist': fidelityProfile('examples/pedals/distortion/proco_rat.pedal'),
-  'wall-fuzz': fidelityProfile('examples/pedals/fuzz/big_muff.pedal'),
+  'wall-fuzz': fidelityProfile('examples/pedals/fuzz/big_muff.pedal', 'PedalKernel realtime correction'),
   'dm2-delay': fidelityProfile('examples/pedals/delay/boss_dm2.pedal'),
   'analog-delay': fidelityProfile('examples/pedals/delay/memory_man.pedal'),
-  'fuzz-face': fidelityProfile('examples/pedals/fuzz/fuzz_face.pedal'),
+  'fuzz-face': fidelityProfile('examples/pedals/fuzz/fuzz_face.pedal', 'PedalKernel realtime correction'),
   'analog-chorus': fidelityProfile('examples/pedals/modulation/boss_ce2.pedal'),
   'ocd-drive': fidelityProfile('examples/pedals/overdrive/fulltone_ocd.pedal'),
   'klon-centaur': fidelityProfile('examples/pedals/overdrive/klon_centaur.pedal'),

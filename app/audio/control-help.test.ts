@@ -34,3 +34,19 @@ test('lessons explain context-specific behavior instead of only repeating the la
   assert.match(getControlHelp('amp', 'brit-20', ampGain).summary, /前级|失真/);
   assert.match(getControlHelp('cab', 'closed-4x12', micPosition).summary, /中心|边缘|麦克风/);
 });
+
+test('style-specific lessons give useful starting points beyond shoegaze', () => {
+  const cases = [
+    ['studio-comp', 'sustain', /清音|布鲁斯|放克/],
+    ['fuzz-face', 'fuzz', /布鲁斯|清理/],
+    ['chainsaw-dist', 'distortion', /金属|节奏/],
+    ['bias-tremolo', 'rate', /放克|节奏/],
+    ['cloud-hall', 'decay', /氛围|盯鞋/],
+  ] as const;
+
+  cases.forEach(([modelId, controlId, expression]) => {
+    const control = EFFECT_SPECS.find((model) => model.id === modelId)!.controls.find((entry) => entry.id === controlId)!;
+    const lesson = getControlHelp('effect', modelId, control);
+    assert.match(lesson.tip, expression, `${modelId}.${controlId}`);
+  });
+});
