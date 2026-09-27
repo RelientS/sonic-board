@@ -42,6 +42,11 @@ SPICE parameters come from common vendor and LTspice libraries as noted.
 
 The fixed clean electric-guitar samples under `public/audio/guitars` are derived from the [FreePats Clean Electric Guitar Direct DI](https://freepats.zenvoid.org/ElectricGuitar/clean-electric-guitar.html) collection and are distributed under CC0 as stated by the source project.
 
+## Geist fonts
+
+`public/fonts/geist-*.woff2` are the latin and latin-ext subsets of Geist and
+Geist Mono by Vercel, distributed under the SIL Open Font License 1.1.
+
 ## Trademarks
 
 Product and manufacturer names are used only to identify the hardware or studio unit used as a tonal reference. Sonic Board is not affiliated with or endorsed by those manufacturers.
