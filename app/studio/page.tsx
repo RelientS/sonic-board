@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import {
   CIRCUIT_EFFECT_IDS,
@@ -16,6 +17,8 @@ import {
 import { LiveSessionController } from '../audio/live-session-controller';
 import { BoardHistory } from '../board-history';
 import { AccountButton } from '../account/AccountButton';
+import { RigDrawer, RigObject } from './Rig';
+import { rigModeOf, withCab, withCombo, withHead, type RigMode } from './rig-model';
 import type { AudioChainItem, RoutingConfig, SignalLane } from '../audio/audio-core';
 import {
   createBrowserNamModelRepository,
@@ -47,8 +50,6 @@ import {
   getCabSpec,
   isNamAmp,
   listNamAmps,
-  makeDefaultAmpValues,
-  makeDefaultCabValues,
   NAM_AMP_PREFIX,
   registerNamAmps,
   type AmpCabConfig,
@@ -99,7 +100,7 @@ type AgentUndoEntry = {
   baseline: BoardUiState;
   appliedRevision: number;
 };
-type LibraryMode = 'effects' | 'presets' | 'output';
+type LibraryMode = 'effects' | 'presets';
 type PrivateAmpSummary = { id: string; amp: string; setting: string; author?: string; url?: string; loudness?: number | null; format?: 'combo' | 'head'; cab?: string };
 type StyleFilter = 'All' | StyleTag;
 type HelpTarget = {
@@ -578,6 +579,11 @@ export default function Home() {
   const [tutorialEnabled, setTutorialEnabled] = useState(false);
   const [helpTarget, setHelpTarget] = useState<HelpTarget | null>(null);
   const [agentOpen, setAgentOpen] = useState(false);
+  // The amp drawer; `rigView` is null until the player switches combo/head,
+  // so it follows the current amp's own format by default.
+  const [rigOpen, setRigOpen] = useState(false);
+  const [rigView, setRigView] = useState<RigMode | null>(null);
+  const rigButton = useRef<HTMLButtonElement | null>(null);
   const [sourcePickerOpen, setSourcePickerOpen] = useState(false);
   const [agentInput, setAgentInput] = useState('');
   const [agentTurns, setAgentTurns] = useState<ToneAgentTurn[]>([]);
@@ -1151,19 +1157,48 @@ export default function Home() {
     setRender('idle');
   }
 
-  function selectAmp(ampId: string) {
+  /** A combo brings its own speaker: amp and cab change together, one undo step. */
+  function selectCombo(ampId: string) {
     markBoardChanged();
-    setAmp((current) => ({ ...current, ampId, ampValues: makeDefaultAmpValues(ampId) }));
+    setAmp((current) => withCombo(current, getAmpSpec(ampId)));
+    setActivePresetName('已修改');
+    setRender('idle');
+  }
+
+  function selectHead(ampId: string) {
+    markBoardChanged();
+    setAmp((current) => withHead(current, getAmpSpec(ampId)));
     setActivePresetName('已修改');
     setRender('idle');
   }
 
   function selectCab(cabId: string) {
     markBoardChanged();
-    setAmp((current) => ({ ...current, cabId, cabValues: makeDefaultCabValues(cabId) }));
+    setAmp((current) => withCab(current, cabId));
     setActivePresetName('已修改');
     setRender('idle');
   }
+
+  function openRig() {
+    setAgentOpen(false);
+    setRigView(null);
+    setRigOpen((current) => !current);
+  }
+
+  // Keep the amp in view beside the open drawer, so changes are visible.
+  useEffect(() => {
+    if (!rigOpen) return;
+    const frame = window.requestAnimationFrame(() => {
+      const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      if (window.matchMedia('(min-width: 721px)').matches) rigButton.current?.scrollIntoView({ block: 'nearest', inline: 'end', behavior: reduce ? 'auto' : 'smooth' });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [rigOpen]);
+
+  const closeRig = useCallback(() => {
+    setRigOpen(false);
+    window.requestAnimationFrame(() => rigButton.current?.focus());
+  }, []);
 
   function updateAmpValue(section: 'ampValues' | 'cabValues', controlId: string, value: number) {
     markBoardChanged();
@@ -1408,17 +1443,16 @@ export default function Home() {
     <main className="app-shell">
       <a className="skip-link" href="#pedalboard">跳到效果器板</a>
       <header className="topbar">
-        <div className="brand"><span className="brand-mark" aria-hidden="true"><i /></span><div><strong>SONIC BOARD</strong><small>盯鞋音色工作台</small></div></div>
-        <div className="signal-note"><i /><span>当前音色：{activePresetName}</span></div>
+        <Link className="brand" href="/" aria-label="Sonic Board 首页"><span className="brand-mark" aria-hidden="true"><i /></span><div><strong>Sonic Board</strong><small>盯鞋音色工作台</small></div></Link>
+        <div className="signal-note" aria-live="polite"><span>当前音色</span><strong>{activePresetName}</strong></div>
         <div className="top-actions">
-          <span>{EFFECT_SPECS.length} 块</span>
           <button
             type="button"
             className={'agent-open-button' + (agentOpen ? ' active' : '')}
             aria-label={agentOpen ? '关闭音色 Agent' : '打开音色 Agent'}
             aria-controls="tone-agent-dock"
             aria-expanded={agentOpen}
-            onClick={() => setAgentOpen((current) => !current)}
+            onClick={() => { setRigOpen(false); setAgentOpen((current) => !current); }}
           >音色 Agent</button>
           <label className="tutorial-toggle">
             <input
@@ -1436,12 +1470,11 @@ export default function Home() {
         </div>
       </header>
 
-      <div className="workspace">
+      <div className={'workspace' + (rigOpen ? ' rig-open' : '')}>
         <aside className="library-panel" aria-label="音色与效果器库">
           <div className="panel-tabs" aria-label="库类型">
             <button type="button" className={libraryMode === 'effects' ? 'active' : ''} aria-pressed={libraryMode === 'effects'} onClick={() => setLibraryMode('effects')}>效果器 <b>{EFFECT_SPECS.length}</b></button>
             <button type="button" className={libraryMode === 'presets' ? 'active' : ''} aria-pressed={libraryMode === 'presets'} onClick={() => setLibraryMode('presets')}>音色 <b>{FACTORY_PRESETS.length + userPresets.length}</b></button>
-            <button type="button" className={libraryMode === 'output' ? 'active' : ''} aria-pressed={libraryMode === 'output'} onClick={() => setLibraryMode('output')}>输出 <b>10</b></button>
           </div>
 
           {libraryMode === 'effects' ? (
@@ -1488,7 +1521,7 @@ export default function Home() {
                 ))}</div>
               )}
             </div>
-          ) : libraryMode === 'presets' ? (
+          ) : (
             <div className="library-browser preset-browser">
               <div className="library-title"><div><span className="eyebrow">音色库</span><h1>风格起点</h1></div><b>{factoryPresetLibrary.length + userPresetLibrary.length}</b></div>
               <label className="search preset-search"><span className="sr-only">搜索音色</span><input placeholder="搜索名称、风格或用途" value={presetSearch} onChange={(event) => setPresetSearch(event.target.value)} /></label>
@@ -1525,44 +1558,6 @@ export default function Home() {
                     </article>;
                   })}</div>
                 )}
-              </section>
-            </div>
-          ) : (
-            <div className="library-browser output-browser">
-              <div className="library-title"><div><span className="eyebrow">输出模块</span><h1>箱头与箱体</h1></div><b>{AMP_SPECS.length + CAB_SPECS.length}</b></div>
-              <p className="model-disclosure">经典名称仅用于说明参考对象；当前均为非官方算法近似。</p>
-              <button
-                type="button"
-                className={'amp-bypass' + (amp.bypassed ? ' active' : '')}
-                aria-pressed={amp.bypassed}
-                onClick={toggleAmpBypass}
-              >{amp.bypassed ? '输出模拟已旁通' : '输出模拟已启用'}</button>
-              <section className="output-section">
-                <div className="section-heading"><h2>箱头</h2><span>{ampSpec.family}</span></div>
-                <div className="model-list" role="radiogroup" aria-label="箱头模型">{[...AMP_SPECS, ...(namAmps.length ? listNamAmps() : [])].map((model, index) => (
-                  <button key={model.id} type="button" role="radio" aria-checked={amp.ampId === model.id} className={(amp.ampId === model.id ? 'active' : '') + (index === AMP_SPECS.length ? ' nam-amp-first' : '')} onClick={() => selectAmp(model.id)}>
-                    <i style={{ background: model.accent }} aria-hidden="true" /><span><strong>{model.name}</strong><small>{model.family}</small></span>
-                  </button>
-                ))}</div>
-                <span className="model-method">{ampSpec.modeling}</span>
-                <p className="model-description">{ampSpec.description}</p>
-                <div className="output-knobs">{ampSpec.controls.map((control) => (
-                  <KnobControl key={control.id} control={control} value={amp.ampValues[control.id] ?? control.defaultValue} disabled={amp.bypassed} tutorialEnabled={tutorialEnabled} ownerKind="amp" modelId={ampSpec.id} ownerName={ampSpec.name} onChange={(value) => updateAmpValue('ampValues', control.id, value)} onHelp={openControlHelp} />
-                ))}</div>
-              </section>
-              <section className="output-section cab-section">
-                <div className="section-heading"><h2>箱体</h2><span>{cabSpec.format}</span></div>
-                <div className="cab-list" role="radiogroup" aria-label="箱体模型">{CAB_SPECS.map((model) => (
-                  <button key={model.id} type="button" role="radio" aria-checked={amp.cabId === model.id} className={amp.cabId === model.id ? 'active' : ''} onClick={() => selectCab(model.id)}>
-                    <strong>{model.name}</strong><small>{model.format}</small>
-                  </button>
-                ))}</div>
-                <span className="model-method">{cabSpec.modeling}</span>
-                <p className="model-description">{cabSpec.description}</p>
-                {cabSpec.ir && <p className="model-credit">{cabSpec.ir.credit}</p>}
-                <div className="output-knobs cab-knobs">{cabSpec.controls.map((control) => (
-                  <KnobControl key={control.id} control={control} value={amp.cabValues[control.id] ?? control.defaultValue} disabled={amp.bypassed} tutorialEnabled={tutorialEnabled} ownerKind="cab" modelId={cabSpec.id} ownerName={cabSpec.name} onChange={(value) => updateAmpValue('cabValues', control.id, value)} onHelp={openControlHelp} />
-                ))}</div>
               </section>
             </div>
           )}
@@ -1603,9 +1598,30 @@ export default function Home() {
                 <Cable /><div className="route-node merger"><span>合流</span><b>Σ</b></div><Cable />
               </>
             )}
-            <button type="button" className={'amp' + (amp.bypassed ? ' is-bypassed' : '')} onClick={() => setLibraryMode('output')}><div><span>{amp.bypassed ? '已旁通' : '箱头 + 箱体'}</span><strong>{ampSpec.name}</strong><small>{cabSpec.name}</small></div><i /></button>
+            <RigObject ref={rigButton} amp={ampSpec} cab={cabSpec} bypassed={amp.bypassed} lit={playing && mode === 'wet' && !amp.bypassed} expanded={rigOpen} onOpen={openRig} />
           </div>{chain.length === 0 && <p className="empty">从左侧添加效果器，或载入一个音色。</p>}</div></div>
         </section>
+        <RigDrawer
+          open={rigOpen}
+          view={rigView ?? rigModeOf(ampSpec)}
+          amps={[...AMP_SPECS, ...(namAmps.length ? listNamAmps() : [])]}
+          amp={ampSpec}
+          cab={cabSpec}
+          bypassed={amp.bypassed}
+          cabs={CAB_SPECS}
+          ampKnobs={<div className="output-knobs">{ampSpec.controls.map((control) => (
+            <KnobControl key={control.id} control={control} value={amp.ampValues[control.id] ?? control.defaultValue} disabled={amp.bypassed} tutorialEnabled={tutorialEnabled} ownerKind="amp" modelId={ampSpec.id} ownerName={ampSpec.name} onChange={(value) => updateAmpValue('ampValues', control.id, value)} onHelp={openControlHelp} />
+          ))}</div>}
+          cabKnobs={<div className="output-knobs cab-knobs">{cabSpec.controls.map((control) => (
+            <KnobControl key={control.id} control={control} value={amp.cabValues[control.id] ?? control.defaultValue} disabled={amp.bypassed} tutorialEnabled={tutorialEnabled} ownerKind="cab" modelId={cabSpec.id} ownerName={cabSpec.name} onChange={(value) => updateAmpValue('cabValues', control.id, value)} onHelp={openControlHelp} />
+          ))}</div>}
+          onViewChange={setRigView}
+          onPickCombo={selectCombo}
+          onPickHead={selectHead}
+          onPickCab={selectCab}
+          onToggleBypass={toggleAmpBypass}
+          onClose={closeRig}
+        />
       </div>
 
       <footer className="transport">
