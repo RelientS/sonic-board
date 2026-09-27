@@ -8,7 +8,8 @@
 # tests, typecheck and the production build on the server, smoke-test the new
 # release on a side port, then switch the `current` symlink atomically,
 # restart the service and health-check it. A failed health check rolls back
-# to the previous release. Lint runs elsewhere (the server's eslint is
+# to the previous release, and prunes releases beyond the newest three.
+# Lint runs elsewhere (the server's eslint is
 # broken); run `npm run lint` before deploying.
 set -euo pipefail
 
@@ -73,4 +74,12 @@ ssh "$TARGET" "set -e
     sudo systemctl restart sonic-board
     exit 1
   fi
-  echo \"live: $SHA (previous: \$previous)\""
+  echo \"live: $SHA (previous: \$previous)\"
+  # Keep the live release and the two most recent others for rollback; each
+  # release carries its own node_modules (~1 GB).
+  cd $ROOT/releases
+  ls -1t | while read -r release; do
+    case \"\$release\" in $SHA|\"\$(basename \"\$previous\")\") continue;; esac
+    echo \"\$release\"
+  done | tail -n +2 | while read -r old; do sudo rm -rf -- \"$ROOT/releases/\$old\"; done
+  df -h $ROOT | tail -1"
