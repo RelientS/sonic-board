@@ -54,10 +54,11 @@ export const CIRCUIT_MODELS: Record<string, { model: string; controls: string[];
   'sd1-drive': { model: 'boss-sd1', controls: ['drive', 'tone', 'level'] },
   'ocd-drive': { model: 'fulltone-ocd', controls: ['volume', 'tone', 'drive'], switches: ['hp'] },
   'phase90': { model: 'mxr-phase90', controls: ['speed'], switches: ['script'] },
+  'studio-comp': { model: 'mxr-dynacomp', controls: ['level', 'sustain'] },
 };
 export const CIRCUIT_EFFECT_IDS: ReadonlySet<string> = new Set(Object.keys(CIRCUIT_MODELS));
 // Also the circuit.wasm cache key: bump whenever the WASM or its models change.
-const CIRCUIT_RUNTIME_VERSION = 4;
+const CIRCUIT_RUNTIME_VERSION = 5;
 export { EFFECT_FIDELITY_PROFILES, type EffectFidelityProfile };
 
 const MAX_CURVE_CACHE_ENTRIES = 32;
@@ -885,7 +886,7 @@ function buildEffect(
     toneFilter.type = 'highshelf';
     toneFilter.frequency.value = 2_800;
     toneFilter.gain.value = (parameter(values, 'tone', 52) - 50) * 0.12;
-    output.gain.value = dbToGain(physical(specId, values, 'level', 0));
+    output.gain.value = dbToGain(legacyLinear(parameter(values, 'level', 85), -18, 12));
     cursor.connect(compressor).connect(toneFilter).connect(output);
     cursor = output;
     return cursor;

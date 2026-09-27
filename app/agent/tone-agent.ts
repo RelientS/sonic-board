@@ -59,7 +59,7 @@ function makeWallChain(wide: boolean): PresetChainItem[] {
 
 function makeCleanChain(wide: boolean): PresetChainItem[] {
   const chain: PresetChainItem[] = [
-    { specId: 'studio-comp', lane: 'A', settings: { sustain: 52, level: 59 } },
+    { specId: 'studio-comp', lane: 'A', settings: { sustain: 52, level: 85 } },
     { specId: 'analog-chorus', lane: wide ? 'A' : undefined, settings: { rate: 23, depth: 41 } },
     { specId: 'tape-echo', lane: wide ? 'B' : undefined, settings: { time: 43, repeats: 29, mix: 25, wow: 19, tone: 42 } },
     { specId: 'cloud-hall', lane: wide ? 'B' : undefined, settings: { mix: 41, decay: 60, preDelay: 20, tone: 61, motion: 28 } },
@@ -80,7 +80,7 @@ function makeNoiseChain(): PresetChainItem[] {
 
 function makeVintageChain(): PresetChainItem[] {
   return [
-    { specId: 'studio-comp', settings: { sustain: 46, level: 58 } },
+    { specId: 'studio-comp', settings: { sustain: 46, level: 85 } },
     { specId: 'slow-phase', settings: { rate: 13, depth: 34, res: 17, mix: 34 } },
     { specId: 'tape-vibrato', settings: { rate: 18, depth: 26, rise: 28, tone: 43 } },
     { specId: 'tape-echo', settings: { time: 51, repeats: 37, mix: 28, wow: 31, tone: 34 } },
@@ -90,7 +90,7 @@ function makeVintageChain(): PresetChainItem[] {
 
 function makeMotionChain(wide: boolean): PresetChainItem[] {
   return [
-    { specId: 'studio-comp', lane: 'A', settings: { sustain: 43, level: 58 } },
+    { specId: 'studio-comp', lane: 'A', settings: { sustain: 43, level: 85 } },
     { specId: 'slow-phase', lane: 'A', settings: { rate: 11, depth: 39, res: 18, mix: 37 } },
     { specId: 'soft-detune', lane: wide ? 'B' : undefined, settings: { cents: 30, blend: 25, spread: 77, tone: 57 } },
     { specId: 'analog-delay', lane: wide ? 'B' : undefined, settings: { time: 52, feedback: 31, mix: 27 } },

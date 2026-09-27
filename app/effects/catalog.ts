@@ -115,8 +115,8 @@ const tone = (defaultValue = 50) => c('tone', '音色', defaultValue, 800, 12_00
 const EFFECT_SPECS_BASE: EffectSpec[] = [
   {
     id: 'studio-comp', name: 'MXR Dyna Comp', maker: 'MXR', category: 'Dynamics', family: 'Dyna Comp 风格压缩',
-    description: '均衡拨弦动态，同时保留清音分解的颗粒感。', finish: '#3978b7', ink: '#f4f6f8', accent: '#ef5e47',
-    controls: [level(), c('sustain', '灵敏度', 46)],
+    description: '均衡拨弦动态，同时保留清音分解的颗粒感；灵敏度越高，压缩越深、延音越长。', finish: '#3978b7', ink: '#f4f6f8', accent: '#ef5e47',
+    controls: [knob('level', '输出', 85), knob('sustain', '灵敏度', 46)],
   },
   {
     id: 'noise-gate', name: 'Boss NS-2 Noise Suppressor', maker: 'BOSS', category: 'Dynamics', family: 'NS-2 风格门限降噪',

@@ -86,7 +86,12 @@ const bbdFallbackProfile = (upstreamModel: string): PedalKernelFidelityProfile =
 });
 
 export const EFFECT_FIDELITY_PROFILES: Record<string, EffectFidelityProfile> = {
-  'studio-comp': fidelityProfile('examples/pedals/compressor/dyna_comp.pedal'),
+  'studio-comp': circuitProfile(
+    'dsp/circuit/models/mxr_dynacomp.cir',
+    'CA3080 Dyna Comp as laid out in the bubbajfett kicad-guitar-pedals dynacomp board (pad netlist); values cross-checked with the Network-Direction BOM and the ElectroSmash analysis',
+    0.06,
+    2,
+  ),
   'blue-drive': circuitProfile(
     'dsp/circuit/models/boss_bd2.cir',
     'Boss BD-2 MT board assy 70567645 service schematic; cross-checked with gaussmarkov and Aion FX Sapphire',

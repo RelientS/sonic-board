@@ -55,7 +55,7 @@ const rms = (xs: number[]) => Math.sqrt(xs.reduce((sum, x) => sum + x * x, 0) / 
 test('ships the circuit runtime with its model table', async () => {
   assert.ok(existsSync(wasmUrl), 'circuit.wasm is missing; run npm run build:circuit');
   const w = await load();
-  assert.equal(w.runtime_version(), 4);
+  assert.equal(w.runtime_version(), 5);
   assert.ok(w.model_count() >= 1);
   const ids = Array.from({ length: w.model_count() }, (_, model) => info(w, model).id);
   assert.ok(ids.includes('rams-head-muff'));
@@ -138,4 +138,35 @@ test('Phase 90: the internal LFO sweeps the notches and the script switch opens 
   assert.ok(difference > 0.05, `script switch barely changes the output (${difference})`);
   w.destroy(script);
   w.destroy(block);
+});
+
+test('Dyna Comp: the envelope follower compresses loud input and Sensitivity lowers the threshold', async () => {
+  const w = await load();
+  const model = Array.from({ length: w.model_count() }, (_, index) => index).find((index) => info(w, index).id === 'mxr-dynacomp');
+  assert.ok(model !== undefined, 'mxr-dynacomp is bundled');
+  assert.deepEqual(info(w, model).controls.map((control) => control.label), ['Output', 'Sensitivity']);
+  // Output level (dB re 1 V) of a steady 330 Hz tone once the envelope has settled.
+  const settledDb = (amplitude: number, sensitivity: number) => {
+    const handle = w.create(model, 48_000);
+    w.set_control(handle, 0, 1);
+    w.set_control(handle, 1, sensitivity);
+    const out: number[] = [];
+    let n = 0;
+    for (let block = 0; block < 48_000 / 128; block += 1) {
+      const buf = new Float32Array(w.memory.buffer, w.buffer_ptr(handle, 128), 128);
+      for (let i = 0; i < 128; i += 1, n += 1) buf[i] = amplitude * Math.sin((2 * Math.PI * 330 * n) / 48_000);
+      w.process(handle, 128);
+      if (block >= 300) out.push(...new Float32Array(w.memory.buffer, w.buffer_ptr(handle, 128), 128));
+    }
+    assert.equal(w.failures(handle), 0);
+    w.destroy(handle);
+    return 20 * Math.log10(rms(out));
+  };
+  // ngspice-validated curve: +29.5 dB more input gives ~14 dB more output.
+  const quiet = settledDb(0.01, 0.5);
+  const loud = settledDb(0.3, 0.5);
+  assert.ok(loud - quiet > 5 && loud - quiet < 18, `29.5 dB of input maps to ${(loud - quiet).toFixed(1)} dB of output`);
+  const sensitive = settledDb(0.01, 1);
+  const insensitive = settledDb(0.01, 0);
+  assert.ok(sensitive - insensitive > 12, `Sensitivity only adds ${(sensitive - insensitive).toFixed(1)} dB of gain to quiet notes`);
 });
