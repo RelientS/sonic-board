@@ -81,7 +81,7 @@ const WORKLET_VERSIONS = {
   pedalKernel: 5,
   nam: 4,
   circuit: 3,
-  fx: 1,
+  fx: 2,
 } as const;
 const fxReady = new WeakSet<BaseAudioContext>();
 const fxLoading = new WeakMap<BaseAudioContext, Promise<void>>();

@@ -24,6 +24,9 @@ SHA=$(git rev-parse HEAD)
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 git archive HEAD | tar -x -C "$STAGE"
+# mktemp makes a 0700 directory and rsync copies that mode onto the release
+# root, which would hide public/audio from Caddy (it serves it from disk).
+chmod 755 "$STAGE"
 
 echo "== preparing release $SHA"
 ssh "$TARGET" "set -e
