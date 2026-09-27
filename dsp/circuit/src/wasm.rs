@@ -19,7 +19,7 @@ thread_local! {
 /// Bumped whenever the ABI or any circuit changes, for cache busting.
 #[no_mangle]
 pub extern "C" fn runtime_version() -> u32 {
-    4
+    5
 }
 
 #[no_mangle]

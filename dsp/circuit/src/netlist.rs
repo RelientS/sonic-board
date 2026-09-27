@@ -14,7 +14,11 @@
 //! *@opamp  SUBCKT gbw=3e6 slew=1.7e6 aol=1e5 vlo=1 vhi=8 rout=75
 //! *@switch LABEL ELEMENT VALUE_OFF VALUE_ON [default=0]
 //! *@lfo    VSRC SHAPE [rate=LABEL] key=value...   see `Lfo`
+//! *@ota    SUBCKT is=1e-14 n=1 beta=125 v0=1 w=0.15   see `OtaModel`
 //! ```
+//!
+//! Op-amps are `X<name> in+ in- out SUBCKT`; OTAs (CA3080 style) are
+//! `X<name> in+ in- out abc v+ v- SUBCKT`.
 
 use std::collections::HashMap;
 
@@ -29,6 +33,8 @@ pub enum Kind {
     Bjt { model: String },
     Jfet { model: String },
     OpAmp { model: String },
+    /// Nodes: in+, in-, out, amplifier bias (Iabc) input, V+, V-.
+    Ota { model: String },
 }
 
 #[derive(Clone, Debug)]
@@ -77,6 +83,20 @@ pub struct OpAmpModel {
     pub vlo: f64,
     pub vhi: f64,
     pub rout: f64,
+}
+
+/// Operational transconductance amplifier (CA3080): the bias input is the
+/// diode of a current mirror (`is`, `n`) to V-, and the mirrored tail current
+/// Iabc splits across the input pair. Output current is
+/// `Iabc · tanh(vd / 2Vt)`, each output mirror fading out within `v0`
+/// (knee width `w`) of its rail; inputs draw `Iabc (1 ± tanh) / 2β`.
+#[derive(Clone, Debug)]
+pub struct OtaModel {
+    pub is: f64,
+    pub n: f64,
+    pub beta: f64,
+    pub v0: f64,
+    pub w: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -175,6 +195,7 @@ pub struct Netlist {
     pub bjt_models: HashMap<String, BjtModel>,
     pub jfet_models: HashMap<String, JfetModel>,
     pub opamp_models: HashMap<String, OpAmpModel>,
+    pub ota_models: HashMap<String, OtaModel>,
     pub input: String,
     pub output: String,
     pub output_gain: f64,
@@ -426,6 +447,15 @@ impl Netlist {
                     },
                 );
             }
+            "ota" => {
+                let name = rest.first().ok_or("ota needs subckt name")?.to_ascii_lowercase();
+                let p = kv_params(&rest[1..].join(" "));
+                let get = |k: &str, d: f64| *p.get(k).unwrap_or(&d);
+                self.ota_models.insert(
+                    name,
+                    OtaModel { is: get("is", 1e-14), n: get("n", 1.0), beta: get("beta", 125.0), v0: get("v0", 1.0), w: get("w", 0.15) },
+                );
+            }
             _ => {}
         }
         Ok(())
@@ -543,6 +573,15 @@ impl Netlist {
                     value: 0.0,
                 }
             }
+            'x' if tokens.len() >= 8 => {
+                // X<name> in+ in- out abc v+ v- <subckt>
+                Element {
+                    name,
+                    kind: Kind::Ota { model: tokens[7].to_ascii_lowercase() },
+                    nodes: (1..7).map(node).collect(),
+                    value: 0.0,
+                }
+            }
             'x' => {
                 need(5)?;
                 // X<name> in+ in- out <subckt>
@@ -573,6 +612,9 @@ impl Netlist {
                 }
                 Kind::OpAmp { model } if !self.opamp_models.contains_key(model) => {
                     return Err(format!("{}: unknown op-amp {model}", el.name))
+                }
+                Kind::Ota { model } if !self.ota_models.contains_key(model) => {
+                    return Err(format!("{}: unknown OTA {model}", el.name))
                 }
                 _ => {}
             }
@@ -683,6 +725,20 @@ mod tests {
         assert!(Netlist::parse(&src.replace("*@lfo Vl", "*@lfo Vin")).is_err());
         assert!(Netlist::parse(&src.replace("vhi=8", "vhi=4.5")).is_err());
         assert!(Netlist::parse(&src.replace("relax", "sine")).is_err());
+    }
+
+    #[test]
+    fn parses_ota_elements() {
+        let src = "* t\n*@input Vin\n*@output o\n*@ota CA3080 is=2e-14 beta=100\n\
+                   Vin a 0 0\nVcc v 0 9\nXU1 a 0 o abc v 0 CA3080\nR1 o 0 10k\nR2 v abc 100k\nXU2 a o o CA3080\n";
+        // A 4-node X element is an op-amp: CA3080 is not one.
+        assert!(Netlist::parse(src).unwrap_err().contains("unknown op-amp"));
+        let net = Netlist::parse(&src.replace("XU2 a o o CA3080\n", "")).unwrap();
+        let ota = &net.elements.iter().find(|e| e.name == "XU1").unwrap();
+        assert_eq!(ota.kind, Kind::Ota { model: "ca3080".into() });
+        assert_eq!(ota.nodes, ["a", "0", "o", "abc", "v", "0"]);
+        let m = &net.ota_models["ca3080"];
+        assert!(m.is == 2e-14 && m.beta == 100.0 && m.n == 1.0 && m.v0 == 1.0);
     }
 
     #[test]

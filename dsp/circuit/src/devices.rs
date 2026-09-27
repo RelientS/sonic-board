@@ -56,6 +56,14 @@ pub enum DeviceEq {
     /// Op-amp input stage: ports (vd, vint) → current into the integrator node:
     /// i = imax · s(gm·vd/imax) − rail clamp, with s(x) = x/√(1+x²).
     OpAmp { imax: f64, gm: f64, gclamp: f64, wclamp: f64, vlo: f64, vhi: f64 },
+    /// CA3080-style OTA. Ports (vd, vabc, vtop, vbot) = (in+ − in−,
+    /// abc − V−, V+ − out, out − V−) → currents (iabc: abc→V−, ia: V+→out,
+    /// ib: out→V−, ibp: in+→V−, ibn: in−→V−). The bias diode current is the
+    /// tail current; the input pair splits it as (1 ± tanh(vd/2Vt))/2, the
+    /// output mirrors carry those halves (their difference is the output
+    /// current) and fade out as the output nears a rail (logistic knee at
+    /// `v0`, width `w`).
+    Ota { is: f64, nvt: f64, beta: f64, v0: f64, w: f64 },
 }
 
 impl DeviceEq {
@@ -65,6 +73,7 @@ impl DeviceEq {
             DeviceEq::Bjt { .. } => 2,
             DeviceEq::Jfet { .. } => 2,
             DeviceEq::OpAmp { .. } => 2,
+            DeviceEq::Ota { .. } => 4,
         }
     }
 
@@ -74,6 +83,7 @@ impl DeviceEq {
             DeviceEq::Bjt { .. } => 2,
             DeviceEq::Jfet { .. } => 3,
             DeviceEq::OpAmp { .. } => 1,
+            DeviceEq::Ota { .. } => 5,
         }
     }
 
@@ -89,6 +99,8 @@ impl DeviceEq {
             DeviceEq::Jfet { .. } => Limit::None,
             DeviceEq::OpAmp { wclamp, vlo, vhi, .. } if port == 1 => Limit::Rails { vlo, vhi, knee: 2.0 * wclamp },
             DeviceEq::OpAmp { .. } => Limit::None,
+            DeviceEq::Ota { is, nvt, .. } if port == 1 => Limit::Junction { nvt, vcrit: vcrit(is, nvt), symmetric: false },
+            DeviceEq::Ota { .. } => Limit::None,
         }
     }
 
@@ -205,6 +217,37 @@ impl DeviceEq {
                 j[0] = gm / (r * r * r);
                 j[1] = -gclamp * (dh + dl);
             }
+            DeviceEq::Ota { is, nvt, beta, v0, w } => {
+                const GMIN: f64 = 1e-12;
+                let (e, de) = exp_lim(v[1] / nvt);
+                let tail = is * (e - 1.0) + GMIN * v[1];
+                let dtail = is * de / nvt + GMIN;
+                let t = (v[0] / (2.0 * VT)).tanh();
+                let dt = (1.0 - t * t) / (2.0 * VT);
+                // Logistic output-compliance factors (softplus' derivative).
+                let (_, ct) = softplus((v[2] - v0) / w);
+                let (_, cb) = softplus((v[3] - v0) / w);
+                let dct = ct * (1.0 - ct) / w;
+                let dcb = cb * (1.0 - cb) / w;
+                let (hp, hn) = ((1.0 + t) * 0.5, (1.0 - t) * 0.5);
+                j.fill(0.0);
+                i[0] = tail;
+                j[1] = dtail;
+                i[1] = tail * hp * ct;
+                j[4] = tail * 0.5 * dt * ct;
+                j[5] = dtail * hp * ct;
+                j[6] = tail * hp * dct;
+                i[2] = tail * hn * cb;
+                j[8] = -tail * 0.5 * dt * cb;
+                j[9] = dtail * hn * cb;
+                j[11] = tail * hn * dcb;
+                i[3] = tail * hp / beta;
+                j[12] = tail * 0.5 * dt / beta;
+                j[13] = dtail * hp / beta;
+                i[4] = tail * hn / beta;
+                j[16] = -tail * 0.5 * dt / beta;
+                j[17] = dtail * hn / beta;
+            }
         }
     }
 }
@@ -263,6 +306,10 @@ mod tests {
         check(
             DeviceEq::OpAmp { imax: 9e-6, gm: 1.9e-4, gclamp: 1e-3, wclamp: 0.01, vlo: 1.0, vhi: 8.0 },
             &[&[1e-4, 4.0], &[0.2, 7.99], &[-0.01, 1.01]],
+        );
+        check(
+            DeviceEq::Ota { is: 1e-14, nvt: VT, beta: 125.0, v0: 1.0, w: 0.15 },
+            &[&[0.01, 0.6, 3.0, 4.0], &[-0.04, 0.55, 1.1, 0.9], &[0.2, 0.62, 0.5, 7.0], &[0.0, -0.3, 4.0, 4.0]],
         );
     }
 }

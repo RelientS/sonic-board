@@ -128,6 +128,9 @@ const NEWTON_TOL: f64 = 1e-5;
 pub const OPAMP_GCLAMP: f64 = 1e-3;
 pub const OPAMP_WCLAMP: f64 = 0.01;
 
+/// Leakage across an OTA's bias input (see the OTA builder).
+pub const OTA_RLEAK: f64 = 1e9;
+
 /// Fixed internal compensation capacitance for the op-amp macro model.
 pub const OPAMP_CC: f64 = 30e-12;
 
@@ -219,6 +222,25 @@ impl Circuit {
                         (vec![(g, s), (g, d)], vec![(s, g), (d, g), (s, d)])
                     };
                     devices.push(Device { eq, sense, inject, v_offset: 0, i_offset: 0 });
+                }
+                Kind::Ota { model } => {
+                    let m = &net.ota_models[model];
+                    let n: Vec<Node> = nodes.iter().map(|x| b.node(x)).collect();
+                    let (inp, inn, out, abc, vp, vn) = (n[0], n[1], n[2], n[3], n[4], n[5]);
+                    // The bias input is usually fed only through a resistor
+                    // from a transistor: without a DC path of its own that
+                    // node island rests on GMIN and the DK matrices become
+                    // ill-conditioned (1e12 V/A). 1 GOhm of input leakage
+                    // (under 0.05% of any useful Iabc) keeps them sane.
+                    resistors.push(Resistor { name: format!("{name}#rleak"), a: abc, b: vn, value: OTA_RLEAK });
+                    devices.push(Device {
+                        eq: DeviceEq::Ota { is: m.is, nvt: m.n * VT, beta: m.beta, v0: m.v0, w: m.w },
+                        sense: vec![(inp, inn), (abc, vn), (vp, out), (out, vn)],
+                        // (into, out_of) for iabc, ia, ib, ibp, ibn.
+                        inject: vec![(vn, abc), (out, vp), (vn, out), (vn, inp), (vn, inn)],
+                        v_offset: 0,
+                        i_offset: 0,
+                    });
                 }
                 Kind::OpAmp { model } => {
                     let m = &net.opamp_models[model];
