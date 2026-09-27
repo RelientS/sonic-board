@@ -11,7 +11,7 @@ import {
   getPresetSearchText,
 } from '../effects/catalog.ts';
 
-const page = readFileSync(new URL('../page.tsx', import.meta.url), 'utf8');
+const page = readFileSync(new URL('../studio/page.tsx', import.meta.url), 'utf8');
 const styles = readFileSync(new URL('../globals.css', import.meta.url), 'utf8');
 
 test('effect discovery text matches English and Chinese style terms', () => {

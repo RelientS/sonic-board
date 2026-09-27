@@ -9,6 +9,9 @@ export type AmpSpec = {
   finish: string;
   accent: string;
   controls: ControlSpec[];
+  /** A combo has its own speaker (`speakerCab`); a head plays through any cab. */
+  format: 'combo' | 'head';
+  speakerCab?: string;
   voicing: {
     drive: number;
     lowHz: number;
@@ -75,30 +78,35 @@ export const AMP_SPECS: AmpSpec[] = [
   {
     id: 'glass-120', name: 'Roland JC-120 Jazz Chorus', family: '高余量晶体管清音', finish: '#30363b', accent: '#68bdd4',
     description: '参考 JC-120 的快速、平直和高余量清音；未建模其内置立体声合唱电路。', modeling: '算法近似·非官方·非采样/捕获',
+    format: 'combo', speakerCab: 'open-2x12',
     controls: ampControls([50, 18, 48, 52, 58, 56, 68]),
     voicing: { drive: 0.24, lowHz: 110, midHz: 780, highHz: 3_200, presenceHz: 5_200, highCut: 13_500 },
   },
   {
     id: 'american-twin', name: "Fender '65 Twin Reverb", family: '大功率美式清音', finish: '#ded8ca', accent: '#c82f2d',
     description: '参考 Twin Reverb 的宽低频、明亮上端和轻微中频凹陷；不包含真空管、变压器或弹簧混响模型。', modeling: '算法近似·非官方·非采样/捕获',
+    format: 'combo', speakerCab: 'open-2x12',
     controls: ampControls([52, 28, 56, 42, 62, 52, 66]),
     voicing: { drive: 0.52, lowHz: 95, midHz: 720, highHz: 3_000, presenceHz: 4_800, highCut: 12_500 },
   },
   {
     id: 'brit-20', name: 'Marshall DSL20HR', family: 'EL34 英式箱头', finish: '#171819', accent: '#e3b445',
     description: '参考 DSL20HR 的靠前中频、紧实低频和可叠加的前级颗粒；未逐级重建 DSL 电路。', modeling: '算法近似·非官方·非采样/捕获',
+    format: 'head',
     controls: ampControls([50, 40, 52, 60, 54, 55, 64]),
     voicing: { drive: 0.92, lowHz: 105, midHz: 920, highHz: 3_200, presenceHz: 4_400, highCut: 10_800 },
   },
   {
     id: 'class-a-30', name: 'VOX AC30 Top Boost', family: 'EL84 英式亮音', finish: '#5b2f27', accent: '#d9b85e',
     description: '参考 AC30 Top Boost 的铃音高频、松软低中频和推动后的压缩感；未建模真实 EL84 功放。', modeling: '算法近似·非官方·非采样/捕获',
+    format: 'combo', speakerCab: 'blue-2x12',
     controls: ampControls([48, 36, 48, 53, 64, 58, 62]),
     voicing: { drive: 0.78, lowHz: 120, midHz: 1_050, highHz: 3_600, presenceHz: 5_600, highCut: 12_000 },
   },
   {
     id: 'dark-stack', name: 'MESA/Boogie Dual Rectifier', family: '美式高增益堆栈', finish: '#25222a', accent: '#a56be2',
     description: '参考 Dual Rectifier 的密集饱和、厚低频和收敛上端；未建模多级前级、整流或功放响应。', modeling: '算法近似·非官方·非采样/捕获',
+    format: 'head',
     controls: ampControls([46, 62, 58, 57, 48, 46, 58]),
     voicing: { drive: 1.42, lowHz: 92, midHz: 680, highHz: 2_800, presenceHz: 4_000, highCut: 9_200 },
   },
@@ -155,15 +163,16 @@ const cabsById = new Map(CAB_SPECS.map((cab) => [cab.id, cab]));
  * a gentle post-EQ and master; the capture itself fixes the amp's knobs.
  */
 export const NAM_AMP_PREFIX = 'nam:';
-const namAmpInfo = new Map<string, { amp: string; setting: string }>();
+type NamAmpInfo = { amp: string; setting: string; format?: 'combo' | 'head'; cab?: string };
+const namAmpInfo = new Map<string, NamAmpInfo>();
 const namAmpSpecs = new Map<string, AmpSpec>();
 
 export function isNamAmp(id: string) {
   return id.startsWith(NAM_AMP_PREFIX);
 }
 
-export function registerNamAmps(entries: Array<{ id: string; amp: string; setting: string }>) {
-  entries.forEach((entry) => namAmpInfo.set(entry.id, { amp: entry.amp, setting: entry.setting }));
+export function registerNamAmps(entries: Array<{ id: string } & NamAmpInfo>) {
+  entries.forEach((entry) => namAmpInfo.set(entry.id, { amp: entry.amp, setting: entry.setting, format: entry.format, cab: entry.cab }));
   namAmpSpecs.clear();
 }
 
@@ -181,6 +190,8 @@ function namAmpSpec(id: string): AmpSpec {
     modeling: 'NAM 实采 · 私有 · Tone3000',
     finish: '#26272a',
     accent: '#f3c46a',
+    format: info?.format === 'combo' ? 'combo' : 'head',
+    speakerCab: info?.format === 'combo' && info.cab && cabsById.has(info.cab) ? info.cab : undefined,
     controls: [
       control('input', '输入', 50),
       control('bass', '低频', 50),
@@ -242,6 +253,9 @@ export function makeDefaultAmpCabConfig() {
 
 export function validateAmpCatalog() {
   const errors: string[] = [];
+  AMP_SPECS.forEach((amp) => {
+    if (amp.format === 'combo' && (!amp.speakerCab || !cabsById.has(amp.speakerCab))) errors.push(`combo without a known speaker cab: ${amp.id}`);
+  });
   const ids = new Set<string>();
   [...AMP_SPECS, ...CAB_SPECS].forEach((spec) => {
     if (ids.has(spec.id)) errors.push(`duplicate model: ${spec.id}`);

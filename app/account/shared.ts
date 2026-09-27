@@ -5,7 +5,7 @@ export const REFERRAL_RULE_TEXT = '每成功邀请 1 人注册 +15 次，新用�
 export const PENDING_REFERRAL_STORAGE_KEY = 'sonic-board:pending-ref';
 
 export function referralLink(code: string) {
-  return `${PUBLIC_SITE_ORIGIN}/?ref=${encodeURIComponent(code)}`;
+  return `${PUBLIC_SITE_ORIGIN}/studio?ref=${encodeURIComponent(code)}`;
 }
 
 export type AccountSummary = {

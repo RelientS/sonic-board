@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
-const page = readFileSync(new URL('../page.tsx', import.meta.url), 'utf8');
+const page = readFileSync(new URL('../studio/page.tsx', import.meta.url), 'utf8');
 
 test('removing a selected pedal cleans every board state store', () => {
   assert.match(page, /function removeSelected\(\)[\s\S]*?if \(selectedIndex < 0\) return;/);

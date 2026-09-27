@@ -36,7 +36,7 @@ test('a new edit clears redo and the stack is bounded', () => {
 });
 
 test('the board wires undo to edits, shortcuts and toolbar buttons', () => {
-  const page = readFileSync(new URL('../page.tsx', import.meta.url), 'utf8');
+  const page = readFileSync(new URL('../studio/page.tsx', import.meta.url), 'utf8');
   assert.match(page, /function markBoardChanged\(record = true\)/);
   assert.match(page, /history\.current\.record\(captureCurrentBoardUiState\(\)\)/);
   // Selecting, switching A/B, monitoring and restoring are not edits.

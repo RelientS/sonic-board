@@ -12,18 +12,18 @@ import {
   type BoardAudioConfig,
   type EffectStatus,
   type LiveAudioSession,
-} from './audio/audio-engine';
-import { LiveSessionController } from './audio/live-session-controller';
-import { BoardHistory } from './board-history';
-import { AccountButton } from './account/AccountButton';
-import type { AudioChainItem, RoutingConfig, SignalLane } from './audio/audio-core';
+} from '../audio/audio-engine';
+import { LiveSessionController } from '../audio/live-session-controller';
+import { BoardHistory } from '../board-history';
+import { AccountButton } from '../account/AccountButton';
+import type { AudioChainItem, RoutingConfig, SignalLane } from '../audio/audio-core';
 import {
   createBrowserNamModelRepository,
   createNamModelRecord,
   parseNamModel,
   type NamModelRecord,
   type NamModelRepository,
-} from './audio/nam-model';
+} from '../audio/nam-model';
 import {
   CHORD_PROGRESSIONS,
   GUITAR_VOICES,
@@ -31,15 +31,15 @@ import {
   formatSourceConfig,
   getChordProgression,
   type SourceConfig,
-} from './audio/source-catalog';
-import { ToneAgentDock, type ToneAgentTurn } from './agent/ToneAgentDock';
+} from '../audio/source-catalog';
+import { ToneAgentDock, type ToneAgentTurn } from '../agent/ToneAgentDock';
 import {
   applyToneAgentActions,
   captureToneAgentBoard,
   type ToneAgentBoardState,
   type ToneAgentMessage,
-} from './agent/tone-agent-runtime';
-import { isToneAgentAbort, requestToneAgentStream, ToneAgentHttpError } from './agent/tone-agent-stream';
+} from '../agent/tone-agent-runtime';
+import { isToneAgentAbort, requestToneAgentStream, ToneAgentHttpError } from '../agent/tone-agent-stream';
 import {
   AMP_SPECS,
   CAB_SPECS,
@@ -52,7 +52,7 @@ import {
   NAM_AMP_PREFIX,
   registerNamAmps,
   type AmpCabConfig,
-} from './amps/catalog';
+} from '../amps/catalog';
 import {
   EFFECT_SPECS,
   FACTORY_PRESETS,
@@ -69,16 +69,16 @@ import {
   type EffectSpec,
   type InstantiatedPreset,
   type StyleTag,
-} from './effects/catalog';
-import { getControlHelp, type ControlOwnerKind } from './effects/control-help';
-import { getPedalControlLabel } from './effects/control-labels';
-import { getEffectFidelity } from './effects/fidelity';
+} from '../effects/catalog';
+import { getControlHelp, type ControlOwnerKind } from '../effects/control-help';
+import { getPedalControlLabel } from '../effects/control-labels';
+import { getEffectFidelity } from '../effects/fidelity';
 import {
   captureUserPreset,
   instantiateUserPreset,
   parseUserPresets,
   type UserPreset,
-} from './effects/user-presets';
+} from '../effects/user-presets';
 
 type ChainItem = AudioChainItem;
 type Values = Record<string, Record<string, number>>;
@@ -100,7 +100,7 @@ type AgentUndoEntry = {
   appliedRevision: number;
 };
 type LibraryMode = 'effects' | 'presets' | 'output';
-type PrivateAmpSummary = { id: string; amp: string; setting: string; author?: string; url?: string; loudness?: number | null };
+type PrivateAmpSummary = { id: string; amp: string; setting: string; author?: string; url?: string; loudness?: number | null; format?: 'combo' | 'head'; cab?: string };
 type StyleFilter = 'All' | StyleTag;
 type HelpTarget = {
   kind: ControlOwnerKind;

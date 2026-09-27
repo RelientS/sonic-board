@@ -15,6 +15,9 @@ export type PrivateAmpEntry = {
   sampleRate?: number;
   /** Capture loudness from the model metadata (dB), used to level-match. */
   loudness?: number | null;
+  /** 'combo' amps come with their own speaker, given as a cab id. */
+  format?: 'combo' | 'head';
+  cab?: string;
 };
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;

@@ -5,7 +5,7 @@ import test from 'node:test';
 import { EFFECT_SPECS, formatControlValue } from '../effects/catalog.ts';
 import { getEffectFidelity } from '../effects/fidelity.ts';
 
-const page = readFileSync(new URL('../page.tsx', import.meta.url), 'utf8');
+const page = readFileSync(new URL('../studio/page.tsx', import.meta.url), 'utf8');
 const styles = readFileSync(new URL('../globals.css', import.meta.url), 'utf8');
 
 test('knobs drag vertically with fine mode, reset on double-click and announce their value', () => {

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
-const page = readFileSync(new URL('../page.tsx', import.meta.url), 'utf8');
+const page = readFileSync(new URL('../studio/page.tsx', import.meta.url), 'utf8');
 const styles = readFileSync(new URL('../globals.css', import.meta.url), 'utf8');
 
 test('the effect library exposes a dedicated scroll region', () => {
