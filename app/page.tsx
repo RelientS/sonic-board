@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import {
   CIRCUIT_EFFECT_IDS,
   createLiveSession,
@@ -45,8 +45,12 @@ import {
   CAB_SPECS,
   getAmpSpec,
   getCabSpec,
+  isNamAmp,
+  listNamAmps,
   makeDefaultAmpValues,
   makeDefaultCabValues,
+  NAM_AMP_PREFIX,
+  registerNamAmps,
   type AmpCabConfig,
 } from './amps/catalog';
 import {
@@ -96,6 +100,7 @@ type AgentUndoEntry = {
   appliedRevision: number;
 };
 type LibraryMode = 'effects' | 'presets' | 'output';
+type PrivateAmpSummary = { id: string; amp: string; setting: string; author?: string; url?: string; loudness?: number | null };
 type StyleFilter = 'All' | StyleTag;
 type HelpTarget = {
   kind: ControlOwnerKind;
@@ -580,6 +585,10 @@ export default function Home() {
   const [agentError, setAgentError] = useState('');
   const [audioError, setAudioError] = useState('');
   const [namModels, setNamModels] = useState<Record<string, NamModelRecord>>({});
+  // Owner-only NAM amp captures: the list, and the selected capture's model.
+  const [namAmps, setNamAmps] = useState<PrivateAmpSummary[]>([]);
+  const [ampModel, setAmpModel] = useState<BoardAudioConfig['ampModel']>(undefined);
+  const ampModelCache = useRef(new Map<string, string>());
   const [namImporting, setNamImporting] = useState('');
   const [playback] = useState(() => new LiveSessionController<BoardAudioConfig, LiveAudioSession>(createLiveSession, disposeLiveSession));
   const previousMonitorMode = useRef(mode);
@@ -645,7 +654,45 @@ export default function Home() {
     routing,
     amp,
     namModels,
-  }), [chain, values, bypassed, source, mode, output, routing, amp, namModels]);
+    ampModel: ampModel?.id === amp.ampId ? ampModel : undefined,
+  }), [chain, values, bypassed, source, mode, output, routing, amp, namModels, ampModel]);
+
+  const refreshNamAmps = useCallback(() => {
+    void fetch('/api/amp-models', { credentials: 'same-origin' })
+      .then((response): Promise<{ amps?: PrivateAmpSummary[] }> => (response.ok ? response.json() : Promise.resolve({ amps: [] })))
+      .then((payload) => {
+        const amps = Array.isArray(payload.amps) ? payload.amps : [];
+        registerNamAmps(amps);
+        setNamAmps(amps);
+      })
+      .catch(() => { /* offline: the built-in amps still work */ });
+  }, []);
+
+  useEffect(() => {
+    refreshNamAmps();
+  }, [refreshNamAmps]);
+
+  // Load the selected capture (cached per session; the server only serves it to the owner).
+  const namAmpId = isNamAmp(amp.ampId) ? amp.ampId : null;
+  useEffect(() => {
+    if (!namAmpId) return;
+    const id = namAmpId.slice(NAM_AMP_PREFIX.length);
+    const loudness = namAmps.find((entry) => entry.id === id)?.loudness ?? null;
+    const cached = ampModelCache.current.get(id);
+    if (cached) {
+      setAmpModel({ id: namAmpId, modelJson: cached, loudness });
+      return;
+    }
+    let active = true;
+    void fetch('/api/amp-models?id=' + encodeURIComponent(id), { credentials: 'same-origin' })
+      .then((response) => (response.ok ? response.text() : Promise.reject(new Error(String(response.status)))))
+      .then((modelJson) => {
+        ampModelCache.current.set(id, modelJson);
+        if (active) setAmpModel({ id: namAmpId, modelJson, loudness });
+      })
+      .catch(() => { if (active) setAudioError('NAM 箱头模型加载失败（需要所有者账号登录）。'); });
+    return () => { active = false; };
+  }, [namAmpId, namAmps]);
   const toneAgentBoard = useMemo<ToneAgentBoardState>(() => captureToneAgentBoard({
     name: activePresetName,
     selectedInstanceId: selected,
@@ -1383,7 +1430,7 @@ export default function Home() {
             />
             <i aria-hidden="true"><b /></i><strong>参数教程</strong>
           </label>
-          <AccountButton />
+          <AccountButton onAccountChange={refreshNamAmps} />
           <button type="button" className="quiet" onClick={resetBoard}>重置</button>
           <button type="button" className="accent" onClick={saveCurrentPreset}>{saveState === 'saved' ? '已保存' : '保存音色'}</button>
         </div>
@@ -1492,8 +1539,8 @@ export default function Home() {
               >{amp.bypassed ? '输出模拟已旁通' : '输出模拟已启用'}</button>
               <section className="output-section">
                 <div className="section-heading"><h2>箱头</h2><span>{ampSpec.family}</span></div>
-                <div className="model-list" role="radiogroup" aria-label="箱头模型">{AMP_SPECS.map((model) => (
-                  <button key={model.id} type="button" role="radio" aria-checked={amp.ampId === model.id} className={amp.ampId === model.id ? 'active' : ''} onClick={() => selectAmp(model.id)}>
+                <div className="model-list" role="radiogroup" aria-label="箱头模型">{[...AMP_SPECS, ...(namAmps.length ? listNamAmps() : [])].map((model, index) => (
+                  <button key={model.id} type="button" role="radio" aria-checked={amp.ampId === model.id} className={(amp.ampId === model.id ? 'active' : '') + (index === AMP_SPECS.length ? ' nam-amp-first' : '')} onClick={() => selectAmp(model.id)}>
                     <i style={{ background: model.accent }} aria-hidden="true" /><span><strong>{model.name}</strong><small>{model.family}</small></span>
                   </button>
                 ))}</div>

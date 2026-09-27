@@ -13,6 +13,8 @@ export type PrivateAmpEntry = {
   author?: string;
   url?: string;
   sampleRate?: number;
+  /** Capture loudness from the model metadata (dB), used to level-match. */
+  loudness?: number | null;
 };
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;

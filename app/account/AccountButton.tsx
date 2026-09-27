@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 import { AccountPanel, useAccount } from './AccountPanel.tsx';
 
 /** Top-bar entry to sign in or register without opening the tone agent. */
-export function AccountButton() {
+export function AccountButton({ onAccountChange }: { onAccountChange?: () => void }) {
   const [open, setOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   // Checks the session once on load; opening the dialog refreshes it (the
@@ -21,6 +21,14 @@ export function AccountButton() {
   }, [open]);
 
   const signedIn = account.state.status === 'ready' ? account.state.account.username : null;
+  // Owner-only features (private amp captures) depend on who is signed in.
+  const changed = useRef(onAccountChange);
+  useEffect(() => {
+    changed.current = onAccountChange;
+  });
+  useEffect(() => {
+    if (account.state.status !== 'loading') changed.current?.();
+  }, [signedIn, account.state.status]);
   return (
     <>
       <button type="button" className="quiet account-open-button" aria-haspopup="dialog" onClick={() => { setOpen(true); void account.refresh(); }}>{signedIn ?? <><span className="account-label-long">登录 / 注册</span><span className="account-label-short">登录</span></>}</button>

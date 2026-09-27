@@ -18,7 +18,7 @@ import { renderSampledSourceBuffer } from './sample-renderer.ts';
 import { applySampleInputHeadroom } from './sample-library.ts';
 import { getEffectSpec, mapControlValue } from '../effects/catalog.ts';
 import { EFFECT_FIDELITY_PROFILES, type EffectFidelityProfile } from '../effects/fidelity.ts';
-import { AMP_SPECS, CAB_SPECS, getAmpSpec, getCabSpec, type AmpCabConfig, type CabSpec } from '../amps/catalog.ts';
+import { AMP_SPECS, CAB_SPECS, getAmpSpec, getCabSpec, isNamAmp, type AmpCabConfig, type CabSpec } from '../amps/catalog.ts';
 import { minimumPhaseImpulse, speakerMagnitude, type SpeakerVoicing } from './dsp-math.ts';
 import { computeLaneMix, partitionChain } from './routing.ts';
 import type { NamModelRecord } from './nam-model.ts';
@@ -314,7 +314,12 @@ export type BoardAudioConfig = {
   amp: AmpCabConfig;
   /** Private browser-owned NAM payloads keyed by EffectSpec.nam.slotId. */
   namModels?: Record<string, NamModelRecord>;
+  /** The capture for a `nam:` amp (owner-only), with its measured loudness. */
+  ampModel?: { id: string; modelJson: string; loudness?: number | null };
 };
+
+/** Key of the amp's NAM node in the per-graph NAM node map. */
+const AMP_NAM_KEY = '__amp__';
 
 /** Whether a pedal is running its intended engine or silently degraded. */
 export type EffectStatus = 'ok' | 'passthrough' | 'fallback';
@@ -427,6 +432,7 @@ export async function prepareNamNodes(
   cache?: Map<string, { modelJson: string; node: AudioWorkletNode }>,
 ) {
   const nodes = new Map<string, AudioWorkletNode>();
+  await prepareAmpNamNode(context, config, nodes, cache);
   if (config.mode === 'dry' || !config.namModels) return nodes;
   const bypassed = new Set(config.bypassed);
   const activeItems = config.chain.filter((item) => NAM_EFFECT_IDS.has(item.specId) && !bypassed.has(item.instanceId));
@@ -455,6 +461,30 @@ export async function prepareNamNodes(
     }
   }));
   return nodes;
+}
+
+async function prepareAmpNamNode(
+  context: BaseAudioContext,
+  config: BoardAudioConfig,
+  nodes: Map<string, AudioWorkletNode>,
+  cache?: Map<string, { modelJson: string; node: AudioWorkletNode }>,
+) {
+  const model = config.ampModel;
+  if (config.mode === 'dry' || config.amp.bypassed || !isNamAmp(config.amp.ampId) || model?.id !== config.amp.ampId) return;
+  await prepareNamProcessor(context);
+  if (!namProcessorReady.has(context)) return;
+  const cached = cache?.get(AMP_NAM_KEY);
+  if (cached && cached.modelJson === model.modelJson) {
+    nodes.set(AMP_NAM_KEY, cached.node);
+    return;
+  }
+  const node = await createLoadedNamNode(context, model.modelJson);
+  if (!node) return;
+  nodes.set(AMP_NAM_KEY, node);
+  if (cache) {
+    if (cached) disposeNamNode(cached.node);
+    cache.set(AMP_NAM_KEY, { modelJson: model.modelJson, node });
+  }
 }
 
 function parameter(values: Record<string, number>, id: string, fallback: number) {
@@ -1467,12 +1497,44 @@ function makeCabinetImpulse(context: BaseAudioContext, cab: CabSpec, position: n
   });
 }
 
-function connectAmpCab(context: BaseAudioContext, input: AudioNode, ampConfig: AmpCabConfig) {
+/**
+ * A NAM amp capture: input drive into the model, loudness normalisation from
+ * the capture's metadata, a gentle post-EQ and master. Returns the output.
+ */
+function connectNamAmp(context: BaseAudioContext, input: AudioNode, ampValues: Record<string, number>, node: AudioWorkletNode, loudness: number | null | undefined) {
+  const drive = context.createGain();
+  const normalize = context.createGain();
+  const bass = context.createBiquadFilter();
+  const mids = context.createBiquadFilter();
+  const treble = context.createBiquadFilter();
+  const master = context.createGain();
+  drive.gain.value = dbToGain((parameter(ampValues, 'input', 50) - 50) * 0.24);
+  // Captures differ by ~10 dB; bring them to a common level (-18 LUFS-ish).
+  normalize.gain.value = dbToGain(-18 - (Number.isFinite(loudness) ? loudness as number : -14));
+  bass.type = 'lowshelf'; bass.frequency.value = 120; bass.gain.value = (parameter(ampValues, 'bass', 50) - 50) * 0.12;
+  mids.type = 'peaking'; mids.frequency.value = 800; mids.Q.value = 0.7; mids.gain.value = (parameter(ampValues, 'mid', 50) - 50) * 0.12;
+  treble.type = 'highshelf'; treble.frequency.value = 3_200; treble.gain.value = (parameter(ampValues, 'treble', 50) - 50) * 0.12;
+  master.gain.value = 0.3 + parameter(ampValues, 'master', 60) / 100 * 1.2;
+  input.connect(drive).connect(node).connect(normalize).connect(bass).connect(mids).connect(treble).connect(master);
+  return master;
+}
+
+function connectAmpCab(
+  context: BaseAudioContext,
+  input: AudioNode,
+  ampConfig: AmpCabConfig,
+  ampNode?: AudioWorkletNode,
+  ampLoudness?: number | null,
+) {
   if (ampConfig.bypassed) return input;
   const amp = getAmpSpec(ampConfig.ampId);
   const cab = getCabSpec(ampConfig.cabId);
   const ampValues = ampConfig.ampValues;
   const cabValues = ampConfig.cabValues;
+  const position = parameter(cabValues, 'position', 48);
+  const distance = parameter(cabValues, 'distance', 18);
+  const room = parameter(cabValues, 'room', 10);
+  if (ampNode) return connectCab(context, connectNamAmp(context, input, ampValues, ampNode, ampLoudness), cab, position, distance, room);
   const inputGain = context.createGain();
   const bass = context.createBiquadFilter();
   const mids = context.createBiquadFilter();
@@ -1493,11 +1555,10 @@ function connectAmpCab(context: BaseAudioContext, input: AudioNode, ampConfig: A
   ampCut.type = 'lowpass'; ampCut.frequency.value = amp.voicing.highCut; ampCut.Q.value = 0.62;
   master.gain.value = (0.12 + parameter(ampValues, 'master', 60) / 94) / (0.74 + gainValue / 115);
   input.connect(inputGain).connect(bass).connect(mids).connect(treble).connect(shaper).connect(presence).connect(ampCut).connect(master);
+  return connectCab(context, master, cab, position, distance, room);
+}
 
-  const position = parameter(cabValues, 'position', 48);
-  const distance = parameter(cabValues, 'distance', 18);
-  const room = parameter(cabValues, 'room', 10);
-
+function connectCab(context: BaseAudioContext, master: AudioNode, cab: CabSpec, position: number, distance: number, room: number) {
   if (cab.voicing.impulseSeconds <= 0) {
     // Direct / full range: only a gentle safety roll-off.
     const safety = context.createBiquadFilter();
@@ -1544,7 +1605,7 @@ function connectBoardGraph(
     effected = sum;
   }
 
-  const modeled = connectAmpCab(context, effected, config.amp);
+  const modeled = connectAmpCab(context, effected, config.amp, namNodes.get(AMP_NAM_KEY), config.ampModel?.loudness);
   const monitorMakeup = context.createGain();
   monitorMakeup.gain.value = monitorMakeupGain(config.mode);
   modeled.connect(monitorMakeup);
@@ -1798,6 +1859,7 @@ function structureKey(config: BoardAudioConfig) {
     routing: config.routing,
     amp: config.amp,
     nam: Object.entries(config.namModels ?? {}).map(([slot, model]) => [slot, model.modelJson.length]),
+    ampModel: config.ampModel ? [config.ampModel.id, config.ampModel.modelJson.length] : null,
   });
 }
 

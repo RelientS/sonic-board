@@ -18,7 +18,7 @@ export async function GET(request: Request) {
   const id = new URL(request.url).searchParams.get('id');
   if (!id) {
     const amps = owner ? await listPrivateAmps() : [];
-    return jsonResponse({ amps: amps.map(({ id: ampId, amp, setting, author, url, sampleRate }) => ({ id: ampId, amp, setting, author, url, sampleRate })) }, 200, PRIVATE_HEADERS);
+    return jsonResponse({ amps: amps.map(({ id: ampId, amp, setting, author, url, sampleRate, loudness }) => ({ id: ampId, amp, setting, author, url, sampleRate, loudness })) }, 200, PRIVATE_HEADERS);
   }
   if (!owner) return jsonResponse({ error: 'forbidden' }, user ? 403 : 401, PRIVATE_HEADERS);
   const model = await readPrivateAmp(id);

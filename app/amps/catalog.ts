@@ -149,7 +149,59 @@ export const CAB_SPECS: CabSpec[] = [
 const ampsById = new Map(AMP_SPECS.map((amp) => [amp.id, amp]));
 const cabsById = new Map(CAB_SPECS.map((cab) => [cab.id, cab]));
 
+/**
+ * Private NAM amp captures (owner-only, served by /api/amp-models) use ids
+ * `nam:<capture id>`. Their controls act around the capture: input drive,
+ * a gentle post-EQ and master; the capture itself fixes the amp's knobs.
+ */
+export const NAM_AMP_PREFIX = 'nam:';
+const namAmpInfo = new Map<string, { amp: string; setting: string }>();
+const namAmpSpecs = new Map<string, AmpSpec>();
+
+export function isNamAmp(id: string) {
+  return id.startsWith(NAM_AMP_PREFIX);
+}
+
+export function registerNamAmps(entries: Array<{ id: string; amp: string; setting: string }>) {
+  entries.forEach((entry) => namAmpInfo.set(entry.id, { amp: entry.amp, setting: entry.setting }));
+  namAmpSpecs.clear();
+}
+
+export function listNamAmps() {
+  return [...namAmpInfo.keys()].map((id) => getAmpSpec(NAM_AMP_PREFIX + id));
+}
+
+function namAmpSpec(id: string): AmpSpec {
+  const info = namAmpInfo.get(id.slice(NAM_AMP_PREFIX.length));
+  return {
+    id,
+    name: info?.amp ?? id.slice(NAM_AMP_PREFIX.length),
+    family: info ? `NAM 实采 · ${info.setting}` : 'NAM 实采',
+    description: '真实音箱的 NAM 神经网络采样（仅所有者账号可用）。采样固定了原机旋钮；这里的输入推动模型，低中高是采样后的轻度均衡。',
+    modeling: 'NAM 实采 · 私有 · Tone3000',
+    finish: '#26272a',
+    accent: '#f3c46a',
+    controls: [
+      control('input', '输入', 50),
+      control('bass', '低频', 50),
+      control('mid', '中频', 50),
+      control('treble', '高频', 50),
+      control('master', '主音量', 60),
+    ],
+    // Only used if the capture cannot be loaded (e.g. signed out): a clean amp.
+    voicing: { drive: 0.4, lowHz: 100, midHz: 800, highHz: 3_200, presenceHz: 5_000, highCut: 12_000 },
+  };
+}
+
 export function getAmpSpec(id: string) {
+  if (isNamAmp(id)) {
+    let spec = namAmpSpecs.get(id);
+    if (!spec) {
+      spec = namAmpSpec(id);
+      namAmpSpecs.set(id, spec);
+    }
+    return spec;
+  }
   const amp = ampsById.get(id);
   if (!amp) throw new Error(`Unknown amp: ${id}`);
   return amp;
