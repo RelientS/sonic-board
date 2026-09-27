@@ -1,4 +1,5 @@
 const CONTROL_LABELS: Record<string, string> = {
+  input: 'INPUT',
   level: 'LEVEL',
   tone: 'TONE',
   attack: 'ATTACK',

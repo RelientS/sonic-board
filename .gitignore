@@ -37,3 +37,4 @@ next-env.d.ts
 /outputs/
 /work/
 /dsp/**/target/
+/public/audio/nam/

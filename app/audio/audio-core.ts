@@ -4,6 +4,7 @@ import {
   type SourceConfig,
   type SourceKind,
 } from './source-catalog.ts';
+import { getEffectSpec, mapControlValue } from '../effects/catalog.ts';
 
 export type { SourceConfig, SourceKind } from './source-catalog.ts';
 export type SignalLane = 'A' | 'B';
@@ -32,6 +33,25 @@ export type AudioChainItem = {
 export type AudioValues = Record<string, Record<string, number>>;
 
 export const SOURCE_DURATION_SECONDS = 6.4;
+export const EXPORT_TAIL_BASE_SECONDS = 0.25;
+export const EXPORT_DRY_TAIL_SECONDS = 0;
+export const EXPORT_TAIL_SILENCE_THRESHOLD = 0.0001;
+export const EXPORT_TAIL_KEEP_SECONDS = 0.15;
+/** Keeps a single export below roughly 5 MiB of stereo PCM tail at 44.1 kHz. */
+export const EXPORT_TAIL_SAFETY_CAP_SECONDS = 30;
+
+export type TailEstimateOptions = {
+  mode?: 'dry' | 'wet';
+  routing?: RoutingConfig;
+};
+
+export type TailEstimatePolicy = {
+  seconds: number;
+  uncappedSeconds: number;
+  capSeconds: number;
+  capped: boolean;
+  policy: 'complete' | 'safety-cap';
+};
 
 export function clampParameter(value: number) {
   return Math.min(100, Math.max(0, value));
@@ -221,45 +241,152 @@ export function synthesizeSourceChannels(source: SourceKind | SourceConfig, samp
   return [left, right];
 }
 
+const TAIL_EFFECT_IDS = new Set([
+  'analog-delay', 'dm2-delay', 'tape-echo', 'digital-delay',
+  'reverse-space', 'gated-room', 'cloud-hall',
+]);
+
+function effectKnobValue(specId: string, pedalValues: Record<string, number>, controlId: string) {
+  const control = getEffectSpec(specId).controls.find((entry) => entry.id === controlId);
+  return clampParameter(pedalValues[controlId] ?? control?.defaultValue ?? 0);
+}
+
+function effectPhysicalValue(specId: string, pedalValues: Record<string, number>, controlId: string) {
+  const control = getEffectSpec(specId).controls.find((entry) => entry.id === controlId);
+  if (!control) return 0;
+  return mapControlValue(control, effectKnobValue(specId, pedalValues, controlId));
+}
+
+function delayRepeatsUntilQuiet(feedback: number) {
+  if (feedback <= 0.01) return 1;
+  return Math.max(1, Math.log(0.01) / Math.log(feedback));
+}
+
+function effectTailSeconds(specId: string, pedalValues: Record<string, number>) {
+  if (!TAIL_EFFECT_IDS.has(specId) || effectKnobValue(specId, pedalValues, 'mix') === 0) return 0;
+
+  if (specId === 'analog-delay' || specId === 'dm2-delay' || specId === 'tape-echo' || specId === 'digital-delay') {
+    const delay = effectPhysicalValue(specId, pedalValues, 'time') / 1000;
+    const feedbackControl = specId === 'tape-echo' || specId === 'dm2-delay' ? 'repeats' : 'feedback';
+    const feedbackKnob = effectKnobValue(specId, pedalValues, feedbackControl);
+    const feedback = specId === 'digital-delay'
+      ? Math.min(0.84, feedbackKnob / 110)
+      : Math.min(0.78, feedbackKnob / 112);
+    const longestDelay = specId === 'digital-delay' ? delay * 1.013 : delay;
+    return longestDelay * delayRepeatsUntilQuiet(feedback);
+  }
+
+  if (specId === 'reverse-space') {
+    const impulse = Math.min(10, effectPhysicalValue(specId, pedalValues, 'decay'));
+    const preDelay = Math.min(1, effectPhysicalValue(specId, pedalValues, 'preDelay') / 1000);
+    return preDelay + impulse;
+  }
+
+  if (specId === 'cloud-hall') {
+    const impulse = Math.min(10, effectPhysicalValue(specId, pedalValues, 'decay'));
+    const preDelay = Math.min(1, effectPhysicalValue(specId, pedalValues, 'preDelay') / 1000);
+    return preDelay + impulse;
+  }
+
+  if (specId === 'gated-room') {
+    const decay = effectPhysicalValue(specId, pedalValues, 'decay');
+    const hold = effectPhysicalValue(specId, pedalValues, 'hold') / 1000;
+    const release = effectPhysicalValue(specId, pedalValues, 'release') / 1000;
+    return 0.008 + Math.min(8, decay + hold + release);
+  }
+
+  return 0;
+}
+
+function routeTailSeconds(
+  chain: AudioChainItem[],
+  values: AudioValues,
+  bypassed: Set<string>,
+  routing: RoutingConfig,
+) {
+  const sumTail = (items: AudioChainItem[]) => items.reduce((total, item) => {
+    if (bypassed.has(item.instanceId)) return total;
+    return total + effectTailSeconds(item.specId, values[item.instanceId] ?? {});
+  }, 0);
+
+  if (routing.mode === 'serial') return sumTail(chain);
+  const blend = clampParameter(routing.blend);
+  const laneA = blend >= 100 ? 0 : sumTail(chain.filter((item) => (item.lane ?? 'A') === 'A'));
+  const laneB = blend <= 0 ? 0 : sumTail(chain.filter((item) => item.lane === 'B'));
+  return Math.max(laneA, laneB);
+}
+
+function tidyTailSeconds(value: number) {
+  return Number(value.toFixed(2));
+}
+
+/** Reports both practical support and the explicit bounded-export policy. */
+export function estimateTailPolicy(
+  chain: AudioChainItem[],
+  values: AudioValues,
+  bypassed: Set<string>,
+  options: TailEstimateOptions = {},
+): TailEstimatePolicy {
+  if (options.mode === 'dry') {
+    return {
+      seconds: EXPORT_DRY_TAIL_SECONDS,
+      uncappedSeconds: EXPORT_DRY_TAIL_SECONDS,
+      capSeconds: EXPORT_TAIL_SAFETY_CAP_SECONDS,
+      capped: false,
+      policy: 'complete',
+    };
+  }
+
+  const routing = options.routing ?? { mode: 'serial', blend: 50, spread: 0 };
+  const uncapped = Math.max(
+    EXPORT_TAIL_BASE_SECONDS,
+    routeTailSeconds(chain, values, bypassed, routing),
+  );
+  const capped = uncapped > EXPORT_TAIL_SAFETY_CAP_SECONDS;
+  return {
+    seconds: tidyTailSeconds(Math.min(uncapped, EXPORT_TAIL_SAFETY_CAP_SECONDS)),
+    uncappedSeconds: tidyTailSeconds(uncapped),
+    capSeconds: EXPORT_TAIL_SAFETY_CAP_SECONDS,
+    capped,
+    policy: capped ? 'safety-cap' : 'complete',
+  };
+}
+
 export function estimateTailSeconds(
   chain: AudioChainItem[],
   values: AudioValues,
   bypassed: Set<string>,
+  options: TailEstimateOptions = {},
 ) {
-  let tail = 0.25;
+  return estimateTailPolicy(chain, values, bypassed, options).seconds;
+}
 
-  chain.forEach((item) => {
-    if (bypassed.has(item.instanceId)) return;
-    const pedalValues = values[item.instanceId] ?? {};
+export type TailTrimOptions = {
+  threshold?: number;
+  keepSeconds?: number;
+};
 
-    if (item.specId === 'tape-echo' || item.specId === 'analog-delay' || item.specId === 'dm2-delay' || item.specId === 'digital-delay') {
-      const timeValue = clampParameter(pedalValues.time ?? 45) / 100;
-      const ranges = item.specId === 'analog-delay' ? [0.04, 0.8] : item.specId === 'dm2-delay' ? [0.03, 0.33] : item.specId === 'digital-delay' ? [0.04, 2] : [0.06, 1.2];
-      const delay = ranges[0] * (ranges[1] / ranges[0]) ** timeValue;
-      const feedbackValue = item.specId === 'tape-echo' || item.specId === 'dm2-delay' ? pedalValues.repeats : pedalValues.feedback;
-      const feedback = Math.min(item.specId === 'digital-delay' ? 0.86 : 0.78, clampParameter(feedbackValue ?? 30) / 112);
-      const repeatsUntilQuiet = feedback > 0.01 ? Math.log(0.01) / Math.log(feedback) : 1;
-      tail = Math.max(tail, Math.min(10, delay * repeatsUntilQuiet));
-    }
-
-    if (item.specId === 'reverse-space') {
-      tail = Math.max(tail, 1.1 + clampParameter(pedalValues.decay ?? 55) / 18);
-    }
-
-    if (item.specId === 'cloud-hall') {
-      const normalized = clampParameter(pedalValues.decay ?? 65) / 100;
-      tail = Math.max(tail, Math.min(12, 0.5 * (20 / 0.5) ** normalized));
-    }
-
-    if (item.specId === 'gated-room') {
-      const decay = 0.3 * (8 / 0.3) ** (clampParameter(pedalValues.decay ?? 42) / 100);
-      const hold = 0.001 * (3000 / 1) ** (clampParameter(pedalValues.hold ?? 38) / 100);
-      const release = 0.005 * (3000 / 5) ** (clampParameter(pedalValues.release ?? 24) / 100);
-      tail = Math.max(tail, Math.min(12, decay + hold + release));
-    }
-  });
-
-  return Number(tail.toFixed(2));
+/** Removes inaudible padding after a rendered wet tail while keeping a short fade-out window. */
+export function trimRenderedTail(
+  channels: Float32Array[],
+  sampleRate: number,
+  options: TailTrimOptions = {},
+) {
+  if (channels.length === 0 || !Number.isFinite(sampleRate) || sampleRate <= 0) return channels;
+  const frameCount = Math.min(...channels.map((channel) => channel.length));
+  if (frameCount <= 0) return channels;
+  const threshold = Math.max(0, options.threshold ?? EXPORT_TAIL_SILENCE_THRESHOLD);
+  const keepFrames = Math.max(0, Math.ceil((options.keepSeconds ?? EXPORT_TAIL_KEEP_SECONDS) * sampleRate));
+  let lastActiveFrame = frameCount - 1;
+  while (lastActiveFrame >= 0) {
+    const active = channels.some((channel) => Math.abs(channel[lastActiveFrame]) >= threshold);
+    if (active) break;
+    lastActiveFrame -= 1;
+  }
+  if (lastActiveFrame < 0) return channels;
+  const outputFrameCount = Math.min(frameCount, lastActiveFrame + 1 + keepFrames);
+  if (outputFrameCount >= frameCount) return channels;
+  return channels.map((channel) => channel.slice(0, outputFrameCount));
 }
 
 function writeAscii(view: DataView, offset: number, value: string) {

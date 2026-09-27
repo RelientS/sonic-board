@@ -4,6 +4,13 @@ import test from 'node:test';
 
 const wasmUrl = new URL('../../public/audio/pedalkernel.wasm', import.meta.url);
 
+let wasmModulePromise: Promise<WebAssembly.Module> | null = null;
+
+function instantiatePedalKernel() {
+  wasmModulePromise ??= WebAssembly.compile(readFileSync(wasmUrl));
+  return wasmModulePromise.then((module) => WebAssembly.instantiate(module, {}));
+}
+
 const MODELS = [
   { name: 'MXR Dyna Comp', controls: [0.46, 0.58], definingControl: 1 },
   { name: 'Boss BD-2 Blues Driver', controls: [0.38, 0.54, 0.58], definingControl: 2 },
@@ -30,7 +37,7 @@ test('ships the PedalKernel circuit runtime as browser WebAssembly', async () =>
 });
 
 test('publishes the PedalKernel runtime ABI used for cache compatibility', async () => {
-  const { instance } = await WebAssembly.instantiate(readFileSync(wasmUrl), {});
+  const instance = await instantiatePedalKernel();
   const exports = instance.exports as unknown as { runtime_version?: () => number };
 
   assert.equal(typeof exports.runtime_version, 'function');
@@ -39,7 +46,7 @@ test('publishes the PedalKernel runtime ABI used for cache compatibility', async
 
 test('PedalKernel processes a block and responds to pedal controls', async () => {
   assert.ok(existsSync(wasmUrl), 'PedalKernel WASM artifact is missing');
-  const { instance } = await WebAssembly.instantiate(readFileSync(wasmUrl), {});
+  const instance = await instantiatePedalKernel();
   const exports = instance.exports as unknown as {
     memory: WebAssembly.Memory;
     init_model: (modelId: number, sampleRate: number) => number;
@@ -70,10 +77,9 @@ test('PedalKernel processes a block and responds to pedal controls', async () =>
 });
 
 test('every upstream circuit initializes and stays audible and bounded after calibration', async () => {
-  const bytes = readFileSync(wasmUrl);
 
   for (let modelId = 0; modelId < MODELS.length; modelId += 1) {
-    const { instance } = await WebAssembly.instantiate(bytes, {});
+    const instance = await instantiatePedalKernel();
     const exports = instance.exports as unknown as {
       memory: WebAssembly.Memory;
       init_model: (id: number, sampleRate: number) => number;
@@ -98,7 +104,7 @@ test('every upstream circuit initializes and stays audible and bounded after cal
 });
 
 test('Dyna Comp keeps a usable default output level', async () => {
-  const { instance } = await WebAssembly.instantiate(readFileSync(wasmUrl), {});
+  const instance = await instantiatePedalKernel();
   const exports = instance.exports as unknown as {
     memory: WebAssembly.Memory;
     init_model: (id: number, sampleRate: number) => number;
@@ -123,10 +129,9 @@ test('Dyna Comp keeps a usable default output level', async () => {
 });
 
 test('default compressor and fuzz levels stay near the clean reference', async () => {
-  const bytes = readFileSync(wasmUrl);
   const inputRms = 0.08 / Math.sqrt(2);
   for (const modelId of [0, 3, 6]) {
-    const { instance } = await WebAssembly.instantiate(bytes, {});
+    const instance = await instantiatePedalKernel();
     const exports = instance.exports as unknown as {
       memory: WebAssembly.Memory;
       init_model: (id: number, sampleRate: number) => number;
@@ -150,9 +155,8 @@ test('default compressor and fuzz levels stay near the clean reference', async (
 });
 
 test('Big Muff and Fuzz Face fit the AudioWorklet processing budget', async () => {
-  const bytes = readFileSync(wasmUrl);
   const renderTime = async (modelId: number) => {
-    const { instance } = await WebAssembly.instantiate(bytes, {});
+    const instance = await instantiatePedalKernel();
     const exports = instance.exports as unknown as {
       memory: WebAssembly.Memory;
       init_model: (id: number, sampleRate: number) => number;
@@ -184,9 +188,8 @@ test('Big Muff and Fuzz Face fit the AudioWorklet processing budget', async () =
 });
 
 test('realtime fuzz repairs initialize without compiling the heavy circuit solver', async () => {
-  const bytes = readFileSync(wasmUrl);
   const initializeTime = async (modelId: number) => {
-    const { instance } = await WebAssembly.instantiate(bytes, {});
+    const instance = await instantiatePedalKernel();
     const exports = instance.exports as unknown as { init_model: (id: number, sampleRate: number) => number };
     const startedAt = performance.now();
     assert.equal(exports.init_model(modelId, 44_100), 1);
@@ -202,10 +205,9 @@ test('realtime fuzz repairs initialize without compiling the heavy circuit solve
 });
 
 test('every exposed upstream control changes its circuit output', async () => {
-  const bytes = readFileSync(wasmUrl);
   for (let modelId = 0; modelId < MODELS.length; modelId += 1) {
     const render = async (changedControl: number | null, value = 0) => {
-      const { instance } = await WebAssembly.instantiate(bytes, {});
+      const instance = await instantiatePedalKernel();
       const exports = instance.exports as unknown as {
         memory: WebAssembly.Memory;
         init_model: (id: number, sampleRate: number) => number;

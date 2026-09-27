@@ -19,17 +19,20 @@ test('the audio engine implements every amp and cabinet exposed by the catalog',
   assert.deepEqual([...SUPPORTED_CAB_IDS].sort(), CAB_SPECS.map((cab) => cab.id).sort());
 });
 
-test('the high-fidelity analog tier is backed by PedalKernel models', () => {
+test('the high-fidelity analog tier routes only stable realtime models through PedalKernel', () => {
   const ids = (audioEngine as typeof audioEngine & {
     PEDALKERNEL_EFFECT_IDS?: ReadonlySet<string>;
   }).PEDALKERNEL_EFFECT_IDS;
 
   assert.ok(ids instanceof Set, 'audio engine should expose its PedalKernel-backed effects');
   assert.deepEqual([...ids].sort(), [
-    'analog-chorus', 'analog-delay', 'blue-drive', 'dm2-delay', 'fuzz-face',
+    'analog-chorus', 'blue-drive', 'fuzz-face',
     'klon-centaur', 'ocd-drive', 'phase90', 'rodent-dist', 'sd1-drive',
     'studio-comp', 'tube-screamer', 'wall-fuzz',
   ]);
+  assert.equal(ids.has('analog-delay'), false, 'Memory Man must not use the noisy upstream BBD worklet');
+  assert.equal(ids.has('dm2-delay'), false, 'DM-2 shares the same broken upstream BBD behavior');
+  assert.match(engineSource, /specId === 'analog-delay' \|\| specId === 'dm2-delay'[\s\S]*createDelay/);
 });
 
 test('PedalKernel candidates disclose their evidence instead of claiming an unmeasured score', () => {
@@ -39,27 +42,39 @@ test('PedalKernel candidates disclose their evidence instead of claiming an unme
       targetScore: number;
       verifiedScore: number | null;
       evidence: string[];
-      runtime: 'pedalkernel' | 'legacy-fallback';
-      status: 'candidate' | 'blocked';
+      runtime: 'pedalkernel' | 'web-audio' | 'legacy-fallback';
+      status: 'candidate' | 'fallback' | 'blocked';
       note: string;
     }>;
   }).EFFECT_FIDELITY_PROFILES;
 
   assert.ok(profiles, 'audio engine should publish fidelity evidence');
   const ids = [
-    'studio-comp', 'blue-drive', 'rodent-dist', 'wall-fuzz', 'dm2-delay',
-    'analog-delay', 'fuzz-face', 'analog-chorus', 'ocd-drive', 'klon-centaur',
+    'studio-comp', 'blue-drive', 'rodent-dist', 'wall-fuzz',
+    'fuzz-face', 'analog-chorus', 'ocd-drive', 'klon-centaur',
     'sd1-drive', 'tube-screamer', 'phase90',
   ];
   for (const id of ids) {
     assert.equal(profiles[id].targetScore, 8);
     assert.equal(profiles[id].verifiedScore, null);
     assert.ok(profiles[id].evidence.includes('upstream-circuit'));
-    assert.equal(profiles[id].engine, 'PedalKernel WDF + calibrated corrections');
+    const isRealtimeCorrection = id === 'wall-fuzz' || id === 'fuzz-face';
+    assert.equal(profiles[id].engine, isRealtimeCorrection ? 'PedalKernel realtime correction' : 'PedalKernel WDF + calibrated corrections');
     assert.equal(profiles[id].runtime, 'pedalkernel');
     assert.equal(profiles[id].status, 'candidate');
     assert.ok(profiles[id].evidence.includes('runtime-regression'));
-    assert.match(profiles[id].note, /持续输出|输出校准/);
+    assert.match(profiles[id].note, isRealtimeCorrection ? /实时修正路径|完整 WDF/ : /持续输出|输出校准/);
+    if (isRealtimeCorrection) assert.doesNotMatch(profiles[id].note, /完整 WDF 求解通过|WDF 模型已验证/);
+  }
+
+  for (const id of ['dm2-delay', 'analog-delay']) {
+    assert.equal(profiles[id].engine, 'Web Audio BBD approximation');
+    assert.equal(profiles[id].runtime, 'web-audio');
+    assert.equal(profiles[id].status, 'fallback');
+    assert.equal(profiles[id].verifiedScore, null);
+    assert.ok(profiles[id].evidence.includes('runtime-regression'));
+    assert.ok(!profiles[id].evidence.includes('upstream-circuit'));
+    assert.match(profiles[id].note, /静音|延迟重复|Web Audio/);
   }
 });
 

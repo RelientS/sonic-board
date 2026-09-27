@@ -10,14 +10,15 @@ Sonic Board 是一个面向盯鞋与氛围吉他的开源浏览器效果器工�
 
 | 参考对象 | 当前运行引擎 | 自动门禁 | 真机盲测 | 当前结论 |
 | --- | --- | --- | --- | --- |
-| Dyna Comp、BD-2、RAT 2、Big Muff Pi | PedalKernel WDF / WASM | 持续输出、有限值、输出校准、逐旋钮响应通过 | 未完成 | 电路候选，目标 ≥8，未评分 |
+| Dyna Comp、BD-2、RAT 2 | PedalKernel WDF / WASM | 持续输出、有限值、输出校准、逐旋钮响应通过 | 未完成 | 电路候选，目标 ≥8，未评分 |
+| Big Muff Pi、Fuzz Face | PedalKernel WASM 实时修正路径 | 持续输出、有限值、输出校准、逐旋钮响应通过 | 未完成 | 实时修正候选，目标 ≥8，未评分 |
 | DM-2、Deluxe Memory Man | PedalKernel WDF / WASM | 持续输出、有限值、输出校准、逐旋钮响应通过 | 未完成 | 电路候选，目标 ≥8，未评分 |
-| Fuzz Face、CE-2、OCD、Klon Centaur | PedalKernel WDF / WASM | 持续输出、有限值、输出校准、逐旋钮响应通过 | 未完成 | 电路候选，目标 ≥8，未评分 |
+| CE-2、OCD、Klon Centaur | PedalKernel WDF / WASM | 持续输出、有限值、输出校准、逐旋钮响应通过 | 未完成 | 电路候选，目标 ≥8，未评分 |
 | SD-1、TS808、Phase 90 | PedalKernel WDF / WASM | 持续输出、有限值、输出校准、逐旋钮响应通过 | 未完成 | 电路候选，目标 ≥8，未评分 |
 
 其余效果器、箱头与箱体目前仍是非官方算法近似。经典名称只用于说明参考对象，不表示厂商授权或官方模型。
 
-PedalKernel 固定在提交 `0278b397c861b5ebef2e8e38d15ab281b8e669dc`。浏览器运行层位于 `dsp/pedalkernel-wasm`，其中包含对上游示例断音、无效旋钮与电平差异的可审计修正；预编译产物为 `public/audio/pedalkernel.wasm`，实时处理器为 `public/audio/pedalkernel-processor.js`。
+PedalKernel 固定在提交 `0278b397c861b5ebef2e8e38d15ab281b8e669dc`。浏览器运行层位于 `dsp/pedalkernel-wasm`，其中包含对上游示例断音、无效旋钮与电平差异的可审计修正；预编译产物为 `public/audio/pedalkernel.wasm`，实时处理器为 `public/audio/pedalkernel-processor.js`。其中 Big Muff Pi 与 Fuzz Face 使用同一 WASM 运行层中的轻量实时修正路径，并非完整逐采样 WDF 求解；两者以及其余候选都尚未完成真机盲测，`verifiedScore` 仍为 `null`。
 
 ## 本地运行
 
@@ -33,6 +34,7 @@ npm run dev
 
 ```bash
 npm run lint
+npm run typecheck
 npm run build
 ```
 

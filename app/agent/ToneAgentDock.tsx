@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type KeyboardEvent } from 'react';
 import {
   ArrowUp,
   Bot,
@@ -66,23 +66,73 @@ export function ToneAgentDock({
   onClear: () => void;
 }) {
   const thread = useRef<HTMLDivElement>(null);
+  const closeButton = useRef<HTMLButtonElement>(null);
+  const dock = useRef<HTMLElement>(null);
 
   useEffect(() => {
     if (!open || !thread.current) return;
     thread.current.scrollTop = thread.current.scrollHeight;
   }, [open, turns]);
 
+  useEffect(() => {
+    if (!open) return;
+    const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const frame = window.requestAnimationFrame(() => closeButton.current?.focus());
+    const parent = dock.current?.parentElement;
+    const background = parent
+      ? Array.from(parent.children).filter((element): element is HTMLElement => element instanceof HTMLElement && element !== dock.current)
+      : [];
+    const inertState = background.map((element) => {
+      const withInert = element as HTMLElement & { inert: boolean };
+      const previous = withInert.inert;
+      withInert.inert = true;
+      return { element: withInert, previous };
+    });
+    function containFocus(event: globalThis.KeyboardEvent) {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      onOpenChange(false);
+    }
+    document.addEventListener('keydown', containFocus);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.removeEventListener('keydown', containFocus);
+      inertState.forEach(({ element, previous }) => { element.inert = previous; });
+      if (returnFocus?.isConnected) window.requestAnimationFrame(() => returnFocus.focus());
+    };
+  }, [open, onOpenChange]);
+
+  function trapTab(event: KeyboardEvent<HTMLElement>) {
+    if (event.key !== 'Tab' || !dock.current) return;
+    const focusable = Array.from(dock.current.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [href], summary, [contenteditable="true"], [tabindex]:not([tabindex="-1"])',
+    ));
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (!dock.current.contains(document.activeElement)) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+    } else if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
   if (!open) return null;
   return (
-    <aside className="tone-agent-dock" aria-label="Sonic Board 音色 Agent">
+    <aside id="tone-agent-dock" ref={dock} className="tone-agent-dock" role="dialog" aria-modal="true" aria-labelledby="tone-agent-title" onKeyDown={trapTab}>
       <header className="tone-agent-header">
         <div className="tone-agent-title">
           <span className="tone-agent-mark"><Bot size={17} aria-hidden="true" /></span>
-          <span><strong>音色 Agent</strong><small>Pi Agent · gpt-5.6-terra</small></span>
+          <span><strong id="tone-agent-title">音色 Agent</strong><small>Pi Agent · gpt-5.6-terra</small></span>
         </div>
         <div className="tone-agent-header-actions">
           {turns.length > 0 && <button type="button" aria-label="清空 Agent 对话" title="清空对话" disabled={busy} onClick={onClear}><History size={15} aria-hidden="true" /></button>}
-          <button type="button" aria-label="关闭音色 Agent" onClick={() => onOpenChange(false)}><X size={17} aria-hidden="true" /></button>
+          <button ref={closeButton} type="button" aria-label="关闭音色 Agent" onClick={() => onOpenChange(false)}><X size={17} aria-hidden="true" /></button>
         </div>
       </header>
 

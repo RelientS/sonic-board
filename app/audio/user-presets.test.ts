@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { captureUserPreset, instantiateUserPreset, parseUserPresets } from '../effects/user-presets.ts';
+import { makeDefaultAmpCabConfig } from '../amps/catalog.ts';
+import { captureUserPreset, instantiateUserPreset, parseUserPresets, type UserPreset } from '../effects/user-presets.ts';
 import { DEFAULT_SOURCE_CONFIG, makeSourceConfig } from './source-catalog.ts';
 
 test('captureUserPreset stores portable chain settings without runtime instance ids', () => {
@@ -29,9 +30,11 @@ test('captureUserPreset stores portable chain settings without runtime instance 
 });
 
 test('instantiateUserPreset creates fresh runtime ids and restores bypass state', () => {
-  const stored = {
+  const stored: UserPreset = {
     id: 'saved-1', name: 'Saved', createdAt: 12, source: makeSourceConfig('lead', 'single-bridge', 'major-seven'), output: 64,
-    chain: [{ specId: 'rodent-dist', settings: { distortion: 72, filter: 48, volume: 58 }, bypassed: true }],
+    routing: { mode: 'serial', blend: 50, spread: 0 },
+    amp: makeDefaultAmpCabConfig(),
+    chain: [{ specId: 'rodent-dist', lane: 'A', settings: { distortion: 72, filter: 48, volume: 58 }, bypassed: true }],
   };
   const first = instantiateUserPreset(stored);
   const second = instantiateUserPreset(stored);

@@ -13,6 +13,7 @@ export type ControlLesson = {
 type LessonText = Omit<ControlLesson, 'range'>;
 
 const effectLessons: Record<string, LessonText> = {
+  input: { summary: '控制信号进入固定 NAM capture 前的电平，会改变模型被推动和饱和的程度。', low: '输入余量更大，失真更松、更接近 capture 的弱输入响应。', high: '更强地推动模型，压缩、谐波和底噪都会增加。', tip: '先从 0 dB 附近开始；如果出现削顶或毛刺，先降低输入而不是只减输出。' },
   level: { summary: '控制这个模块送往下一级的输出电平，不直接等于失真量。', low: '输出更小，方便防止后级过载。', high: '输出更大，可以推动后面的效果或箱头。', tip: '先旁通比较干湿音量，再决定是否需要刻意推动后级。' },
   volume: { summary: '控制效果处理后的整体输出音量，不改变旋钮本身的核心音色结构。', low: '整体声音更小。', high: '整体声音更大，并可能推动后级。', tip: '做音色比较时先调到与旁通音量接近，避免把更响误认为更好。' },
   tone: { summary: '改变效果声的高频重心或低通截止点，决定声音偏暗还是偏亮。', low: '高频更少，声音更暗、更圆。', high: '高频更多，拨弦与噪点更清楚。', tip: '法兹后太刺就往左；音墙被鼓和贝斯盖住时可小幅往右。' },
@@ -78,6 +79,13 @@ const overrides: Record<string, Partial<LessonText>> = {
   'reverse-space.preDelay': { summary: '控制干声与反向混响上升包络之间的间隔，决定吸入感是否紧贴拨弦。' },
   'rodent-dist.filter': { summary: '控制失真后的低通滤波，方向与普通音色旋钮相反：向右会削掉更多高频。' },
   'soft-detune.cents': { tip: '日常增厚先从 5–10 音分附近开始，超过约 15 音分会明显像跑调。' },
+  'studio-comp.sustain': { tip: '清音、布鲁斯和放克先从中低位置开始；需要更长的分解尾音时再逐步提高。' },
+  'blue-drive.gain': { tip: '布鲁斯和独立摇滚可从轻推开始；若后面已有失真，保留起音通常比继续加增益更清楚。' },
+  'fuzz-face.fuzz': { tip: '布鲁斯或复古清理先从中低位置开始，再用吉他音量退回清音；满法兹更适合需要持续的段落。' },
+  'chainsaw-dist.distortion': { tip: '金属节奏先用中高位置并检查低频余量；过高会让快速闷音失去轮廓。' },
+  'bias-tremolo.rate': { tip: '放克和节奏型先把速率对齐歌曲拍点；铺底时放慢，避免调制抢过拨弦。' },
+  'digital-delay.time': { tip: '清音分解可按拍点设定；节奏型先让重复落在空拍，再用混合控制清晰度。' },
+  'cloud-hall.decay': { tip: '氛围和盯鞋可逐步延长尾音，但先降低混合，避免连续和弦完全叠成一团。' },
 };
 
 function bandLesson(id: string): LessonText {
