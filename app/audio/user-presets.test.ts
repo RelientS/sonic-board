@@ -64,6 +64,6 @@ test('parseUserPresets migrates older serial presets to routing and amp defaults
   assert.equal(migrated.routing.mode, 'serial');
   assert.equal(migrated.chain[0].lane, 'A');
   assert.equal(migrated.amp.ampId, 'brit-20');
-  assert.equal(migrated.amp.cabId, 'closed-4x12');
+  assert.equal(migrated.amp.cabId, 'marshall-4x12-greenback');
   assert.deepEqual(migrated.source, { ...DEFAULT_SOURCE_CONFIG, performance: 'chords' });
 });

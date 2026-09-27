@@ -111,10 +111,10 @@ export function planToneRequest(input: string): ToneAgentPlan {
 
   const config = character === 'noise' ? {
     name: '门限噪音机器', summary: '高增益双失真配中频修正，并用门限空间迅速收尾。', chain: makeNoiseChain(),
-    amp: makeAmpCabConfig('dark-stack', 'closed-4x12', { gain: 44, bass: 53, mid: 61, treble: 51, presence: 43, master: 64 }), output: 57,
+    amp: makeAmpCabConfig('dark-stack', 'mesa-2x12-v30', { gain: 44, bass: 53, mid: 61, treble: 51, presence: 43, master: 64 }), output: 57,
   } : character === 'wall' ? {
     name: wide ? '立体反向音墙' : '反向音墙', summary: '反向空间先进法兹，中频由图示均衡补回，避免只剩低频轰鸣。', chain: makeWallChain(wide),
-    amp: makeAmpCabConfig('brit-20', 'closed-4x12', { gain: 29, bass: 49, mid: 66, treble: 52, presence: 49, master: 65 }), output: 63,
+    amp: makeAmpCabConfig('brit-20', 'marshall-4x12-greenback', { gain: 29, bass: 49, mid: 66, treble: 52, presence: 49, master: 65 }), output: 63,
   } : character === 'vintage' ? {
     name: '复古漂移', summary: '慢相位、轻颤音和磁带回声形成温暖的不稳定感。', chain: makeVintageChain(),
     amp: makeAmpCabConfig('class-a-30', 'blue-2x12', { gain: 24, bass: 49, mid: 57, treble: 52, presence: 45, master: 68 }), output: 68,

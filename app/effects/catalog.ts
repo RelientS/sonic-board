@@ -399,7 +399,7 @@ const FACTORY_PRESETS_BASE: FactoryPreset[] = [
   {
     id: 'reverse-wall', name: '反向音墙', description: '反向空间先进法兹，厚、黏、带吸入感。', source: 'chords', output: 66,
     routing: { mode: 'serial', blend: 50, spread: 0 },
-    amp: makeAmpCabConfig('brit-20', 'closed-4x12', { gain: 32, mid: 64, presence: 52 }),
+    amp: makeAmpCabConfig('brit-20', 'marshall-4x12-greenback', { gain: 32, mid: 64, presence: 52 }),
     chain: [
       { specId: 'studio-comp', settings: { sustain: 38 } },
       { specId: 'soft-detune', settings: { cents: 34, blend: 22, spread: 62 } },
@@ -422,7 +422,7 @@ const FACTORY_PRESETS_BASE: FactoryPreset[] = [
   {
     id: 'glide-bloom', name: '摇把花开', description: '缓慢颤音接反向空间，再由法兹焊成一体。', source: 'chords', output: 64,
     routing: { mode: 'serial', blend: 50, spread: 0 },
-    amp: makeAmpCabConfig('brit-20', 'closed-4x12', { gain: 28, mid: 61, treble: 51 }),
+    amp: makeAmpCabConfig('brit-20', 'marshall-4x12-greenback', { gain: 28, mid: 61, treble: 51 }),
     chain: [
       { specId: 'tape-vibrato', settings: { rate: 16, depth: 34, rise: 18 } },
       { specId: 'blue-drive', settings: { gain: 42, tone: 57, level: 62 } },
@@ -434,7 +434,7 @@ const FACTORY_PRESETS_BASE: FactoryPreset[] = [
   {
     id: 'grey-machine', name: '灰色机器', description: '啮齿失真推动电锯失真，门限空间迅速收尾。', source: 'lead', output: 58,
     routing: { mode: 'serial', blend: 50, spread: 0 },
-    amp: makeAmpCabConfig('dark-stack', 'closed-4x12', { gain: 46, bass: 54, presence: 42 }),
+    amp: makeAmpCabConfig('dark-stack', 'mesa-2x12-v30', { gain: 46, bass: 54, presence: 42 }),
     chain: [
       { specId: 'noise-gate', settings: { threshold: 34, release: 28 } },
       { specId: 'rodent-dist', settings: { distortion: 48, filter: 58, volume: 56 } },
@@ -492,7 +492,7 @@ const FACTORY_PRESETS_BASE: FactoryPreset[] = [
   {
     id: 'dual-wall', name: '双重音墙', description: '两种失真分别占据左右，中间由箱头和封闭 4×12 收束。', source: 'chords', output: 55,
     routing: { mode: 'parallel', blend: 50, spread: 68 },
-    amp: makeAmpCabConfig('brit-20', 'closed-4x12', { gain: 24, bass: 50, mid: 66, presence: 48 }, { position: 56, distance: 14, room: 6 }),
+    amp: makeAmpCabConfig('brit-20', 'marshall-4x12-greenback', { gain: 24, bass: 50, mid: 66, presence: 48 }, { position: 56, distance: 14, room: 6 }),
     chain: [
       { specId: 'blue-drive', lane: 'A', settings: { gain: 36, tone: 54, level: 60 } },
       { specId: 'wall-fuzz', lane: 'A', settings: { sustain: 76, tone: 49, volume: 57 } },

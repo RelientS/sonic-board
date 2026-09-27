@@ -1343,6 +1343,59 @@ function buildEffect(
   return cursor;
 }
 
+const measuredIrs = new WeakMap<BaseAudioContext, Map<string, Promise<Float32Array | null>>>();
+const measuredIrReady = new WeakMap<BaseAudioContext, Map<string, Float32Array | null>>();
+
+/** The measured capture closest to the mic position/distance knobs. */
+export function nearestCabIr(cab: CabSpec, position: number, distance: number) {
+  if (!cab.ir) return null;
+  let best = cab.ir.points[0];
+  let bestScore = Infinity;
+  for (const point of cab.ir.points) {
+    const score = (point.position - position) ** 2 + (point.distance - distance) ** 2;
+    if (score < bestScore) {
+      best = point;
+      bestScore = score;
+    }
+  }
+  return cab.ir.base + best.file;
+}
+
+/** Fetches and decodes (at the context rate) the IR a cab config needs. */
+async function prepareCabIr(context: BaseAudioContext, config: BoardAudioConfig) {
+  if (!config.amp || config.amp.bypassed) return;
+  const cab = getCabSpec(config.amp.cabId);
+  const url = nearestCabIr(cab, parameter(config.amp.cabValues, 'position', 48), parameter(config.amp.cabValues, 'distance', 18));
+  if (!url) return;
+  let loads = measuredIrs.get(context);
+  let ready = measuredIrReady.get(context);
+  if (!loads || !ready) {
+    loads = new Map();
+    ready = new Map();
+    measuredIrs.set(context, loads);
+    measuredIrReady.set(context, ready);
+  }
+  let load = loads.get(url);
+  if (!load) {
+    const done = ready;
+    load = fetch(url)
+      .then((response) => {
+        if (!response.ok) throw new Error(`IR ${url}: ${response.status}`);
+        return response.arrayBuffer();
+      })
+      .then((bytes) => context.decodeAudioData(bytes))
+      .then((buffer) => buffer.getChannelData(0).slice())
+      // A missing IR falls back to the designed speaker response.
+      .catch(() => null)
+      .then((data) => {
+        done.set(url, data);
+        return data;
+      });
+    loads.set(url, load);
+  }
+  await load;
+}
+
 /**
  * Cabinet impulse: a minimum-phase miked-speaker response designed from the
  * cab's voicing (resonance, body, presence, roll-off, cone-breakup ripple)
@@ -1354,7 +1407,9 @@ function makeCabinetImpulse(context: BaseAudioContext, cab: CabSpec, position: n
     cache = new Map();
     cabinetImpulseCaches.set(context, cache);
   }
-  const key = `${cab.id}:${Math.round(position)}:${Math.round(distance)}:${Math.round(room)}`;
+  const irUrl = nearestCabIr(cab, position, distance);
+  const hasMeasured = Boolean(irUrl && measuredIrReady.get(context)?.get(irUrl));
+  const key = `${cab.id}:${Math.round(position)}:${Math.round(distance)}:${Math.round(room)}:${hasMeasured ? 'ir' : 'model'}`;
   return cachedValue(cache, key, MAX_CABINET_CACHE_ENTRIES, () => {
     const sampleRate = context.sampleRate;
     const n = 4096;
@@ -1370,14 +1425,18 @@ function makeCabinetImpulse(context: BaseAudioContext, cab: CabSpec, position: n
       highCut: cab.voicing.highCut * 0.72,
       seed: [...cab.id].reduce((hash, char) => Math.imul(hash ^ char.charCodeAt(0), 16777619), 2166136261),
     };
-    const speaker = minimumPhaseImpulse(speakerMagnitude(voicing, { position, distance }, sampleRate, n), n);
-    const speakerLength = Math.min(n, Math.ceil(sampleRate * 0.045));
-    // Distance adds propagation delay; the room adds a floor bounce and a few
-    // wall reflections, slightly different per channel for width.
-    const directDelay = Math.round(sampleRate * (0.0003 + distance / 100 * 0.0026));
+    const irUrl = nearestCabIr(cab, position, distance);
+    const measured = irUrl ? measuredIrReady.get(context)?.get(irUrl) ?? null : null;
+    const speaker = measured ?? minimumPhaseImpulse(speakerMagnitude(voicing, { position, distance }, sampleRate, n), n);
+    const speakerLength = measured ? measured.length : Math.min(n, Math.ceil(sampleRate * 0.045));
+    // Distance adds propagation delay (a measured IR already contains it); the
+    // room adds a floor bounce and a few wall reflections, slightly different
+    // per channel for width.
+    const directDelay = measured ? 0 : Math.round(sampleRate * (0.0003 + distance / 100 * 0.0026));
     const roomAmount = room / 100;
     const reflections = [
-      { seconds: 0.0021 + distance / 100 * 0.0018, gain: 0.32 + distance / 100 * 0.2 },
+      // A close-miked measurement has no floor bounce; add one only with room.
+      { seconds: 0.0021 + distance / 100 * 0.0018, gain: measured ? 0.3 * roomAmount : 0.32 + distance / 100 * 0.2 },
       { seconds: 0.0073, gain: 0.55 * roomAmount },
       { seconds: 0.0118, gain: 0.42 * roomAmount },
       { seconds: 0.0187, gain: 0.3 * roomAmount },
@@ -1392,7 +1451,8 @@ function makeCabinetImpulse(context: BaseAudioContext, cab: CabSpec, position: n
         for (let i = 0; i < speakerLength && offset + i < length; i += 1) {
           // Reflections lose top end: a one-pole low-pass per bounce.
           state += (speaker[i] - state) * (1 - darken);
-          const fade = i > speakerLength * 0.75 ? (speakerLength - i) / (speakerLength * 0.25) : 1;
+          // Measured IRs arrive already faded out.
+          const fade = !measured && i > speakerLength * 0.75 ? (speakerLength - i) / (speakerLength * 0.25) : 1;
           data[offset + i] += state * gain * fade;
         }
       };
@@ -1743,6 +1803,7 @@ function structureKey(config: BoardAudioConfig) {
 
 /** Loads only the worklet runtimes the active chain needs. */
 async function prepareProcessorsFor(context: BaseAudioContext, config: BoardAudioConfig) {
+  await prepareCabIr(context, config);
   const fx = prepareFxProcessor(context);
   if (config.mode === 'dry') return fx;
   const bypassed = new Set(config.bypassed);

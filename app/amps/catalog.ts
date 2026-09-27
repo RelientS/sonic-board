@@ -35,6 +35,12 @@ export type CabSpec = {
     airGain: number;
     impulseSeconds: number;
   };
+  /** Measured impulse responses; the mic position/distance knobs pick the nearest capture. */
+  ir?: {
+    base: string;
+    points: Array<{ file: string; position: number; distance: number }>;
+    credit: string;
+  };
 };
 
 export type AmpCabConfig = {
@@ -100,6 +106,25 @@ export const AMP_SPECS: AmpSpec[] = [
 
 export const CAB_SPECS: CabSpec[] = [
   {
+    id: 'mesa-2x12-v30', name: 'MESA/Boogie 2×12 Celestion Vintage 30', format: 'CLOSED BACK', description: '实测 IR：封闭 2×12 V30，MD421 在中心、锥盆、边缘 × 贴网罩、1 寸、2 寸九个点位采集。', modeling: '实测 IR · Dark Days (CC BY 4.0)', controls: cabControls(),
+    voicing: { lowCut: 70, highCut: 7_800, bodyHz: 130, bodyGain: 3, airHz: 3_000, airGain: 1, impulseSeconds: 0.19 },
+    ir: {
+      base: '/audio/cabs/mesa-2x12-v30/',
+      // Position: dust cap (bright) -> cone -> edge (dark). Distance: grille -> 2 in.
+      points: (['cap', 'cone', 'edge'] as const).flatMap((spot, i) => (['grille', '1in', '2in'] as const).map((range, j) => ({ file: `${spot}-${range}.wav`, position: i * 50, distance: j * 50 }))),
+      credit: 'Mesa 2x12 V30 impulse responses by Dark Days — https://darkdays.net (CC BY 4.0), trimmed',
+    },
+  },
+  {
+    id: 'marshall-4x12-greenback', name: 'Marshall 1960AX 4×12 Celestion Greenback', format: 'CLOSED BACK', description: '实测 IR：1998 年 1960AX 封闭 4×12 G12M Greenback，SM57 / e606 六个麦克风采集，麦克风位置旋钮切换。', modeling: '实测 IR · Jester Dyne Emerald (CC0)', controls: cabControls(),
+    voicing: { lowCut: 72, highCut: 7_200, bodyHz: 120, bodyGain: 4, airHz: 2_800, airGain: 1, impulseSeconds: 0.1 },
+    ir: {
+      base: '/audio/cabs/marshall-4x12-greenback/',
+      points: [1, 2, 3, 4, 5, 6].map((mic, i) => ({ file: `mic-${mic}.wav`, position: i * 20, distance: 50 })),
+      credit: 'Emerald Pack by Jester Dyne Productions — https://jester-dyne-productions.com (CC0), trimmed',
+    },
+  },
+  {
     id: 'open-1x12', name: "Fender '65 Deluxe Reverb 1×12 Jensen C12K", format: 'OPEN BACK', description: '参考开背 1×12 Jensen 箱体的轻、松和近场感。', modeling: '扬声器频响模型·最小相位 IR·非实测·非官方', controls: cabControls(),
     voicing: { lowCut: 78, highCut: 8_900, bodyHz: 175, bodyGain: 2.2, airHz: 3_600, airGain: 1.4, impulseSeconds: 0.024 },
   },
@@ -160,7 +185,7 @@ export function makeAmpCabConfig(
 }
 
 export function makeDefaultAmpCabConfig() {
-  return makeAmpCabConfig('brit-20', 'closed-4x12');
+  return makeAmpCabConfig('brit-20', 'marshall-4x12-greenback');
 }
 
 export function validateAmpCatalog() {

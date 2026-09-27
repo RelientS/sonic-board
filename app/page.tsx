@@ -1510,6 +1510,7 @@ export default function Home() {
                 ))}</div>
                 <span className="model-method">{cabSpec.modeling}</span>
                 <p className="model-description">{cabSpec.description}</p>
+                {cabSpec.ir && <p className="model-credit">{cabSpec.ir.credit}</p>}
                 <div className="output-knobs cab-knobs">{cabSpec.controls.map((control) => (
                   <KnobControl key={control.id} control={control} value={amp.cabValues[control.id] ?? control.defaultValue} disabled={amp.bypassed} tutorialEnabled={tutorialEnabled} ownerKind="cab" modelId={cabSpec.id} ownerName={cabSpec.name} onChange={(value) => updateAmpValue('cabValues', control.id, value)} onHelp={openControlHelp} />
                 ))}</div>
