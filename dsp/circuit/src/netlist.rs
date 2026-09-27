@@ -13,6 +13,7 @@
 //! *@control LABEL POT [POT...] [default=0.5] [invert]
 //! *@opamp  SUBCKT gbw=3e6 slew=1.7e6 aol=1e5 vlo=1 vhi=8 rout=75
 //! *@switch LABEL ELEMENT VALUE_OFF VALUE_ON [default=0]
+//! *@lfo    VSRC SHAPE [rate=LABEL] key=value...   see `Lfo`
 //! ```
 
 use std::collections::HashMap;
@@ -125,6 +126,46 @@ pub struct Switch {
     pub default: f64,
 }
 
+/// Waveform of an internal low-frequency oscillator.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LfoShape {
+    Sine,
+    Triangle,
+    /// RC relaxation oscillator (op-amp Schmitt trigger charging a timing
+    /// capacitor): the capacitor voltage charges exponentially toward
+    /// `target_hi` until it reaches `hi`, then toward `target_lo` until `lo`.
+    Relax { target_lo: f64, target_hi: f64 },
+}
+
+/// How the rate control sets the oscillator speed.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LfoRate {
+    /// Exponential sweep between two frequencies (Hz) over the control.
+    Hz { min: f64, max: f64 },
+    /// Relaxation timing network: tau = C · (series + pot), where the pot is
+    /// a variable resistor whose resistance falls to 0 at rotation 1.0.
+    Rc { cap: f64, series: f64, pot: f64, taper: Taper },
+}
+
+/// `*@lfo VSRC SHAPE [rate=LABEL] lo=V hi=V [hz=MIN:MAX | c=F r=OHM pot=OHM:TAPER] [vlo=V vhi=V] [load=OHM:V]`
+///
+/// Drives voltage source VSRC per sample, so a modulation oscillator that
+/// is not part of the audio path costs no solver work. `lo`/`hi` bound the
+/// waveform; for `relax`, `vlo`/`vhi` are the voltages the timing capacitor
+/// charges toward (the op-amp output rails) and `load` an optional resistive
+/// load on the capacitor (resistance to a fixed voltage). The netlist's DC
+/// value of VSRC is the oscillator's starting voltage.
+#[derive(Clone, Debug)]
+pub struct Lfo {
+    pub source: String,
+    pub shape: LfoShape,
+    pub control: Option<String>,
+    pub lo: f64,
+    pub hi: f64,
+    pub rate: LfoRate,
+    pub load: Option<(f64, f64)>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Netlist {
     pub title: String,
@@ -141,6 +182,7 @@ pub struct Netlist {
     pub pots: Vec<Pot>,
     pub controls: Vec<Control>,
     pub switches: Vec<Switch>,
+    pub lfos: Vec<Lfo>,
 }
 
 pub fn parse_value(token: &str) -> Result<f64, String> {
@@ -184,6 +226,67 @@ fn kv_params(text: &str) -> HashMap<String, f64> {
         }
     }
     out
+}
+
+fn parse_taper(name: &str) -> Result<Taper, String> {
+    match name.to_ascii_lowercase().as_str() {
+        "lin" | "b" => Ok(Taper::Linear),
+        "log" | "a" => Ok(Taper::Log),
+        "revlog" | "c" => Ok(Taper::RevLog),
+        other => Err(format!("unknown taper {other}")),
+    }
+}
+
+fn parse_pair(value: &str) -> Result<(f64, f64), String> {
+    let (a, b) = value.split_once(':').ok_or_else(|| format!("expected A:B, got {value}"))?;
+    Ok((parse_value(a)?, parse_value(b)?))
+}
+
+fn parse_lfo(rest: &[&str], text: &str) -> Result<Lfo, String> {
+    if rest.len() < 2 {
+        return Err(format!("lfo needs VSRC SHAPE: {text}"));
+    }
+    let mut kv: HashMap<&str, &str> = HashMap::new();
+    for token in &rest[2..] {
+        let (k, v) = token.split_once('=').ok_or_else(|| format!("lfo option {token} is not key=value"))?;
+        kv.insert(k, v);
+    }
+    let num = |k: &str| -> Result<f64, String> { parse_value(kv.get(k).ok_or_else(|| format!("lfo needs {k}=: {text}"))?) };
+    let shape = match rest[1].to_ascii_lowercase().as_str() {
+        "sine" => LfoShape::Sine,
+        "tri" | "triangle" => LfoShape::Triangle,
+        "relax" => LfoShape::Relax { target_lo: num("vlo")?, target_hi: num("vhi")? },
+        other => return Err(format!("unknown lfo shape {other}")),
+    };
+    let rate = if let Some(hz) = kv.get("hz") {
+        let (min, max) = parse_pair(hz)?;
+        LfoRate::Hz { min, max }
+    } else {
+        let pot = kv.get("pot").ok_or_else(|| format!("lfo needs hz= or c=/r=/pot=: {text}"))?;
+        let (total, taper) = pot.split_once(':').ok_or("lfo pot is OHM:TAPER")?;
+        LfoRate::Rc { cap: num("c")?, series: num("r")?, pot: parse_value(total)?, taper: parse_taper(taper)? }
+    };
+    let lfo = Lfo {
+        source: rest[0].to_string(),
+        shape,
+        control: kv.get("rate").map(|s| s.to_string()),
+        lo: num("lo")?,
+        hi: num("hi")?,
+        rate,
+        load: kv.get("load").map(|v| parse_pair(v)).transpose()?,
+    };
+    if matches!(lfo.rate, LfoRate::Rc { .. }) && !matches!(lfo.shape, LfoShape::Relax { .. }) {
+        return Err(format!("RC timing (c=/r=/pot=) needs the relax shape: {text}"));
+    }
+    if lfo.hi <= lfo.lo {
+        return Err(format!("lfo needs lo < hi: {text}"));
+    }
+    if let LfoShape::Relax { target_lo, target_hi } = lfo.shape {
+        if !(target_lo < lfo.lo && lfo.hi < target_hi) {
+            return Err(format!("relax lfo thresholds must lie inside vlo..vhi: {text}"));
+        }
+    }
+    Ok(lfo)
 }
 
 pub fn is_ground(node: &str) -> bool {
@@ -267,12 +370,7 @@ impl Netlist {
                     return Err(format!("pot needs NAME RA RB TOTAL TAPER: {text}"));
                 }
                 let opt = |s: &str| if s == "-" { None } else { Some(s.to_string()) };
-                let taper = match rest[4].to_ascii_lowercase().as_str() {
-                    "lin" | "b" => Taper::Linear,
-                    "log" | "a" => Taper::Log,
-                    "revlog" | "c" => Taper::RevLog,
-                    other => return Err(format!("unknown taper {other}")),
-                };
+                let taper = parse_taper(rest[4])?;
                 self.pots.push(Pot {
                     name: rest[0].to_string(),
                     ra: opt(rest[1]),
@@ -311,6 +409,7 @@ impl Netlist {
                     default,
                 });
             }
+            "lfo" => self.lfos.push(parse_lfo(&rest, text)?),
             "opamp" => {
                 let name = rest.first().ok_or("opamp needs subckt name")?.to_ascii_lowercase();
                 let p = kv_params(&rest[1..].join(" "));
@@ -501,6 +600,18 @@ impl Netlist {
                 return Err(format!("switch {} references missing {}", sw.label, sw.element));
             }
         }
+        for lfo in &self.lfos {
+            let source = self.elements.iter().find(|e| e.name.eq_ignore_ascii_case(&lfo.source));
+            match source {
+                Some(e) if e.kind == Kind::VSource && !e.name.eq_ignore_ascii_case(&self.input) => {}
+                _ => return Err(format!("lfo source {} must be a voltage source other than the input", lfo.source)),
+            }
+            if let Some(label) = &lfo.control {
+                if !self.controls.iter().any(|c| &c.label == label) {
+                    return Err(format!("lfo {} references missing control {label}", lfo.source));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -551,6 +662,27 @@ mod tests {
         assert_eq!(parse_value("1e-3").unwrap(), 1e-3);
         assert_eq!(parse_value("100").unwrap(), 100.0);
         assert!((parse_value("2.2u").unwrap() - 2.2e-6).abs() < 1e-18);
+    }
+
+    #[test]
+    fn parses_lfo_directive() {
+        let src = "* t\n*@input Vin\n*@output o\n*@control Speed\n\
+                   *@lfo Vl relax rate=Speed lo=4 hi=5 vlo=1 vhi=8 c=15u r=4.7k pot=500k:revlog load=3.9meg:3\n\
+                   Vin a 0 0\nVl l 0 DC 4.5\nR1 a o 1k\nR2 l o 1k\n";
+        let net = Netlist::parse(src).unwrap();
+        let lfo = &net.lfos[0];
+        assert_eq!(lfo.shape, LfoShape::Relax { target_lo: 1.0, target_hi: 8.0 });
+        assert_eq!(lfo.control.as_deref(), Some("Speed"));
+        let LfoRate::Rc { cap, series, pot, taper } = lfo.rate else { panic!("{:?}", lfo.rate) };
+        assert!((cap / 15e-6 - 1.0).abs() < 1e-12 && (series - 4.7e3).abs() < 1e-9 && pot == 500e3);
+        assert_eq!(taper, Taper::RevLog);
+        let (rl, vl) = lfo.load.unwrap();
+        assert!((rl - 3.9e6).abs() < 1e-6 && vl == 3.0);
+        // The LFO must drive a non-input voltage source, and relax
+        // thresholds must lie inside the charge targets.
+        assert!(Netlist::parse(&src.replace("*@lfo Vl", "*@lfo Vin")).is_err());
+        assert!(Netlist::parse(&src.replace("vhi=8", "vhi=4.5")).is_err());
+        assert!(Netlist::parse(&src.replace("relax", "sine")).is_err());
     }
 
     #[test]

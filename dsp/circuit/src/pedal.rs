@@ -1,6 +1,7 @@
 //! A circuit netlist wrapped as an audio effect: controls, oversampling and
 //! level calibration around the DK solver.
 
+use crate::lfo::LfoState;
 use crate::netlist::Netlist;
 use crate::oversample::Oversampler;
 use crate::solver::{Circuit, Solver};
@@ -17,6 +18,12 @@ pub struct Pedal {
     controls: Vec<f64>,
     switches: Vec<f64>,
     dirty: bool,
+    /// Resistor values last handed to the solver: knobs that only drive an
+    /// LFO leave them unchanged and skip the matrix rebuild.
+    applied: HashMap<String, f64>,
+    /// Internal oscillators with the control index setting their rate.
+    lfos: Vec<(LfoState, Option<usize>)>,
+    dt: f64,
     dc_x: f64,
     dc_y: f64,
     dc_r: f64,
@@ -55,13 +62,27 @@ impl Pedal {
         let factor = oversample.unwrap_or(netlist.oversample).max(1);
         let controls: Vec<f64> = netlist.controls.iter().map(|c| c.default).collect();
         let switches: Vec<f64> = netlist.switches.iter().map(|s| s.default).collect();
-        let solver = Solver::new(circuit, sample_rate * factor as f64, overrides(&netlist, &controls, &switches))?;
+        let applied = overrides(&netlist, &controls, &switches);
+        let lfos = netlist
+            .lfos
+            .iter()
+            .enumerate()
+            .map(|(k, spec)| {
+                let control = spec.control.as_ref().and_then(|l| netlist.controls.iter().position(|c| &c.label == l));
+                let position = control.map(|i| controls[i]).unwrap_or(0.5);
+                (LfoState::new(spec.clone(), circuit.aux_initial[k], position), control)
+            })
+            .collect();
+        let solver = Solver::new(circuit, sample_rate * factor as f64, applied.clone())?;
         let mut pedal = Pedal {
             solver,
             oversampler: Oversampler::new(factor),
             controls,
             switches,
             dirty: false,
+            applied,
+            lfos,
+            dt: 1.0 / (sample_rate * factor as f64),
             dc_x: 0.0,
             dc_y: 0.0,
             dc_r: (-2.0 * std::f64::consts::PI * 8.0 / sample_rate).exp(),
@@ -120,10 +141,19 @@ impl Pedal {
     pub fn commit(&mut self) {
         if self.dirty {
             self.dirty = false;
+            for (lfo, control) in &mut self.lfos {
+                if let Some(i) = *control {
+                    lfo.set_position(self.controls[i]);
+                }
+            }
             let o = overrides(&self.netlist, &self.controls, &self.switches);
-            // A singular matrix can only come from a broken netlist; keep the
-            // previous matrices in that case.
-            let _ = self.solver.set_overrides(o);
+            if o != self.applied {
+                // A singular matrix can only come from a broken netlist; keep
+                // the previous matrices in that case.
+                if self.solver.set_overrides(o.clone()).is_ok() {
+                    self.applied = o;
+                }
+            }
         }
     }
 
@@ -134,6 +164,9 @@ impl Pedal {
         let mut up = [0.0f64; 16];
         self.oversampler.up(x * INPUT_VOLTS_PER_UNIT, &mut up[..factor]);
         for k in 0..factor {
+            for (i, (lfo, _)) in self.lfos.iter_mut().enumerate() {
+                self.solver.set_aux(i, lfo.next(self.dt));
+            }
             self.buf[k] = self.solver.step(up[k]);
         }
         let volts = self.oversampler.down(&self.buf);
@@ -159,6 +192,11 @@ impl Pedal {
 
     pub fn refactors(&self) -> u64 {
         self.solver.refactors()
+    }
+
+    /// Current LFO rates in Hz (diagnostics).
+    pub fn lfo_frequencies(&self) -> Vec<f64> {
+        self.lfos.iter().map(|(l, _)| l.frequency()).collect()
     }
 
     pub fn latency(&self) -> f64 {

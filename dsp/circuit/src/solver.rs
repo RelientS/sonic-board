@@ -50,6 +50,8 @@ struct Source {
     value: f64,
     branch: usize,
     input: bool,
+    /// Index among the time-varying (`*@lfo`) sources, driven per sample.
+    aux: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -86,6 +88,8 @@ pub struct Circuit {
     output: usize,
     limits: Vec<Limit>,
     pub node_names: Vec<String>,
+    /// DC values of the time-varying sources (their starting voltages).
+    pub aux_initial: Vec<f64>,
 }
 
 struct Builder {
@@ -132,7 +136,8 @@ impl Circuit {
         let mut b = Builder { nodes: HashMap::new(), names: Vec::new(), branches: 0 };
         let mut resistors = Vec::new();
         let mut reactives = Vec::new();
-        let mut sources_pending: Vec<(Node, Node, f64, bool)> = Vec::new();
+        let mut sources_pending: Vec<(Node, Node, f64, bool, Option<usize>)> = Vec::new();
+        let aux_index = |name: &str| net.lfos.iter().position(|l| l.source.eq_ignore_ascii_case(name));
         let mut vcvs_pending: Vec<(Node, Node, Node, Node, f64)> = Vec::new();
         let mut devices = Vec::new();
         let is_be = |name: &str| be_elements.iter().any(|e| e.eq_ignore_ascii_case(name));
@@ -156,7 +161,7 @@ impl Circuit {
                 }
                 Kind::VSource => {
                     let (a, bb) = (b.node(&nodes[0]), b.node(&nodes[1]));
-                    sources_pending.push((a, bb, *value, name.eq_ignore_ascii_case(&net.input)));
+                    sources_pending.push((a, bb, *value, name.eq_ignore_ascii_case(&net.input), aux_index(name)));
                 }
                 Kind::Vcvs { gain } => {
                     let n: Vec<Node> = nodes.iter().map(|x| b.node(x)).collect();
@@ -251,10 +256,16 @@ impl Circuit {
         let output = b.node(&net.output).ok_or("output cannot be ground")?;
         let n_nodes = b.names.len();
         let mut branch = n_nodes;
+        let mut aux_initial = vec![0.0; net.lfos.len()];
+        for &(_, _, value, _, aux) in &sources_pending {
+            if let Some(k) = aux {
+                aux_initial[k] = value;
+            }
+        }
         let sources = sources_pending
             .into_iter()
-            .map(|(a, bb, value, input)| {
-                let s = Source { a, b: bb, value, branch, input };
+            .map(|(a, bb, value, input, aux)| {
+                let s = Source { a, b: bb, value, branch, input, aux };
                 branch += 1;
                 s
             })
@@ -296,6 +307,7 @@ impl Circuit {
             output,
             limits,
             node_names: b.names,
+            aux_initial,
         })
     }
 
@@ -305,6 +317,10 @@ impl Circuit {
 
     pub fn unknowns(&self) -> usize {
         self.nx
+    }
+
+    pub fn aux_sources(&self) -> usize {
+        self.aux_initial.len()
     }
 
     /// Copy with every op-amp's output swing widened (DC continuation).
@@ -397,11 +413,14 @@ impl Circuit {
                 bs.add(j, k, -sign);
             }
         }
-        let mut bu = Mat::zeros(self.nx, 1);
+        // Column 0: audio input; column 1 + k: time-varying source k.
+        let mut bu = Mat::zeros(self.nx, 1 + self.aux_initial.len());
         let mut b0 = Mat::zeros(self.nx, 1);
         for s in &self.sources {
             if s.input {
                 bu.add(s.branch, 0, 1.0);
+            } else if let Some(k) = s.aux {
+                bu.add(s.branch, 1 + k, 1.0);
             } else {
                 b0.add(s.branch, 0, s.value);
             }
@@ -495,17 +514,21 @@ struct Reduced {
     // Port voltages: p = mv_s s + mv_u u + mv_0 ; v = p + k i
     mv_s: Mat,
     mv_u: Vec<f64>,
+    /// Columns for the time-varying sources (rows × aux).
+    mv_a: Mat,
     mv_0: Vec<f64>,
     /// K transposed, row-major (ni × nv), for contiguous column access.
     kt: Vec<f64>,
     // Reactive voltages
     mst_s: Mat,
     mst_u: Vec<f64>,
+    mst_a: Mat,
     mst_0: Vec<f64>,
     mst_i: Mat,
     // Output
     mo_s: Vec<f64>,
     mo_u: f64,
+    mo_a: Vec<f64>,
     mo_0: f64,
     mo_i: Vec<f64>,
 }
@@ -516,40 +539,50 @@ fn reduce(circuit: &Circuit, overrides: &HashMap<String, f64>, dt: Option<f64>) 
     let (bs, bu, b0, ni) = circuit.rhs_parts();
     let ns = bs.cols;
     let nin = ni.cols;
-    let mut rhs = Mat::zeros(circuit.nx, ns + 2 + nin);
+    let na = bu.cols - 1;
+    // Columns: [states | input | aux... | constant | device currents]
+    let (cu, ca, c0, ci) = (ns, ns + 1, ns + 1 + na, ns + 2 + na);
+    let mut rhs = Mat::zeros(circuit.nx, ci + nin);
     for r in 0..circuit.nx {
         for c in 0..ns {
             rhs.set(r, c, bs.at(r, c));
         }
-        rhs.set(r, ns, bu.at(r, 0));
-        rhs.set(r, ns + 1, b0.at(r, 0));
+        rhs.set(r, cu, bu.at(r, 0));
+        for k in 0..na {
+            rhs.set(r, ca + k, bu.at(r, 1 + k));
+        }
+        rhs.set(r, c0, b0.at(r, 0));
         for c in 0..nin {
-            rhs.set(r, ns + 2 + c, ni.at(r, c));
+            rhs.set(r, ci + c, ni.at(r, c));
         }
     }
     let z = lu.solve_mat(&rhs);
     let (nvm, nst, no) = circuit.row_selectors();
-    let split = |m: &Mat| -> (Mat, Vec<f64>, Vec<f64>, Mat) {
+    let split = |m: &Mat| -> (Mat, Vec<f64>, Mat, Vec<f64>, Mat) {
         let prod = m.mul(&z);
         let mut s = Mat::zeros(prod.rows, ns);
         let mut u = vec![0.0; prod.rows];
-        let mut c0 = vec![0.0; prod.rows];
+        let mut a = Mat::zeros(prod.rows, na);
+        let mut k0 = vec![0.0; prod.rows];
         let mut i = Mat::zeros(prod.rows, nin);
         for r in 0..prod.rows {
             for c in 0..ns {
                 s.set(r, c, prod.at(r, c));
             }
-            u[r] = prod.at(r, ns);
-            c0[r] = prod.at(r, ns + 1);
+            u[r] = prod.at(r, cu);
+            for k in 0..na {
+                a.set(r, k, prod.at(r, ca + k));
+            }
+            k0[r] = prod.at(r, c0);
             for c in 0..nin {
-                i.set(r, c, prod.at(r, ns + 2 + c));
+                i.set(r, c, prod.at(r, ci + c));
             }
         }
-        (s, u, c0, i)
+        (s, u, a, k0, i)
     };
-    let (mv_s, mv_u, mv_0, k) = split(&nvm);
-    let (mst_s, mst_u, mst_0, mst_i) = split(&nst);
-    let (mo_s, mo_u, mo_0, mo_i) = split(&no);
+    let (mv_s, mv_u, mv_a, mv_0, k) = split(&nvm);
+    let (mst_s, mst_u, mst_a, mst_0, mst_i) = split(&nst);
+    let (mo_s, mo_u, mo_a, mo_0, mo_i) = split(&no);
     let mut kt = vec![0.0; k.rows * k.cols];
     for r in 0..k.rows {
         for c in 0..k.cols {
@@ -559,14 +592,17 @@ fn reduce(circuit: &Circuit, overrides: &HashMap<String, f64>, dt: Option<f64>) 
     Ok(Reduced {
         mv_s,
         mv_u,
+        mv_a,
         mv_0,
         kt,
         mst_s,
         mst_u,
+        mst_a,
         mst_0,
         mst_i,
         mo_s: mo_s.data,
         mo_u: mo_u[0],
+        mo_a: mo_a.data,
         mo_0: mo_0[0],
         mo_i: mo_i.data,
     })
@@ -840,6 +876,7 @@ fn advance(
     state: &mut [f64],
     vst: &mut [f64],
     u: f64,
+    aux: &[f64],
     max_iter: usize,
 ) -> (f64, bool, usize) {
     let nv = circuit.nv;
@@ -847,6 +884,9 @@ fn advance(
         newton.p[k] = r.mv_u[k] * u + r.mv_0[k];
     }
     r.mv_s.mul_vec_add(state, &mut newton.p);
+    if !aux.is_empty() {
+        r.mv_a.mul_vec_add(aux, &mut newton.p);
+    }
     let (mut iters, mut ok) = newton.solve(circuit, &r.kt, max_iter, NEWTON_TOL);
     // Fallbacks for the rare sample plain Newton cannot finish, both anchored
     // at the last converged point of this same system (same K).
@@ -874,6 +914,12 @@ fn advance(
     r.mst_s.mul_vec_add(state, vst);
     r.mst_i.mul_vec_add(&newton.i, vst);
     let mut y = r.mo_u * u + r.mo_0;
+    if !aux.is_empty() {
+        r.mst_a.mul_vec_add(aux, vst);
+        for (a, b) in r.mo_a.iter().zip(aux) {
+            y += a * b;
+        }
+    }
     for (a, b) in r.mo_s.iter().zip(state.iter()) {
         y += a * b;
     }
@@ -1087,6 +1133,11 @@ pub struct Solver {
     v_prev: Vec<f64>,
     u_prev: f64,
     y_prev: f64,
+    /// Time-varying source voltages for the next step, the previous step's
+    /// values (sub-steps interpolate between them) and scratch space.
+    aux: Vec<f64>,
+    aux_prev: Vec<f64>,
+    aux_mid: Vec<f64>,
     /// Reduced systems at dt / 2^level for adaptive sub-stepping, built on
     /// first use and dropped when the knobs change.
     fine: Vec<Option<(Reduced, Vec<f64>)>>,
@@ -1135,6 +1186,9 @@ impl Solver {
             v_prev: Vec::new(),
             u_prev: 0.0,
             y_prev: 0.0,
+            aux: circuit.aux_initial.clone(),
+            aux_prev: circuit.aux_initial.clone(),
+            aux_mid: circuit.aux_initial.clone(),
             fine: (0..=MAX_SUBSTEP_LEVEL).map(|_| None).collect(),
             save_v: vec![0.0; circuit.nv],
             save_state: vec![0.0; ns],
@@ -1184,8 +1238,10 @@ impl Solver {
                     circuit
                 };
                 for r in 0..self.circuit.nv {
-                    self.newton.p[r] = dc.mv_0[r] * lambda;
+                    self.newton.p[r] = dc.mv_0[r];
                 }
+                dc.mv_a.mul_vec_add(&self.aux, &mut self.newton.p);
+                self.newton.p.iter_mut().for_each(|p| *p *= lambda);
                 self.newton.lu_valid = false;
                 let (_, ok) = self.newton.solve(circuit, &dc.kt, 200, 1e-10);
                 if ok {
@@ -1204,12 +1260,15 @@ impl Solver {
         // Currents at the final point with the real circuit.
         self.newton.eval_devices(&self.circuit);
         let mut vst = dc.mst_0.clone();
+        dc.mst_a.mul_vec_add(&self.aux, &mut vst);
         dc.mst_i.mul_vec_add(&self.newton.i, &mut vst);
         // Full node voltages for diagnostics: x = A^-1 (b0 + Ni i).
         let a = self.circuit.matrix(&self.overrides, None);
         let lu = Lu::factor(&a).ok_or("singular DC matrix")?;
-        let (_, _, b0, ni) = self.circuit.rhs_parts();
-        let mut rhs: Vec<f64> = (0..self.circuit.nx).map(|r| b0.at(r, 0)).collect();
+        let (_, bu, b0, ni) = self.circuit.rhs_parts();
+        let mut rhs: Vec<f64> = (0..self.circuit.nx)
+            .map(|r| b0.at(r, 0) + (0..self.aux.len()).map(|k| bu.at(r, 1 + k) * self.aux[k]).sum::<f64>())
+            .collect();
         ni.mul_vec_add(&self.newton.i, &mut rhs);
         let mut x = vec![0.0; self.circuit.nx];
         lu.solve(&rhs, &mut x);
@@ -1222,6 +1281,16 @@ impl Solver {
             self.vst[k] = if x.inductor { 0.0 } else { vst[k] };
         }
         Ok(())
+    }
+
+    /// Set time-varying source `k` for the next `step` (volts).
+    #[inline]
+    pub fn set_aux(&mut self, k: usize, volts: f64) {
+        self.aux[k] = volts;
+    }
+
+    pub fn aux_count(&self) -> usize {
+        self.aux.len()
     }
 
     /// DC operating-point node voltages (indexed like `Circuit::node_names`).
@@ -1257,7 +1326,7 @@ impl Solver {
         }
         let (mut y, mut ok, iters) = advance(
             &self.circuit, &mut self.newton, &self.reduced, &self.g, &self.alpha, &self.beta,
-            &mut self.state, &mut self.vst, u, 12,
+            &mut self.state, &mut self.vst, u, &self.aux, 12,
         );
         self.iterations += iters as u64;
         if !ok {
@@ -1266,7 +1335,7 @@ impl Solver {
             self.newton.lu_valid = false;
             let (y2, ok2, more) = advance(
                 &self.circuit, &mut self.newton, &self.reduced, &self.g, &self.alpha, &self.beta,
-                &mut self.state, &mut self.vst, u, 40,
+                &mut self.state, &mut self.vst, u, &self.aux, 40,
             );
             self.iterations += more as u64;
             y = y2;
@@ -1299,6 +1368,7 @@ impl Solver {
         }
         self.v_prev.copy_from_slice(&self.save_v);
         self.u_prev = u;
+        self.aux_prev.copy_from_slice(&self.aux);
         self.y_prev = y;
         y
     }
@@ -1335,10 +1405,14 @@ impl Solver {
         let count = 1usize << level;
         let mut y = 0.0;
         for j in 1..=count {
-            let uj = self.u_prev + (u - self.u_prev) * j as f64 / count as f64;
+            let frac = j as f64 / count as f64;
+            let uj = self.u_prev + (u - self.u_prev) * frac;
+            for k in 0..self.aux.len() {
+                self.aux_mid[k] = self.aux_prev[k] + (self.aux[k] - self.aux_prev[k]) * frac;
+            }
             let (yj, ok, iters) = advance(
                 &self.circuit, &mut self.newton, fine, g_fine, &self.alpha, &self.beta,
-                &mut self.state, &mut self.vst, uj, 40,
+                &mut self.state, &mut self.vst, uj, &self.aux_mid, 40,
             );
             self.iterations += iters as u64;
             if !ok {

@@ -2,6 +2,7 @@
 //! nodal DK method, validated offline against ngspice.
 
 pub mod devices;
+pub mod lfo;
 pub mod linalg;
 pub mod models;
 pub mod netlist;

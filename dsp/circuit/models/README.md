@@ -15,6 +15,7 @@ offline reference) and in the realtime DK solver. Realtime metadata lives in
 | `*@switch LABEL ELEMENT OFF ON [default=0]` | Toggle that sets a resistor value |
 | `*@opamp SUBCKT gbw= slew= aol= vlo= vhi= rout=` | Op-amp macro for `X` elements: `Xname in+ in- out SUBCKT`. `vlo`/`vhi` are absolute output swing limits in volts |
 | `*@be ELEMENT...` | Integrate these capacitors with backward Euler (first order; only for poles far above the sample rate) |
+| `*@lfo VSRC SHAPE [rate=LABEL] lo= hi= ...` | Internal modulation oscillator driving voltage source VSRC per sample (an extra solver input, no refactorization). Shapes `sine`, `tri` (rate `hz=MIN:MAX`, exponential over the control) and `relax`: an op-amp Schmitt-trigger RC oscillator whose timing capacitor charges toward `vlo`/`vhi` between thresholds `lo`/`hi`, with `c=` `r=` (series) `pot=OHM:TAPER` (resistance falls to 0 at rotation 1) and optional `load=OHM:V`. VSRC's DC value is the starting voltage; `circuit-tool compare` hands ngspice the same waveform as a PWL source |
 
 Supported elements: `R C L V D Q J E X`. Models: `D(IS N RS)`, `NPN/PNP(IS BF BR NF VAF RB RE RC)`,
 `NJF/PJF(VTO BETA LAMBDA IS)`. Junction capacitances are not modelled; add
@@ -42,6 +43,7 @@ oversampling; the browser (WASM) build runs at roughly 60-70% of that.
 | `ibanez_ts808.cir` | Ibanez TS808 Tube Screamer | ElectroSmash TS analysis, Geofex tstech | 4× | 0.21% | 15× |
 | `boss_sd1.cir` | Boss SD-1 Super OverDrive | Boss service schematic (hobby-hour) | 4× | 0.06% | 14.5× |
 | `fulltone_ocd.cir` | Fulltone OCD ("version 3" trace) | tuemmueh trace via PCB Guitar Mania TOC doc | 4× | 0.08% | 22× |
+| `mxr_phase90.cir` | MXR Phase 90 (script logo; block-logo feedback on a switch) | General Guitar Gadgets schematic 2015-06-30, ElectroSmash analysis | 2× | 0.04% | 14× |
 
 Each file's header lists its sources, cross-checks and uncertain values
 (transistor substitutes, unpublished part choices, omitted switching).
