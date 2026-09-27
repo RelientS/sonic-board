@@ -9,7 +9,8 @@ User=ubuntu
 Group=ubuntu
 WorkingDirectory=/srv/sonic-board/current
 Environment=NODE_ENV=production
-# TOKEN_SHARE_KEY (agent model access) and SONIC_DATA_DIR (accounts).
+# TOKEN_SHARE_KEY (agent model access), SONIC_DATA_DIR (accounts, private
+# amp captures in amps/) and SONIC_OWNER_USERNAMES (who may load them).
 EnvironmentFile=/etc/sonic-board.env
 ReadWritePaths=/srv/sonic-board/data
 # Run the server directly (not via npm and sh) so systemd signals and

@@ -87,7 +87,7 @@ const PEDALKERNEL_RUNTIME_VERSION = 4;
 const WORKLET_VERSIONS = {
   noiseGate: 2,
   pedalKernel: 5,
-  nam: 4,
+  nam: 5,
   circuit: 3,
   fx: 2,
 } as const;
@@ -1930,7 +1930,9 @@ export async function createLiveSession(config: BoardAudioConfig) {
   const AudioContextClass = window.AudioContext ||
     (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
   if (!AudioContextClass) throw new Error('当前浏览器不支持音频预览');
-  const context = new AudioContextClass({ latencyHint: 'interactive' });
+  // NAM captures are trained at 48 kHz and the runtime does not resample; the
+  // browser resamples to the device rate instead.
+  const context = new AudioContextClass({ latencyHint: 'interactive', sampleRate: 48_000 });
   const session: LiveAudioSession = {
     context,
     graph: null,

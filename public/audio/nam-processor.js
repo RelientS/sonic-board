@@ -69,28 +69,36 @@ class SonicNamProcessor extends AudioWorkletProcessor {
     if (this.disposed) return false;
     const inputChannels = inputs[0] ?? [];
     const outputChannels = outputs[0] ?? [];
-    outputChannels.forEach((destination, channel) => {
-      const source = inputChannels[channel] ?? inputChannels[0];
-      if (!source) {
-        destination.fill(0);
-        return;
-      }
-      if (!this.ready || this.failed) {
-        destination.set(source);
-        return;
-      }
-      try {
-        this.runtime.process(this.instances[channel % this.instances.length], source, destination);
-        if (!destination.every(Number.isFinite)) destination.set(source);
-      } catch (error) {
-        if (!this.processErrorReported) {
-          this.processErrorReported = true;
-          this.port.postMessage({ type: 'process-error', message: error instanceof Error ? error.message : String(error) });
-        }
-        destination.set(source);
-      }
-    });
+    // Mono input (the usual DI chain): run the model once and copy it, rather
+    // than paying for the same network on every output channel.
+    if (inputChannels.length === 1 && outputChannels.length > 1) {
+      this.render(0, inputChannels[0], outputChannels[0]);
+      for (let channel = 1; channel < outputChannels.length; channel += 1) outputChannels[channel].set(outputChannels[0]);
+      return true;
+    }
+    outputChannels.forEach((destination, channel) => this.render(channel, inputChannels[channel] ?? inputChannels[0], destination));
     return true;
+  }
+
+  render(channel, source, destination) {
+    if (!source) {
+      destination.fill(0);
+      return;
+    }
+    if (!this.ready || this.failed) {
+      destination.set(source);
+      return;
+    }
+    try {
+      this.runtime.process(this.instances[channel % this.instances.length], source, destination);
+      if (!destination.every(Number.isFinite)) destination.set(source);
+    } catch (error) {
+      if (!this.processErrorReported) {
+        this.processErrorReported = true;
+        this.port.postMessage({ type: 'process-error', message: error instanceof Error ? error.message : String(error) });
+      }
+      destination.set(source);
+    }
   }
 }
 
