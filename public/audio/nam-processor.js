@@ -61,9 +61,12 @@ class SonicNamProcessor extends AudioWorkletProcessor {
     });
     this.instances = [];
     this.ready = false;
+    this.disposed = true;
   }
 
   process(inputs, outputs) {
+    // Returning false lets the browser collect a disposed node.
+    if (this.disposed) return false;
     const inputChannels = inputs[0] ?? [];
     const outputChannels = outputs[0] ?? [];
     outputChannels.forEach((destination, channel) => {

@@ -59,8 +59,10 @@ export async function renderSampledSourceBuffer(
 ) {
   const plan = makeSamplePlaybackPlan(sourceConfig);
   const bank = REAL_GUITAR_SAMPLE_BANKS[sourceConfig.guitar];
+  // A guitar is a mono source; stereo width belongs to the time-based
+  // effects and lane panning after the drives, as on a real pedalboard.
   const offline = new OfflineAudioContext(
-    2,
+    1,
     Math.ceil(SOURCE_DURATION_SECONDS * context.sampleRate),
     context.sampleRate,
   );
@@ -78,7 +80,6 @@ export async function renderSampledSourceBuffer(
     const player = offline.createBufferSource();
     const envelope = offline.createGain();
     const tone = offline.createBiquadFilter();
-    const panner = offline.createStereoPanner();
     const start = event.time;
     const end = Math.min(SOURCE_DURATION_SECONDS, start + event.duration);
     const attackEnd = Math.min(end, start + 0.008);
@@ -87,15 +88,15 @@ export async function renderSampledSourceBuffer(
     player.buffer = buffer;
     player.playbackRate.value = event.playbackRate;
     envelope.gain.setValueAtTime(0.0001, start);
-    const peak = Math.max(0.0001, event.velocity * 0.32);
+    // SQRT1_2 keeps the level the old equal-power centre pan produced.
+    const peak = Math.max(0.0001, event.velocity * 0.32 * Math.SQRT1_2);
     envelope.gain.exponentialRampToValueAtTime(peak, attackEnd);
     envelope.gain.setValueAtTime(peak, releaseStart);
     envelope.gain.exponentialRampToValueAtTime(0.0001, end);
     tone.type = 'lowpass';
     tone.frequency.value = bank.highCutHz;
     tone.Q.value = 0.42;
-    panner.pan.value = event.pan;
-    player.connect(envelope).connect(tone).connect(panner).connect(offline.destination);
+    player.connect(envelope).connect(tone).connect(offline.destination);
     player.start(start);
     player.stop(Math.min(SOURCE_DURATION_SECONDS, end + 0.02));
   });

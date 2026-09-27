@@ -25,7 +25,9 @@ test('preloads private NAM models before both live playback and offline export',
   assert.match(engine, /export const NAM_EFFECT_IDS/);
   assert.match(engine, /prepareNamProcessor/);
   assert.match(engine, /prepareNamNodes/);
-  assert.match(engine, /await prepareNamNodes\(context, config\)/);
+  // Live playback reuses loaded NAM nodes across rebuilds via the session cache.
+  assert.match(engine, /await prepareNamNodes\(context, config, session\.namCache\)/);
+  assert.match(engine, /await prepareNamNodes\(session\.context, config, session\.namCache\)/);
   assert.match(engine, /await prepareNamNodes\(offline, config\)/);
   assert.match(engine, /modelJson/);
   assert.match(engine, /disposeNamNodes/);

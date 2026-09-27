@@ -263,18 +263,43 @@ export type BoardAudioConfig = {
   namModels?: Record<string, NamModelRecord>;
 };
 
+/** Whether a pedal is running its intended engine or silently degraded. */
+export type EffectStatus = 'ok' | 'passthrough' | 'fallback';
+
+/** One playable graph: source, effects and master, crossfaded as a unit. */
+type LiveGraph = {
+  config: BoardAudioConfig;
+  structureKey: string;
+  source: AudioBufferSourceNode;
+  /** Gate between the source and the effects; closing it lets tails ring out. */
+  input: GainNode;
+  /** Master output level (the "output" control). */
+  level: GainNode;
+  /** Crossfade gate between this graph and the destination. */
+  fade: GainNode;
+  scheduled: AudioScheduledSourceNode[];
+  slots: Map<string, EffectSlot>;
+  namNodes: Map<string, AudioWorkletNode>;
+};
+
 export type LiveAudioSession = {
   context: AudioContext;
-  source: AudioBufferSourceNode | null;
-  output: AudioNode | null;
-  scheduled: AudioScheduledSourceNode[];
+  graph: LiveGraph | null;
+  /** Graphs fading out while their delay and reverb tails decay. */
+  retiring: Set<LiveGraph>;
   buffers: Map<string, AudioBuffer>;
   bufferLoads: Map<string, Promise<AudioBuffer>>;
   startedAt: number;
   duration: number;
   sourceKey: string;
   revision: number;
-  namNodes: Map<string, AudioWorkletNode>;
+  /** Structure being rebuilt asynchronously, and the newest config for it. */
+  pendingStructure?: string;
+  pendingConfig?: BoardAudioConfig;
+  /** Loaded NAM nodes, reused across rebuilds (loading a model is slow). */
+  namCache: Map<string, { modelJson: string; node: AudioWorkletNode }>;
+  status: Map<string, EffectStatus>;
+  onStatus?: (status: ReadonlyMap<string, EffectStatus>) => void;
 };
 
 function disposeNamNode(node: AudioWorkletNode) {
@@ -335,7 +360,11 @@ async function createLoadedNamNode(context: BaseAudioContext, modelJson: string)
   }
 }
 
-export async function prepareNamNodes(context: BaseAudioContext, config: BoardAudioConfig) {
+export async function prepareNamNodes(
+  context: BaseAudioContext,
+  config: BoardAudioConfig,
+  cache?: Map<string, { modelJson: string; node: AudioWorkletNode }>,
+) {
   const nodes = new Map<string, AudioWorkletNode>();
   if (config.mode === 'dry' || !config.namModels) return nodes;
   const bypassed = new Set(config.bypassed);
@@ -351,8 +380,18 @@ export async function prepareNamNodes(context: BaseAudioContext, config: BoardAu
       console.warn(`[Sonic NAM] ${item.specId} 没有本机模型，将保持直通。`);
       return;
     }
+    const cached = cache?.get(item.instanceId);
+    if (cached && cached.modelJson === modelJson) {
+      nodes.set(item.instanceId, cached.node);
+      return;
+    }
     const node = await createLoadedNamNode(context, modelJson);
-    if (node) nodes.set(item.instanceId, node);
+    if (!node) return;
+    nodes.set(item.instanceId, node);
+    if (cache) {
+      if (cached) disposeNamNode(cached.node);
+      cache.set(item.instanceId, { modelJson, node });
+    }
   }));
   return nodes;
 }
@@ -442,10 +481,12 @@ async function makeAudioBuffer(context: BaseAudioContext, source: SourceConfig) 
   try {
     return await renderSampledSourceBuffer(context, source);
   } catch {
-    const channels = synthesizeSourceChannels(source, context.sampleRate);
-    applySampleInputHeadroom(channels);
-    const buffer = context.createBuffer(channels.length, channels[0].length, context.sampleRate);
-    channels.forEach((channel, index) => buffer.copyToChannel(channel, index));
+    const [left, right = left] = synthesizeSourceChannels(source, context.sampleRate);
+    // Mono guitar signal into the pedals (see renderSampledSourceBuffer).
+    const mono = left.map((sample, index) => (sample + right[index]) * 0.5);
+    applySampleInputHeadroom([mono]);
+    const buffer = context.createBuffer(1, mono.length, context.sampleRate);
+    buffer.copyToChannel(mono, 0);
     return buffer;
   }
 }
@@ -519,21 +560,30 @@ function makeImpulse(
   });
 }
 
-function mixParallel(
+function mixParallelNodes(
   context: BaseAudioContext,
   dryInput: AudioNode,
   wetInput: AudioNode,
   wetAmount: number,
 ) {
   const sum = context.createGain();
-  const dryGain = context.createGain();
-  const wetGain = context.createGain();
+  const dry = context.createGain();
+  const wet = context.createGain();
   const mix = clampParameter(wetAmount) / 100;
-  dryGain.gain.value = Math.cos(mix * Math.PI * 0.5);
-  wetGain.gain.value = Math.sin(mix * Math.PI * 0.5);
-  dryInput.connect(dryGain).connect(sum);
-  wetInput.connect(wetGain).connect(sum);
-  return sum;
+  dry.gain.value = Math.cos(mix * Math.PI * 0.5);
+  wet.gain.value = Math.sin(mix * Math.PI * 0.5);
+  dryInput.connect(dry).connect(sum);
+  wetInput.connect(wet).connect(sum);
+  return { sum, dry, wet };
+}
+
+function mixParallel(
+  context: BaseAudioContext,
+  dryInput: AudioNode,
+  wetInput: AudioNode,
+  wetAmount: number,
+) {
+  return mixParallelNodes(context, dryInput, wetInput, wetAmount).sum;
 }
 
 async function loadCircuitRuntime(): Promise<CircuitRuntime> {
@@ -646,6 +696,7 @@ export function connectEffectChain(
   scheduled: AudioScheduledSourceNode[],
   chain: AudioChainItem[] = config.chain,
   namNodes: ReadonlyMap<string, AudioWorkletNode> = new Map(),
+  slots?: Map<string, EffectSlot>,
 ) {
   const bypassed = new Set(config.bypassed);
   let cursor = input;
@@ -653,445 +704,494 @@ export function connectEffectChain(
   chain.forEach((item) => {
     if (bypassed.has(item.instanceId)) return;
     const values = config.values[item.instanceId] ?? {};
-    const specId = item.specId;
-    const effectInput = cursor;
-
-    if (NAM_EFFECT_IDS.has(specId)) {
-      const processor = namNodes.get(item.instanceId);
-      if (processor) {
-        const inputGain = context.createGain();
-        const outputGain = context.createGain();
-        inputGain.gain.value = dbToGain(physical(specId, values, 'input', 0));
-        outputGain.gain.value = dbToGain(physical(specId, values, 'output', 0));
-        effectInput.connect(inputGain).connect(processor).connect(outputGain);
-        cursor = mixParallel(context, effectInput, outputGain, parameter(values, 'mix', 100));
-      }
-      return;
-    }
-
-    if (CIRCUIT_EFFECT_IDS.has(specId)) {
-      const processor = makeCircuitNode(context, specId, values);
-      if (processor) {
-        cursor.connect(processor);
-        cursor = processor;
-        return;
-      }
-    }
-
-    if (PEDALKERNEL_EFFECT_IDS.has(specId)) {
-      const processor = makePedalKernelNode(context, specId, values);
-      if (processor) {
-        cursor.connect(processor);
-        cursor = processor;
-        return;
-      }
-    }
-
-    if (specId === 'studio-comp') {
-      const compressor = context.createDynamicsCompressor();
-      const toneFilter = context.createBiquadFilter();
-      const output = context.createGain();
-      const sustain = parameter(values, 'sustain', 46);
-      compressor.threshold.value = -8 - sustain * 0.34;
-      compressor.knee.value = 10;
-      compressor.ratio.value = 2 + sustain / 9;
-      compressor.attack.value = physical(specId, values, 'attack', 18) / 1000;
-      compressor.release.value = 0.09 + sustain / 240;
-      toneFilter.type = 'highshelf';
-      toneFilter.frequency.value = 2_800;
-      toneFilter.gain.value = (parameter(values, 'tone', 52) - 50) * 0.12;
-      output.gain.value = dbToGain(physical(specId, values, 'level', 0));
-      cursor.connect(compressor).connect(toneFilter).connect(output);
-      cursor = output;
-      return;
-    }
-
-    if (specId === 'noise-gate') {
-      const output = context.createGain();
-      const thresholdDb = physical(specId, values, 'threshold', -55);
-      const releaseMs = physical(specId, values, 'release', 180);
-      output.gain.value = dbToGain(physical(specId, values, 'level', 0));
-      let gate: AudioWorkletNode | null = null;
-      if (noiseGateReady.has(context) && typeof AudioWorkletNode !== 'undefined') {
-        try {
-          gate = new AudioWorkletNode(context, 'sonic-noise-gate', {
-            numberOfInputs: 1,
-            numberOfOutputs: 1,
-            outputChannelCount: [2],
-            parameterData: {
-              thresholdDb,
-              releaseMs,
-            },
-          });
-        } catch {
-          // The static curve is less expressive, but it keeps the chain usable.
-        }
-      }
-      if (gate) {
-        cursor.connect(gate).connect(output);
-      } else {
-        const fallbackGate = context.createWaveShaper();
-        fallbackGate.curve = cachedNoiseGateCurve(thresholdDb);
-        cursor.connect(fallbackGate).connect(output);
-      }
-      cursor = output;
-      return;
-    }
-
-    if (specId === 'graphic-eq') {
-      let eqCursor = cursor;
-      ['100', '200', '400', '800', '1600', '3200', '6400'].forEach((band, index) => {
-        const filter = context.createBiquadFilter();
-        filter.type = index === 6 ? 'highshelf' : 'peaking';
-        filter.frequency.value = Number(band);
-        filter.Q.value = index === 6 ? 0.7 : 1.18;
-        filter.gain.value = physical(specId, values, band, 0);
-        eqCursor.connect(filter);
-        eqCursor = filter;
-      });
-      const output = context.createGain();
-      output.gain.value = dbToGain(physical(specId, values, 'level', 0));
-      eqCursor.connect(output);
-      cursor = output;
-      return;
-    }
-
-    if (specId === 'blue-drive' || specId === 'rodent-dist') {
-      const preGain = context.createGain();
-      const shaper = context.createWaveShaper();
-      const highPass = context.createBiquadFilter();
-      const lowPass = context.createBiquadFilter();
-      const output = context.createGain();
-      const drive = parameter(values, specId === 'blue-drive' ? 'gain' : 'distortion', 45);
-      preGain.gain.value = specId === 'blue-drive' ? 1 + drive / 20 : 1.8 + drive / 10;
-      shaper.curve = cachedDriveCurve(specId === 'blue-drive' ? drive * 0.58 : drive * 1.08);
-      shaper.oversample = '4x';
-      highPass.type = 'highpass';
-      highPass.frequency.value = specId === 'blue-drive' ? 72 : 48;
-      lowPass.type = 'lowpass';
-      lowPass.frequency.value = specId === 'rodent-dist'
-        ? 11_500 - parameter(values, 'filter', 45) * 91
-        : legacyExponential(parameter(values, 'tone', 54), 800, 12_000);
-      lowPass.Q.value = 0.68;
-      const levelKnob = parameter(values, specId === 'blue-drive' ? 'level' : 'volume', 58);
-      output.gain.value = dbToGain(legacyLinear(levelKnob, -18, 12)) * (specId === 'rodent-dist' ? 0.46 : 0.58);
-      cursor.connect(preGain).connect(shaper).connect(highPass).connect(lowPass).connect(output);
-      cursor = output;
-      return;
-    }
-
-    if (specId === 'wall-fuzz') {
-      const dryInput = cursor;
-      const preGain = context.createGain();
-      const gate = context.createWaveShaper();
-      const shaper = context.createWaveShaper();
-      const toneFilter = context.createBiquadFilter();
-      const mids = context.createBiquadFilter();
-      const output = context.createGain();
-      const sustain = parameter(values, 'sustain', 67);
-      preGain.gain.value = 2.2 + sustain / 9;
-      gate.curve = cachedGateCurve(parameter(values, 'gate', 8) * 0.65);
-      shaper.curve = cachedDriveCurve(sustain * 1.15);
-      shaper.oversample = '4x';
-      toneFilter.type = 'lowpass';
-      // Circuit pedals expose knob positions; map them to the legacy
-      // approximation's 800-12k Hz tone and -18..+12 dB volume ranges.
-      toneFilter.frequency.value = legacyExponential(parameter(values, 'tone', 43), 800, 12_000);
-      toneFilter.Q.value = 0.78;
-      mids.type = 'peaking';
-      mids.frequency.value = 1_050;
-      mids.Q.value = 0.92;
-      mids.gain.value = physical(specId, values, 'mids', 0);
-      output.gain.value = dbToGain(legacyLinear(parameter(values, 'volume', 58), -18, 12)) * 0.27;
-      dryInput.connect(preGain).connect(gate).connect(shaper).connect(toneFilter).connect(mids).connect(output);
-      if (parameter(values, 'attack', 22) > 1) {
-        const attackFilter = context.createBiquadFilter();
-        const attackGain = context.createGain();
-        attackFilter.type = 'bandpass';
-        attackFilter.frequency.value = 2_300;
-        attackFilter.Q.value = 0.8;
-        attackGain.gain.value = parameter(values, 'attack', 22) / 420;
-        dryInput.connect(attackFilter).connect(attackGain).connect(output);
-      }
-      cursor = output;
-      return;
-    }
-
-    const legacyDrive = LEGACY_DRIVE_MODELS[specId];
-    if (legacyDrive) {
-      const preGain = context.createGain();
-      const shaper = context.createWaveShaper();
-      const highPass = context.createBiquadFilter();
-      const toneFilter = context.createBiquadFilter();
-      const mids = context.createBiquadFilter();
-      const output = context.createGain();
-      const drive = parameter(values, legacyDrive.driveControl, legacyDrive.driveDefault);
-      preGain.gain.value = legacyDrive.preGainBase + drive * legacyDrive.preGainScale;
-      shaper.curve = cachedDriveCurve(drive * legacyDrive.curveScale);
-      shaper.oversample = '4x';
-      highPass.type = 'highpass';
-      highPass.frequency.value = legacyDrive.highPassHz;
-      if (legacyDrive.toneControl === 'tone') {
-        toneFilter.type = 'lowpass';
-        toneFilter.frequency.value = physical(specId, values, 'tone', legacyDrive.lowPassHz);
-        toneFilter.Q.value = 0.68;
-      } else if (legacyDrive.toneControl === 'treble') {
-        toneFilter.type = 'highshelf';
-        toneFilter.frequency.value = 1_800;
-        toneFilter.gain.value = (parameter(values, 'treble', 50) - 50) * 0.16;
-      } else {
-        toneFilter.type = 'lowpass';
-        toneFilter.frequency.value = legacyDrive.lowPassHz;
-        toneFilter.Q.value = 0.68;
-      }
-      mids.type = 'peaking';
-      mids.frequency.value = legacyDrive.midHz;
-      mids.Q.value = 0.82;
-      mids.gain.value = legacyDrive.midGainDb;
-      output.gain.value = dbToGain(physical(specId, values, legacyDrive.outputControl, -1)) * legacyDrive.outputTrim;
-      cursor.connect(preGain).connect(shaper).connect(highPass).connect(toneFilter).connect(mids).connect(output);
-      cursor = output;
-      return;
-    }
-
-    if (specId === 'chainsaw-dist') {
-      const preGain = context.createGain();
-      const shaper = context.createWaveShaper();
-      const low = context.createBiquadFilter();
-      const highMid = context.createBiquadFilter();
-      const presence = context.createBiquadFilter();
-      const output = context.createGain();
-      const distortion = parameter(values, 'distortion', 78);
-      preGain.gain.value = 2.4 + distortion / 8;
-      shaper.curve = cachedDriveCurve(distortion * 1.2);
-      shaper.oversample = '4x';
-      low.type = 'lowshelf'; low.frequency.value = 120; low.gain.value = (parameter(values, 'low', 72) - 50) * 0.24;
-      highMid.type = 'peaking'; highMid.frequency.value = 1_050; highMid.Q.value = 0.82; highMid.gain.value = (parameter(values, 'high', 76) - 50) * 0.28;
-      presence.type = 'peaking'; presence.frequency.value = 2_700; presence.Q.value = 1.25; presence.gain.value = (parameter(values, 'high', 76) - 50) * 0.18;
-      output.gain.value = dbToGain(physical(specId, values, 'level', -1)) * 0.3;
-      cursor.connect(preGain).connect(shaper).connect(low).connect(highMid).connect(presence).connect(output);
-      cursor = output;
-      return;
-    }
-
-    if (specId === 'slow-phase') {
-      const first = context.createBiquadFilter();
-      const second = context.createBiquadFilter();
-      const third = context.createBiquadFilter();
-      const fourth = context.createBiquadFilter();
-      const lfo = context.createOscillator();
-      const depths = [context.createGain(), context.createGain(), context.createGain(), context.createGain()];
-      const filters = [first, second, third, fourth];
-      const depth = parameter(values, 'depth', 38);
-      filters.forEach((filter, index) => {
-        filter.type = 'allpass';
-        filter.frequency.value = [330, 620, 1_100, 1_900][index];
-        filter.Q.value = 0.6 + parameter(values, 'res', 18) / 11;
-        depths[index].gain.value = 80 + depth * (8 + index * 2.6);
-        lfo.connect(depths[index]).connect(filter.frequency);
-      });
-      lfo.frequency.value = physical(specId, values, 'rate', 0.25);
-      lfo.start(0); scheduled.push(lfo);
-      cursor.connect(first).connect(second).connect(third).connect(fourth);
-      cursor = mixParallel(context, cursor, fourth, parameter(values, 'mix', 44));
-      return;
-    }
-
-    if (specId === 'phase90') {
-      const filters = [
-        context.createBiquadFilter(),
-        context.createBiquadFilter(),
-        context.createBiquadFilter(),
-        context.createBiquadFilter(),
-      ];
-      const lfo = context.createOscillator();
-      const depths = [180, 300, 480, 720].map((depth) => {
-        const modulation = context.createGain();
-        modulation.gain.value = depth;
-        lfo.connect(modulation);
-        return modulation;
-      });
-      filters.forEach((filter, index) => {
-        filter.type = 'allpass';
-        filter.frequency.value = [360, 680, 1_150, 1_900][index];
-        filter.Q.value = 1.15;
-        depths[index].connect(filter.frequency);
-      });
-      lfo.frequency.value = physical(specId, values, 'speed', 0.25);
-      lfo.start(0); scheduled.push(lfo);
-      cursor.connect(filters[0]).connect(filters[1]).connect(filters[2]).connect(filters[3]);
-      cursor = mixParallel(context, cursor, filters[3], 50);
-      return;
-    }
-
-    if (specId === 'analog-chorus' || specId === 'soft-detune') {
-      const wetBus = context.createGain();
-      const toneFilter = context.createBiquadFilter();
-      const spread = specId === 'soft-detune' ? parameter(values, 'spread', 54) / 100 : 0.72;
-      [-1, 1].forEach((direction, index) => {
-        const delay = context.createDelay(0.06);
-        const pan = context.createStereoPanner();
-        const lfo = context.createOscillator();
-        const modulation = context.createGain();
-        const depth = specId === 'soft-detune' ? physical(specId, values, 'cents', 7) / 30_000 : 0.0006 + parameter(values, 'depth', 48) / 18_000;
-        delay.delayTime.value = specId === 'soft-detune' ? 0.009 + index * 0.0013 : 0.014 + index * 0.002;
-        pan.pan.value = direction * spread;
-        lfo.frequency.value = specId === 'soft-detune' ? 0.18 + index * 0.047 : physical(specId, values, 'rate', 0.6) * (1 + index * 0.05);
-        modulation.gain.value = depth;
-        lfo.connect(modulation).connect(delay.delayTime);
-        lfo.start(0); scheduled.push(lfo);
-        cursor.connect(delay).connect(pan).connect(wetBus);
-      });
-      toneFilter.type = 'lowpass';
-      toneFilter.frequency.value = physical(specId, values, 'tone', 6_000);
-      wetBus.connect(toneFilter);
-      cursor = mixParallel(context, cursor, toneFilter, parameter(values, specId === 'soft-detune' ? 'blend' : 'mix', 38));
-      return;
-    }
-
-    if (specId === 'jet-flanger') {
-      const delay = context.createDelay(0.03);
-      const feedback = context.createGain();
-      const lfo = context.createOscillator();
-      const modulation = context.createGain();
-      const center = 0.001 + parameter(values, 'manual', 52) * 0.00007;
-      delay.delayTime.value = center;
-      feedback.gain.value = Math.min(0.84, parameter(values, 'res', 38) / 112);
-      lfo.frequency.value = physical(specId, values, 'rate', 0.4);
-      modulation.gain.value = Math.min(center * 0.82, 0.0004 + parameter(values, 'depth', 62) * 0.000065);
-      lfo.connect(modulation).connect(delay.delayTime);
-      lfo.start(0); scheduled.push(lfo);
-      delay.connect(feedback).connect(delay);
-      cursor.connect(delay);
-      cursor = mixParallel(context, cursor, delay, parameter(values, 'mix', 46));
-      return;
-    }
-
-    if (specId === 'tape-vibrato') {
-      const delay = context.createDelay(0.05);
-      const toneFilter = context.createBiquadFilter();
-      const lfo = context.createOscillator();
-      const modulation = context.createGain();
-      const rise = physical(specId, values, 'rise', 200) / 1000;
-      delay.delayTime.value = 0.012;
-      lfo.frequency.value = physical(specId, values, 'rate', 0.35);
-      modulation.gain.setValueAtTime(0, context.currentTime);
-      modulation.gain.linearRampToValueAtTime(0.00025 + physical(specId, values, 'depth', 8) / 12_000, context.currentTime + Math.max(0.005, rise));
-      lfo.connect(modulation).connect(delay.delayTime);
-      lfo.start(0); scheduled.push(lfo);
-      toneFilter.type = 'lowpass'; toneFilter.frequency.value = physical(specId, values, 'tone', 5_000);
-      cursor.connect(delay).connect(toneFilter);
-      cursor = toneFilter;
-      return;
-    }
-
-    if (specId === 'bias-tremolo') {
-      const tremolo = context.createGain();
-      const lfo = context.createOscillator();
-      const shape = context.createWaveShaper();
-      const modulation = context.createGain();
-      const depth = parameter(values, 'depth', 48) / 100;
-      tremolo.gain.value = 1 - depth * 0.5;
-      lfo.frequency.value = physical(specId, values, 'rate', 1.2);
-      shape.curve = cachedDriveCurve(parameter(values, 'wave', 35) * 0.75, 1024);
-      modulation.gain.value = depth * 0.5;
-      lfo.connect(shape).connect(modulation).connect(tremolo.gain);
-      lfo.start(0); scheduled.push(lfo);
-      const output = context.createGain();
-      output.gain.value = dbToGain(physical(specId, values, 'level', 0));
-      cursor.connect(tremolo).connect(output);
-      cursor = output;
-      return;
-    }
-
-    if (specId === 'analog-delay' || specId === 'dm2-delay' || specId === 'tape-echo') {
-      const delay = context.createDelay(specId === 'dm2-delay' ? 0.34 : specId === 'analog-delay' ? 0.81 : 1.3);
-      const feedback = context.createGain();
-      const damping = context.createBiquadFilter();
-      const feedbackControl = specId === 'analog-delay' ? 'feedback' : 'repeats';
-      const feedbackDefault = specId === 'dm2-delay' ? 35 : specId === 'tape-echo' ? 34 : 32;
-      const mixDefault = specId === 'dm2-delay' ? 40 : specId === 'tape-echo' ? 27 : 30;
-      delay.delayTime.value = physical(specId, values, 'time', 380) / 1000;
-      feedback.gain.value = Math.min(0.78, parameter(values, feedbackControl, feedbackDefault) / 112);
-      damping.type = 'lowpass';
-      damping.frequency.value = specId === 'dm2-delay' ? 2_200 : physical(specId, values, 'tone', 3_500);
-      if (specId !== 'dm2-delay') {
-        const lfo = context.createOscillator();
-        const modulation = context.createGain();
-        lfo.frequency.value = specId === 'tape-echo' ? 0.42 : 0.18;
-        modulation.gain.value = parameter(values, specId === 'tape-echo' ? 'wow' : 'mod', 14) / 38_000;
-        lfo.connect(modulation).connect(delay.delayTime);
-        lfo.start(0); scheduled.push(lfo);
-      }
-      delay.connect(damping).connect(feedback).connect(delay);
-      cursor.connect(delay);
-      cursor = mixParallel(context, cursor, delay, parameter(values, 'mix', mixDefault));
-      return;
-    }
-
-    if (specId === 'digital-delay') {
-      const left = context.createDelay(2.1);
-      const right = context.createDelay(2.1);
-      const leftPan = context.createStereoPanner();
-      const rightPan = context.createStereoPanner();
-      const feedbackLeft = context.createGain();
-      const feedbackRight = context.createGain();
-      const toneFilter = context.createBiquadFilter();
-      const wet = context.createGain();
-      const delayTime = physical(specId, values, 'time', 480) / 1000;
-      const feedbackValue = Math.min(0.84, parameter(values, 'feedback', 36) / 110);
-      const width = parameter(values, 'width', 68) / 100;
-      left.delayTime.value = delayTime;
-      right.delayTime.value = Math.min(2, delayTime * 1.013);
-      leftPan.pan.value = -width; rightPan.pan.value = width;
-      feedbackLeft.gain.value = feedbackValue; feedbackRight.gain.value = feedbackValue;
-      toneFilter.type = 'lowpass'; toneFilter.frequency.value = physical(specId, values, 'tone', 7_000);
-      cursor.connect(left); cursor.connect(right);
-      left.connect(leftPan).connect(wet); right.connect(rightPan).connect(wet);
-      left.connect(feedbackLeft).connect(right);
-      right.connect(feedbackRight).connect(left);
-      wet.connect(toneFilter);
-      cursor = mixParallel(context, cursor, toneFilter, parameter(values, 'mix', 34));
-      return;
-    }
-
-    if (specId === 'reverse-space' || specId === 'gated-room' || specId === 'cloud-hall') {
-      const preDelay = context.createDelay(1.05);
-      const convolver = context.createConvolver();
-      const highPass = context.createBiquadFilter();
-      const lowPass = context.createBiquadFilter();
-      const decaySeconds = Math.min(10, physical(specId, values, 'decay', specId === 'cloud-hall' ? 6 : 3));
-      const preDelaySeconds = specId === 'gated-room' ? 0.008 : physical(specId, values, 'preDelay', 20) / 1000;
-      const kind = specId === 'reverse-space' ? 'reverse' : specId === 'gated-room' ? 'gate' : 'decay';
-      const density = specId === 'reverse-space' ? parameter(values, 'density', 74) : 100;
-      const impulseSeconds = specId === 'gated-room'
-        ? Math.min(8, decaySeconds + physical(specId, values, 'hold', 180) / 1000 + physical(specId, values, 'release', 120) / 1000)
-        : decaySeconds;
-      preDelay.delayTime.value = Math.min(1, preDelaySeconds);
-      convolver.buffer = makeImpulse(context, impulseSeconds, kind, item.instanceId.length * 911, density);
-      highPass.type = 'highpass';
-      highPass.frequency.value = specId === 'reverse-space' ? physical(specId, values, 'lowCut', 90) : 45;
-      lowPass.type = 'lowpass';
-      lowPass.frequency.value = specId === 'reverse-space' || specId === 'gated-room'
-        ? physical(specId, values, 'highCut', 6_000)
-        : physical(specId, values, 'tone', 6_000);
-      cursor.connect(preDelay).connect(convolver).connect(highPass).connect(lowPass);
-      if (specId === 'cloud-hall' && parameter(values, 'motion', 31) > 0) {
-        const lfo = context.createOscillator();
-        const modulation = context.createGain();
-        lfo.frequency.value = 0.11;
-        modulation.gain.value = parameter(values, 'motion', 31) / 180_000;
-        lfo.connect(modulation).connect(preDelay.delayTime);
-        lfo.start(0); scheduled.push(lfo);
-      }
-      cursor = mixParallel(context, cursor, lowPass, parameter(values, 'mix', 40));
-    }
-
-    if (PEDALKERNEL_EFFECT_IDS.has(specId) && cursor === effectInput) {
-      throw new Error(`PedalKernel fallback missing: ${specId}`);
+    if (slots) {
+      const slot = createEffectSlot(context, cursor, item, values, namNodes);
+      slots.set(item.instanceId, slot);
+      cursor = slot.output;
+    } else {
+      const built = newEffectBuild(item.specId);
+      cursor = buildEffect(context, cursor, item, values, built.scheduled, namNodes, built);
+      scheduled.push(...built.scheduled);
     }
   });
 
+  return cursor;
+}
+
+/** Nodes created for one effect instance, so they can be updated or retired. */
+export type EffectBuild = {
+  specId: string;
+  engine: 'circuit' | 'pedalkernel' | 'nam' | 'web-audio' | 'passthrough';
+  worklets: AudioWorkletNode[];
+  scheduled: AudioScheduledSourceNode[];
+  /** Live-tweakable NAM gains: parameter changes skip a rebuild. */
+  nam?: { node: AudioWorkletNode; input: GainNode; output: GainNode; dry: GainNode; wet: GainNode };
+};
+
+function newEffectBuild(specId: string): EffectBuild {
+  return { specId, engine: 'web-audio', worklets: [], scheduled: [] };
+}
+
+/** Builds one effect from `effectInput` and returns its output node. */
+function buildEffect(
+  context: BaseAudioContext,
+  effectInput: AudioNode,
+  item: AudioChainItem,
+  values: Record<string, number>,
+  scheduled: AudioScheduledSourceNode[],
+  namNodes: ReadonlyMap<string, AudioWorkletNode>,
+  built: EffectBuild,
+): AudioNode {
+  const specId = item.specId;
+  let cursor = effectInput;
+
+
+  if (NAM_EFFECT_IDS.has(specId)) {
+    const processor = namNodes.get(item.instanceId);
+    if (processor) {
+      const inputGain = context.createGain();
+      const outputGain = context.createGain();
+      inputGain.gain.value = dbToGain(physical(specId, values, 'input', 0));
+      outputGain.gain.value = dbToGain(physical(specId, values, 'output', 0));
+      effectInput.connect(inputGain).connect(processor).connect(outputGain);
+      const mix = mixParallelNodes(context, effectInput, outputGain, parameter(values, 'mix', 100));
+      built.engine = 'nam';
+      built.nam = { node: processor, input: inputGain, output: outputGain, dry: mix.dry, wet: mix.wet };
+      cursor = mix.sum;
+    } else {
+      built.engine = 'passthrough';
+    }
+    return cursor;
+  }
+
+  if (CIRCUIT_EFFECT_IDS.has(specId)) {
+    const processor = makeCircuitNode(context, specId, values);
+    if (processor) {
+      built.worklets.push(processor);
+      built.engine = 'circuit';
+      cursor.connect(processor);
+      cursor = processor;
+      return cursor;
+    }
+  }
+
+  if (PEDALKERNEL_EFFECT_IDS.has(specId)) {
+    const processor = makePedalKernelNode(context, specId, values);
+    if (processor) {
+      built.worklets.push(processor);
+      built.engine = 'pedalkernel';
+      cursor.connect(processor);
+      cursor = processor;
+      return cursor;
+    }
+  }
+
+  if (specId === 'studio-comp') {
+    const compressor = context.createDynamicsCompressor();
+    const toneFilter = context.createBiquadFilter();
+    const output = context.createGain();
+    const sustain = parameter(values, 'sustain', 46);
+    compressor.threshold.value = -8 - sustain * 0.34;
+    compressor.knee.value = 10;
+    compressor.ratio.value = 2 + sustain / 9;
+    compressor.attack.value = physical(specId, values, 'attack', 18) / 1000;
+    compressor.release.value = 0.09 + sustain / 240;
+    toneFilter.type = 'highshelf';
+    toneFilter.frequency.value = 2_800;
+    toneFilter.gain.value = (parameter(values, 'tone', 52) - 50) * 0.12;
+    output.gain.value = dbToGain(physical(specId, values, 'level', 0));
+    cursor.connect(compressor).connect(toneFilter).connect(output);
+    cursor = output;
+    return cursor;
+  }
+
+  if (specId === 'noise-gate') {
+    const output = context.createGain();
+    const thresholdDb = physical(specId, values, 'threshold', -55);
+    const releaseMs = physical(specId, values, 'release', 180);
+    output.gain.value = dbToGain(physical(specId, values, 'level', 0));
+    let gate: AudioWorkletNode | null = null;
+    if (noiseGateReady.has(context) && typeof AudioWorkletNode !== 'undefined') {
+      try {
+        gate = new AudioWorkletNode(context, 'sonic-noise-gate', {
+          numberOfInputs: 1,
+          numberOfOutputs: 1,
+          outputChannelCount: [2],
+          parameterData: {
+            thresholdDb,
+            releaseMs,
+          },
+        });
+        built.worklets.push(gate);
+      } catch {
+        // The static curve is less expressive, but it keeps the chain usable.
+      }
+    }
+    if (gate) {
+      cursor.connect(gate).connect(output);
+    } else {
+      const fallbackGate = context.createWaveShaper();
+      fallbackGate.curve = cachedNoiseGateCurve(thresholdDb);
+      cursor.connect(fallbackGate).connect(output);
+    }
+    cursor = output;
+    return cursor;
+  }
+
+  if (specId === 'graphic-eq') {
+    let eqCursor = cursor;
+    ['100', '200', '400', '800', '1600', '3200', '6400'].forEach((band, index) => {
+      const filter = context.createBiquadFilter();
+      filter.type = index === 6 ? 'highshelf' : 'peaking';
+      filter.frequency.value = Number(band);
+      filter.Q.value = index === 6 ? 0.7 : 1.18;
+      filter.gain.value = physical(specId, values, band, 0);
+      eqCursor.connect(filter);
+      eqCursor = filter;
+    });
+    const output = context.createGain();
+    output.gain.value = dbToGain(physical(specId, values, 'level', 0));
+    eqCursor.connect(output);
+    cursor = output;
+    return cursor;
+  }
+
+  if (specId === 'blue-drive' || specId === 'rodent-dist') {
+    const preGain = context.createGain();
+    const shaper = context.createWaveShaper();
+    const highPass = context.createBiquadFilter();
+    const lowPass = context.createBiquadFilter();
+    const output = context.createGain();
+    const drive = parameter(values, specId === 'blue-drive' ? 'gain' : 'distortion', 45);
+    preGain.gain.value = specId === 'blue-drive' ? 1 + drive / 20 : 1.8 + drive / 10;
+    shaper.curve = cachedDriveCurve(specId === 'blue-drive' ? drive * 0.58 : drive * 1.08);
+    shaper.oversample = '4x';
+    highPass.type = 'highpass';
+    highPass.frequency.value = specId === 'blue-drive' ? 72 : 48;
+    lowPass.type = 'lowpass';
+    lowPass.frequency.value = specId === 'rodent-dist'
+      ? 11_500 - parameter(values, 'filter', 45) * 91
+      : legacyExponential(parameter(values, 'tone', 54), 800, 12_000);
+    lowPass.Q.value = 0.68;
+    const levelKnob = parameter(values, specId === 'blue-drive' ? 'level' : 'volume', 58);
+    output.gain.value = dbToGain(legacyLinear(levelKnob, -18, 12)) * (specId === 'rodent-dist' ? 0.46 : 0.58);
+    cursor.connect(preGain).connect(shaper).connect(highPass).connect(lowPass).connect(output);
+    cursor = output;
+    return cursor;
+  }
+
+  if (specId === 'wall-fuzz') {
+    const dryInput = cursor;
+    const preGain = context.createGain();
+    const gate = context.createWaveShaper();
+    const shaper = context.createWaveShaper();
+    const toneFilter = context.createBiquadFilter();
+    const mids = context.createBiquadFilter();
+    const output = context.createGain();
+    const sustain = parameter(values, 'sustain', 67);
+    preGain.gain.value = 2.2 + sustain / 9;
+    gate.curve = cachedGateCurve(parameter(values, 'gate', 8) * 0.65);
+    shaper.curve = cachedDriveCurve(sustain * 1.15);
+    shaper.oversample = '4x';
+    toneFilter.type = 'lowpass';
+    // Circuit pedals expose knob positions; map them to the legacy
+    // approximation's 800-12k Hz tone and -18..+12 dB volume ranges.
+    toneFilter.frequency.value = legacyExponential(parameter(values, 'tone', 43), 800, 12_000);
+    toneFilter.Q.value = 0.78;
+    mids.type = 'peaking';
+    mids.frequency.value = 1_050;
+    mids.Q.value = 0.92;
+    mids.gain.value = physical(specId, values, 'mids', 0);
+    output.gain.value = dbToGain(legacyLinear(parameter(values, 'volume', 58), -18, 12)) * 0.27;
+    dryInput.connect(preGain).connect(gate).connect(shaper).connect(toneFilter).connect(mids).connect(output);
+    if (parameter(values, 'attack', 22) > 1) {
+      const attackFilter = context.createBiquadFilter();
+      const attackGain = context.createGain();
+      attackFilter.type = 'bandpass';
+      attackFilter.frequency.value = 2_300;
+      attackFilter.Q.value = 0.8;
+      attackGain.gain.value = parameter(values, 'attack', 22) / 420;
+      dryInput.connect(attackFilter).connect(attackGain).connect(output);
+    }
+    cursor = output;
+    return cursor;
+  }
+
+  const legacyDrive = LEGACY_DRIVE_MODELS[specId];
+  if (legacyDrive) {
+    const preGain = context.createGain();
+    const shaper = context.createWaveShaper();
+    const highPass = context.createBiquadFilter();
+    const toneFilter = context.createBiquadFilter();
+    const mids = context.createBiquadFilter();
+    const output = context.createGain();
+    const drive = parameter(values, legacyDrive.driveControl, legacyDrive.driveDefault);
+    preGain.gain.value = legacyDrive.preGainBase + drive * legacyDrive.preGainScale;
+    shaper.curve = cachedDriveCurve(drive * legacyDrive.curveScale);
+    shaper.oversample = '4x';
+    highPass.type = 'highpass';
+    highPass.frequency.value = legacyDrive.highPassHz;
+    if (legacyDrive.toneControl === 'tone') {
+      toneFilter.type = 'lowpass';
+      toneFilter.frequency.value = physical(specId, values, 'tone', legacyDrive.lowPassHz);
+      toneFilter.Q.value = 0.68;
+    } else if (legacyDrive.toneControl === 'treble') {
+      toneFilter.type = 'highshelf';
+      toneFilter.frequency.value = 1_800;
+      toneFilter.gain.value = (parameter(values, 'treble', 50) - 50) * 0.16;
+    } else {
+      toneFilter.type = 'lowpass';
+      toneFilter.frequency.value = legacyDrive.lowPassHz;
+      toneFilter.Q.value = 0.68;
+    }
+    mids.type = 'peaking';
+    mids.frequency.value = legacyDrive.midHz;
+    mids.Q.value = 0.82;
+    mids.gain.value = legacyDrive.midGainDb;
+    output.gain.value = dbToGain(physical(specId, values, legacyDrive.outputControl, -1)) * legacyDrive.outputTrim;
+    cursor.connect(preGain).connect(shaper).connect(highPass).connect(toneFilter).connect(mids).connect(output);
+    cursor = output;
+    return cursor;
+  }
+
+  if (specId === 'chainsaw-dist') {
+    const preGain = context.createGain();
+    const shaper = context.createWaveShaper();
+    const low = context.createBiquadFilter();
+    const highMid = context.createBiquadFilter();
+    const presence = context.createBiquadFilter();
+    const output = context.createGain();
+    const distortion = parameter(values, 'distortion', 78);
+    preGain.gain.value = 2.4 + distortion / 8;
+    shaper.curve = cachedDriveCurve(distortion * 1.2);
+    shaper.oversample = '4x';
+    low.type = 'lowshelf'; low.frequency.value = 120; low.gain.value = (parameter(values, 'low', 72) - 50) * 0.24;
+    highMid.type = 'peaking'; highMid.frequency.value = 1_050; highMid.Q.value = 0.82; highMid.gain.value = (parameter(values, 'high', 76) - 50) * 0.28;
+    presence.type = 'peaking'; presence.frequency.value = 2_700; presence.Q.value = 1.25; presence.gain.value = (parameter(values, 'high', 76) - 50) * 0.18;
+    output.gain.value = dbToGain(physical(specId, values, 'level', -1)) * 0.3;
+    cursor.connect(preGain).connect(shaper).connect(low).connect(highMid).connect(presence).connect(output);
+    cursor = output;
+    return cursor;
+  }
+
+  if (specId === 'slow-phase') {
+    const first = context.createBiquadFilter();
+    const second = context.createBiquadFilter();
+    const third = context.createBiquadFilter();
+    const fourth = context.createBiquadFilter();
+    const lfo = context.createOscillator();
+    const depths = [context.createGain(), context.createGain(), context.createGain(), context.createGain()];
+    const filters = [first, second, third, fourth];
+    const depth = parameter(values, 'depth', 38);
+    filters.forEach((filter, index) => {
+      filter.type = 'allpass';
+      filter.frequency.value = [330, 620, 1_100, 1_900][index];
+      filter.Q.value = 0.6 + parameter(values, 'res', 18) / 11;
+      depths[index].gain.value = 80 + depth * (8 + index * 2.6);
+      lfo.connect(depths[index]).connect(filter.frequency);
+    });
+    lfo.frequency.value = physical(specId, values, 'rate', 0.25);
+    lfo.start(0); scheduled.push(lfo);
+    cursor.connect(first).connect(second).connect(third).connect(fourth);
+    cursor = mixParallel(context, cursor, fourth, parameter(values, 'mix', 44));
+    return cursor;
+  }
+
+  if (specId === 'phase90') {
+    const filters = [
+      context.createBiquadFilter(),
+      context.createBiquadFilter(),
+      context.createBiquadFilter(),
+      context.createBiquadFilter(),
+    ];
+    const lfo = context.createOscillator();
+    const depths = [180, 300, 480, 720].map((depth) => {
+      const modulation = context.createGain();
+      modulation.gain.value = depth;
+      lfo.connect(modulation);
+      return modulation;
+    });
+    filters.forEach((filter, index) => {
+      filter.type = 'allpass';
+      filter.frequency.value = [360, 680, 1_150, 1_900][index];
+      filter.Q.value = 1.15;
+      depths[index].connect(filter.frequency);
+    });
+    lfo.frequency.value = physical(specId, values, 'speed', 0.25);
+    lfo.start(0); scheduled.push(lfo);
+    cursor.connect(filters[0]).connect(filters[1]).connect(filters[2]).connect(filters[3]);
+    cursor = mixParallel(context, cursor, filters[3], 50);
+    return cursor;
+  }
+
+  if (specId === 'analog-chorus' || specId === 'soft-detune') {
+    const wetBus = context.createGain();
+    const toneFilter = context.createBiquadFilter();
+    const spread = specId === 'soft-detune' ? parameter(values, 'spread', 54) / 100 : 0.72;
+    [-1, 1].forEach((direction, index) => {
+      const delay = context.createDelay(0.06);
+      const pan = context.createStereoPanner();
+      const lfo = context.createOscillator();
+      const modulation = context.createGain();
+      const depth = specId === 'soft-detune' ? physical(specId, values, 'cents', 7) / 30_000 : 0.0006 + parameter(values, 'depth', 48) / 18_000;
+      delay.delayTime.value = specId === 'soft-detune' ? 0.009 + index * 0.0013 : 0.014 + index * 0.002;
+      pan.pan.value = direction * spread;
+      lfo.frequency.value = specId === 'soft-detune' ? 0.18 + index * 0.047 : physical(specId, values, 'rate', 0.6) * (1 + index * 0.05);
+      modulation.gain.value = depth;
+      lfo.connect(modulation).connect(delay.delayTime);
+      lfo.start(0); scheduled.push(lfo);
+      cursor.connect(delay).connect(pan).connect(wetBus);
+    });
+    toneFilter.type = 'lowpass';
+    toneFilter.frequency.value = physical(specId, values, 'tone', 6_000);
+    wetBus.connect(toneFilter);
+    cursor = mixParallel(context, cursor, toneFilter, parameter(values, specId === 'soft-detune' ? 'blend' : 'mix', 38));
+    return cursor;
+  }
+
+  if (specId === 'jet-flanger') {
+    const delay = context.createDelay(0.03);
+    const feedback = context.createGain();
+    const lfo = context.createOscillator();
+    const modulation = context.createGain();
+    const center = 0.001 + parameter(values, 'manual', 52) * 0.00007;
+    delay.delayTime.value = center;
+    feedback.gain.value = Math.min(0.84, parameter(values, 'res', 38) / 112);
+    lfo.frequency.value = physical(specId, values, 'rate', 0.4);
+    modulation.gain.value = Math.min(center * 0.82, 0.0004 + parameter(values, 'depth', 62) * 0.000065);
+    lfo.connect(modulation).connect(delay.delayTime);
+    lfo.start(0); scheduled.push(lfo);
+    delay.connect(feedback).connect(delay);
+    cursor.connect(delay);
+    cursor = mixParallel(context, cursor, delay, parameter(values, 'mix', 46));
+    return cursor;
+  }
+
+  if (specId === 'tape-vibrato') {
+    const delay = context.createDelay(0.05);
+    const toneFilter = context.createBiquadFilter();
+    const lfo = context.createOscillator();
+    const modulation = context.createGain();
+    const rise = physical(specId, values, 'rise', 200) / 1000;
+    delay.delayTime.value = 0.012;
+    lfo.frequency.value = physical(specId, values, 'rate', 0.35);
+    modulation.gain.setValueAtTime(0, context.currentTime);
+    modulation.gain.linearRampToValueAtTime(0.00025 + physical(specId, values, 'depth', 8) / 12_000, context.currentTime + Math.max(0.005, rise));
+    lfo.connect(modulation).connect(delay.delayTime);
+    lfo.start(0); scheduled.push(lfo);
+    toneFilter.type = 'lowpass'; toneFilter.frequency.value = physical(specId, values, 'tone', 5_000);
+    cursor.connect(delay).connect(toneFilter);
+    cursor = toneFilter;
+    return cursor;
+  }
+
+  if (specId === 'bias-tremolo') {
+    const tremolo = context.createGain();
+    const lfo = context.createOscillator();
+    const shape = context.createWaveShaper();
+    const modulation = context.createGain();
+    const depth = parameter(values, 'depth', 48) / 100;
+    tremolo.gain.value = 1 - depth * 0.5;
+    lfo.frequency.value = physical(specId, values, 'rate', 1.2);
+    shape.curve = cachedDriveCurve(parameter(values, 'wave', 35) * 0.75, 1024);
+    modulation.gain.value = depth * 0.5;
+    lfo.connect(shape).connect(modulation).connect(tremolo.gain);
+    lfo.start(0); scheduled.push(lfo);
+    const output = context.createGain();
+    output.gain.value = dbToGain(physical(specId, values, 'level', 0));
+    cursor.connect(tremolo).connect(output);
+    cursor = output;
+    return cursor;
+  }
+
+  if (specId === 'analog-delay' || specId === 'dm2-delay' || specId === 'tape-echo') {
+    const delay = context.createDelay(specId === 'dm2-delay' ? 0.34 : specId === 'analog-delay' ? 0.81 : 1.3);
+    const feedback = context.createGain();
+    const damping = context.createBiquadFilter();
+    const feedbackControl = specId === 'analog-delay' ? 'feedback' : 'repeats';
+    const feedbackDefault = specId === 'dm2-delay' ? 35 : specId === 'tape-echo' ? 34 : 32;
+    const mixDefault = specId === 'dm2-delay' ? 40 : specId === 'tape-echo' ? 27 : 30;
+    delay.delayTime.value = physical(specId, values, 'time', 380) / 1000;
+    feedback.gain.value = Math.min(0.78, parameter(values, feedbackControl, feedbackDefault) / 112);
+    damping.type = 'lowpass';
+    damping.frequency.value = specId === 'dm2-delay' ? 2_200 : physical(specId, values, 'tone', 3_500);
+    if (specId !== 'dm2-delay') {
+      const lfo = context.createOscillator();
+      const modulation = context.createGain();
+      lfo.frequency.value = specId === 'tape-echo' ? 0.42 : 0.18;
+      modulation.gain.value = parameter(values, specId === 'tape-echo' ? 'wow' : 'mod', 14) / 38_000;
+      lfo.connect(modulation).connect(delay.delayTime);
+      lfo.start(0); scheduled.push(lfo);
+    }
+    delay.connect(damping).connect(feedback).connect(delay);
+    cursor.connect(delay);
+    cursor = mixParallel(context, cursor, delay, parameter(values, 'mix', mixDefault));
+    return cursor;
+  }
+
+  if (specId === 'digital-delay') {
+    const left = context.createDelay(2.1);
+    const right = context.createDelay(2.1);
+    const leftPan = context.createStereoPanner();
+    const rightPan = context.createStereoPanner();
+    const feedbackLeft = context.createGain();
+    const feedbackRight = context.createGain();
+    const toneFilter = context.createBiquadFilter();
+    const wet = context.createGain();
+    const delayTime = physical(specId, values, 'time', 480) / 1000;
+    const feedbackValue = Math.min(0.84, parameter(values, 'feedback', 36) / 110);
+    const width = parameter(values, 'width', 68) / 100;
+    left.delayTime.value = delayTime;
+    right.delayTime.value = Math.min(2, delayTime * 1.013);
+    leftPan.pan.value = -width; rightPan.pan.value = width;
+    feedbackLeft.gain.value = feedbackValue; feedbackRight.gain.value = feedbackValue;
+    toneFilter.type = 'lowpass'; toneFilter.frequency.value = physical(specId, values, 'tone', 7_000);
+    cursor.connect(left); cursor.connect(right);
+    left.connect(leftPan).connect(wet); right.connect(rightPan).connect(wet);
+    left.connect(feedbackLeft).connect(right);
+    right.connect(feedbackRight).connect(left);
+    wet.connect(toneFilter);
+    cursor = mixParallel(context, cursor, toneFilter, parameter(values, 'mix', 34));
+    return cursor;
+  }
+
+  if (specId === 'reverse-space' || specId === 'gated-room' || specId === 'cloud-hall') {
+    const preDelay = context.createDelay(1.05);
+    const convolver = context.createConvolver();
+    const highPass = context.createBiquadFilter();
+    const lowPass = context.createBiquadFilter();
+    const decaySeconds = Math.min(10, physical(specId, values, 'decay', specId === 'cloud-hall' ? 6 : 3));
+    const preDelaySeconds = specId === 'gated-room' ? 0.008 : physical(specId, values, 'preDelay', 20) / 1000;
+    const kind = specId === 'reverse-space' ? 'reverse' : specId === 'gated-room' ? 'gate' : 'decay';
+    const density = specId === 'reverse-space' ? parameter(values, 'density', 74) : 100;
+    const impulseSeconds = specId === 'gated-room'
+      ? Math.min(8, decaySeconds + physical(specId, values, 'hold', 180) / 1000 + physical(specId, values, 'release', 120) / 1000)
+      : decaySeconds;
+    preDelay.delayTime.value = Math.min(1, preDelaySeconds);
+    convolver.buffer = makeImpulse(context, impulseSeconds, kind, item.instanceId.length * 911, density);
+    highPass.type = 'highpass';
+    highPass.frequency.value = specId === 'reverse-space' ? physical(specId, values, 'lowCut', 90) : 45;
+    lowPass.type = 'lowpass';
+    lowPass.frequency.value = specId === 'reverse-space' || specId === 'gated-room'
+      ? physical(specId, values, 'highCut', 6_000)
+      : physical(specId, values, 'tone', 6_000);
+    cursor.connect(preDelay).connect(convolver).connect(highPass).connect(lowPass);
+    if (specId === 'cloud-hall' && parameter(values, 'motion', 31) > 0) {
+      const lfo = context.createOscillator();
+      const modulation = context.createGain();
+      lfo.frequency.value = 0.11;
+      modulation.gain.value = parameter(values, 'motion', 31) / 180_000;
+      lfo.connect(modulation).connect(preDelay.delayTime);
+      lfo.start(0); scheduled.push(lfo);
+    }
+    cursor = mixParallel(context, cursor, lowPass, parameter(values, 'mix', 40));
+  }
+
+  if (PEDALKERNEL_EFFECT_IDS.has(specId) && cursor === effectInput) {
+    throw new Error(`PedalKernel fallback missing: ${specId}`);
+  }
+  // Nothing was built (e.g. a circuit-only pedal whose runtime failed).
+  if (cursor === effectInput) built.engine = 'passthrough';
   return cursor;
 }
 
@@ -1178,13 +1278,14 @@ function connectBoardGraph(
   config: BoardAudioConfig,
   scheduled: AudioScheduledSourceNode[],
   namNodes: ReadonlyMap<string, AudioWorkletNode> = new Map(),
+  slots?: Map<string, EffectSlot>,
 ) {
   if (config.mode === 'dry') return input;
   const routes = partitionChain(config.chain, config.routing.mode);
   let effected: AudioNode;
 
   if (config.routing.mode === 'serial') {
-    effected = connectEffectChain(context, input, config, scheduled, routes.serial, namNodes);
+    effected = connectEffectChain(context, input, config, scheduled, routes.serial, namNodes, slots);
   } else {
     const sum = context.createGain();
     const laneMix = computeLaneMix(config.routing.blend, config.routing.spread);
@@ -1193,7 +1294,7 @@ function connectBoardGraph(
       const laneGain = context.createGain();
       const lanePan = context.createStereoPanner();
       input.connect(laneInput);
-      const laneOutput = connectEffectChain(context, laneInput, config, scheduled, routes[lane], namNodes);
+      const laneOutput = connectEffectChain(context, laneInput, config, scheduled, routes[lane], namNodes, slots);
       laneGain.gain.value = laneMix[lane].gain;
       lanePan.pan.value = laneMix[lane].pan;
       laneOutput.connect(laneGain).connect(lanePan).connect(sum);
@@ -1208,11 +1309,15 @@ function connectBoardGraph(
   return monitorMakeup;
 }
 
+function masterLevel(outputValue: number) {
+  return 0.04 + (clampParameter(outputValue) / 100) * 0.34;
+}
+
 function connectMaster(
   context: BaseAudioContext,
   input: AudioNode,
   outputValue: number,
-) {
+): GainNode {
   const compressor = context.createDynamicsCompressor();
   const output = context.createGain();
   compressor.threshold.value = -8;
@@ -1220,137 +1325,458 @@ function connectMaster(
   compressor.ratio.value = 8;
   compressor.attack.value = 0.004;
   compressor.release.value = 0.16;
-  output.gain.value = 0.04 + (clampParameter(outputValue) / 100) * 0.34;
+  output.gain.value = masterLevel(outputValue);
   input.connect(compressor).connect(output);
   return output;
 }
 
-export function stopLiveGraph(session: LiveAudioSession) {
-  session.scheduled.forEach((node) => {
-    try { node.stop(); } catch { /* already stopped */ }
-    node.disconnect();
-  });
-  session.scheduled = [];
-  if (session.source) {
-    try { session.source.stop(); } catch { /* already stopped */ }
-    session.source.disconnect();
-    session.source = null;
-  }
-  if (session.output) {
-    session.output.disconnect();
-    session.output = null;
-  }
-  disposeNamNodes(session.namNodes);
-  session.namNodes = new Map();
+/** Crossfade length for graph and slot swaps: short enough to feel instant. */
+const SWAP_FADE_SECONDS = 0.03;
+/** Longest delay/reverb tail a retired graph or slot is kept ringing for. */
+const MAX_TAIL_SECONDS = 10;
+/** Retired slot instances allowed to ring at once while a knob is dragged. */
+const MAX_RINGING_INSTANCES = 2;
+
+type SlotInstance = {
+  /** Input gate: closing it silences the effect but lets its tail decay. */
+  gate: GainNode;
+  /** Output gate: closing it cuts the tail (used to cap ringing instances). */
+  tail: GainNode;
+  build: EffectBuild;
+  out: AudioNode;
+};
+
+/**
+ * One effect instance in a live graph. Knob changes either message the
+ * running node (worklets, NAM gains) or swap in a rebuilt instance with an
+ * input crossfade, so neighbouring pedals and tails are never interrupted.
+ */
+export type EffectSlot = {
+  item: AudioChainItem;
+  upstream: AudioNode;
+  output: GainNode;
+  values: Record<string, number>;
+  current: SlotInstance;
+  ringing: SlotInstance[];
+  failed: boolean;
+};
+
+function disposeWorklet(node: AudioWorkletNode) {
+  try { node.port.postMessage({ type: 'dispose' }); } catch { /* worklet already gone */ }
+  try { node.disconnect(); } catch { /* never connected */ }
 }
 
-function startLiveGraph(
+function stopScheduled(nodes: AudioScheduledSourceNode[]) {
+  nodes.forEach((node) => {
+    try { node.stop(); } catch { /* already stopped */ }
+    try { node.disconnect(); } catch { /* never connected */ }
+  });
+}
+
+function createSlotInstance(
+  context: BaseAudioContext,
+  upstream: AudioNode,
+  output: AudioNode,
+  item: AudioChainItem,
+  values: Record<string, number>,
+  namNodes: ReadonlyMap<string, AudioWorkletNode>,
+): SlotInstance {
+  const gate = context.createGain();
+  const tail = context.createGain();
+  upstream.connect(gate);
+  const build = newEffectBuild(item.specId);
+  const out = buildEffect(context, gate, item, values, build.scheduled, namNodes, build);
+  out.connect(tail).connect(output);
+  return { gate, tail, build, out };
+}
+
+function createEffectSlot(
+  context: BaseAudioContext,
+  upstream: AudioNode,
+  item: AudioChainItem,
+  values: Record<string, number>,
+  namNodes: ReadonlyMap<string, AudioWorkletNode>,
+): EffectSlot {
+  const output = context.createGain();
+  return {
+    item,
+    upstream,
+    output,
+    values,
+    current: createSlotInstance(context, upstream, output, item, values, namNodes),
+    ringing: [],
+    failed: false,
+  };
+}
+
+/** Releases an instance. Shared NAM nodes are only detached, never disposed. */
+function disposeSlotInstance(upstream: AudioNode | null, instance: SlotInstance) {
+  stopScheduled(instance.build.scheduled);
+  instance.build.worklets.forEach(disposeWorklet);
+  if (instance.build.nam) {
+    try { instance.build.nam.input.disconnect(); } catch { /* already detached */ }
+    try { instance.build.nam.node.disconnect(instance.build.nam.output); } catch { /* already detached */ }
+  }
+  try { upstream?.disconnect(instance.gate); } catch { /* already detached */ }
+  try { instance.gate.disconnect(); } catch { /* already detached */ }
+  try { instance.out.disconnect(); } catch { /* already detached */ }
+  try { instance.tail.disconnect(); } catch { /* already detached */ }
+}
+
+function rampTo(param: AudioParam, value: number, at: number, seconds = SWAP_FADE_SECONDS) {
+  param.cancelScheduledValues(at);
+  param.setValueAtTime(param.value, at);
+  param.linearRampToValueAtTime(value, at + seconds);
+}
+
+function slotTailSeconds(item: AudioChainItem, values: Record<string, number>) {
+  const seconds = estimateTailSeconds([item], { [item.instanceId]: values }, new Set(), { mode: 'wet' });
+  return Math.min(MAX_TAIL_SECONDS, Math.max(0.05, seconds));
+}
+
+function sameValues(a: Record<string, number>, b: Record<string, number>) {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const key of keys) if (a[key] !== b[key]) return false;
+  return true;
+}
+
+function circuitKnobs(specId: string, values: Record<string, number>) {
+  const circuit = CIRCUIT_MODELS[specId];
+  const spec = getEffectSpec(specId);
+  const knob = (id: string) => parameter(values, id, spec.controls.find((control) => control.id === id)?.defaultValue ?? 50) / 100;
+  return {
+    controls: circuit.controls.map(knob),
+    switches: (circuit.switches ?? []).map((id) => (knob(id) >= 0.5 ? 1 : 0)),
+  };
+}
+
+function pedalKernelControls(specId: string, values: Record<string, number>) {
+  const model = PEDALKERNEL_MODELS[specId];
+  return model.controls.map((id) => {
+    const fallback = getEffectSpec(specId).controls.find((control) => control.id === id)?.defaultValue ?? 50;
+    return parameter(values, id, fallback) / 100;
+  });
+}
+
+function updateEffectSlot(session: LiveAudioSession, slot: EffectSlot, values: Record<string, number>, namNodes: ReadonlyMap<string, AudioWorkletNode>) {
+  if (sameValues(slot.values, values)) return;
+  const context = session.context;
+  const build = slot.current.build;
+  const specId = slot.item.specId;
+  const now = context.currentTime;
+  const worklet = build.worklets[0];
+
+  if (build.engine === 'circuit' && worklet) {
+    // The solver keeps its state; the worklet smooths the new pot values.
+    const knobs = circuitKnobs(specId, values);
+    knobs.controls.forEach((value, index) => worklet.port.postMessage({ type: 'control', index, value }));
+    knobs.switches.forEach((value, index) => worklet.port.postMessage({ type: 'switch', index, value }));
+  } else if (build.engine === 'pedalkernel' && worklet) {
+    pedalKernelControls(specId, values).forEach((value, index) => worklet.port.postMessage({ type: 'control', index, value }));
+  } else if (build.engine === 'nam' && build.nam) {
+    const mix = parameter(values, 'mix', 100) / 100;
+    build.nam.input.gain.setTargetAtTime(dbToGain(physical(specId, values, 'input', 0)), now, 0.015);
+    build.nam.output.gain.setTargetAtTime(dbToGain(physical(specId, values, 'output', 0)), now, 0.015);
+    build.nam.dry.gain.setTargetAtTime(Math.cos(mix * Math.PI * 0.5), now, 0.015);
+    build.nam.wet.gain.setTargetAtTime(Math.sin(mix * Math.PI * 0.5), now, 0.015);
+  } else if (build.engine !== 'passthrough') {
+    // Web Audio models: build the new instance beside the old one, crossfade
+    // their inputs, and let the old instance's tail ring out before release.
+    const next = createSlotInstance(context, slot.upstream, slot.output, slot.item, values, namNodes);
+    next.gate.gain.setValueAtTime(0, now);
+    next.gate.gain.linearRampToValueAtTime(1, now + SWAP_FADE_SECONDS);
+    const old = slot.current;
+    rampTo(old.gate.gain, 0, now);
+    slot.ringing.push(old);
+    // Dragging a reverb knob would otherwise stack many ringing convolvers.
+    while (slot.ringing.length > MAX_RINGING_INSTANCES) {
+      const oldest = slot.ringing.shift()!;
+      rampTo(oldest.tail.gain, 0, now);
+      setTimeout(() => disposeSlotInstance(slot.upstream, oldest), SWAP_FADE_SECONDS * 1000 + 50);
+    }
+    const ringSeconds = SWAP_FADE_SECONDS + slotTailSeconds(slot.item, slot.values);
+    setTimeout(() => {
+      const index = slot.ringing.indexOf(old);
+      if (index < 0) return;
+      slot.ringing.splice(index, 1);
+      disposeSlotInstance(slot.upstream, old);
+    }, ringSeconds * 1000 + 50);
+    slot.current = next;
+    watchSlot(session, slot);
+  }
+  slot.values = values;
+}
+
+/** Worklets report a runtime fallback (solver blew up) so the UI can show it. */
+function watchSlot(session: LiveAudioSession, slot: EffectSlot) {
+  slot.current.build.worklets.forEach((node) => {
+    node.port.onmessage = (event: MessageEvent<{ type?: string }>) => {
+      if (event.data?.type !== 'fallback') return;
+      slot.failed = true;
+      publishStatus(session);
+    };
+  });
+}
+
+function publishStatus(session: LiveAudioSession) {
+  const status = new Map<string, EffectStatus>();
+  session.graph?.slots.forEach((slot, id) => {
+    status.set(id, slot.failed ? 'fallback' : slot.current.build.engine === 'passthrough' ? 'passthrough' : 'ok');
+  });
+  session.status = status;
+  session.onStatus?.(status);
+}
+
+/** Changes that need a new graph; everything else is applied in place. */
+function structureKey(config: BoardAudioConfig) {
+  return JSON.stringify({
+    chain: config.chain.map((item) => [item.instanceId, item.specId, item.lane ?? null]),
+    bypassed: [...config.bypassed].sort(),
+    source: sourceConfigKey(config.source),
+    mode: config.mode,
+    routing: config.routing,
+    amp: config.amp,
+    nam: Object.entries(config.namModels ?? {}).map(([slot, model]) => [slot, model.modelJson.length]),
+  });
+}
+
+/** Loads only the worklet runtimes the active chain needs. */
+async function prepareProcessorsFor(context: BaseAudioContext, config: BoardAudioConfig) {
+  if (config.mode === 'dry') return;
+  const bypassed = new Set(config.bypassed);
+  const active = config.chain.filter((item) => !bypassed.has(item.instanceId)).map((item) => item.specId);
+  const jobs: Promise<void>[] = [];
+  if (active.includes('noise-gate')) jobs.push(prepareNoiseGateProcessor(context));
+  const needsCircuit = active.some((id) => CIRCUIT_EFFECT_IDS.has(id));
+  if (needsCircuit) jobs.push(prepareCircuitProcessor(context));
+  if (active.some((id) => PEDALKERNEL_EFFECT_IDS.has(id) && !CIRCUIT_EFFECT_IDS.has(id))) {
+    jobs.push(preparePedalKernelProcessor(context));
+  }
+  await Promise.all(jobs);
+  // Circuit pedals fall back to PedalKernel only if the circuit runtime failed.
+  if (needsCircuit && !circuitReady.has(context) && active.some((id) => CIRCUIT_EFFECT_IDS.has(id) && PEDALKERNEL_MODELS[id])) {
+    await preparePedalKernelProcessor(context);
+  }
+}
+
+function buildLiveGraph(
   session: LiveAudioSession,
   config: BoardAudioConfig,
-  offsetSeconds: number,
   buffer: AudioBuffer,
+  offsetSeconds: number,
   namNodes: Map<string, AudioWorkletNode>,
-) {
-  const key = sourceConfigKey(config.source);
+): LiveGraph {
+  const context = session.context;
+  const source = context.createBufferSource();
+  const input = context.createGain();
+  const fade = context.createGain();
   const scheduled: AudioScheduledSourceNode[] = [];
-  const source = session.context.createBufferSource();
-  let master: AudioNode | null = null;
-  const safeOffset = offsetSeconds % buffer.duration;
+  const slots = new Map<string, EffectSlot>();
+  let level: GainNode | null = null;
   try {
-    const input = session.context.createGain();
     source.buffer = buffer;
     source.loop = true;
     source.loopEnd = buffer.duration;
     source.connect(input);
-    const effected = connectBoardGraph(session.context, input, config, scheduled, namNodes);
-    master = connectMaster(session.context, effected, config.output);
-    source.start(0, safeOffset);
-    master.connect(session.context.destination);
+    const effected = connectBoardGraph(context, input, config, scheduled, namNodes, slots);
+    level = connectMaster(context, effected, config.output);
+    const now = context.currentTime;
+    fade.gain.setValueAtTime(0, now);
+    fade.gain.linearRampToValueAtTime(1, now + SWAP_FADE_SECONDS);
+    level.connect(fade).connect(context.destination);
+    source.start(0, offsetSeconds % buffer.duration);
   } catch (error) {
-    scheduled.forEach((node) => {
-      try { node.stop(); } catch { /* already stopped */ }
-      node.disconnect();
-    });
-    try { source.stop(); } catch { /* not started or already stopped */ }
+    stopScheduled(scheduled);
+    slots.forEach((slot) => disposeSlotInstance(slot.upstream, slot.current));
+    try { source.stop(); } catch { /* not started */ }
     source.disconnect();
-    master?.disconnect();
-    disposeNamNodes(namNodes);
+    level?.disconnect();
+    fade.disconnect();
     throw error;
   }
+  const graph: LiveGraph = {
+    config,
+    structureKey: structureKey(config),
+    source,
+    input,
+    level,
+    fade,
+    scheduled,
+    slots,
+    namNodes,
+  };
+  slots.forEach((slot) => watchSlot(session, slot));
+  return graph;
+}
 
-  stopLiveGraph(session);
-  session.scheduled = scheduled;
-  session.source = source;
-  session.output = master;
-  session.namNodes = namNodes;
-  session.startedAt = session.context.currentTime - safeOffset;
+/** Tears a graph down immediately. NAM nodes still cached are kept. */
+function disposeGraph(session: LiveAudioSession, graph: LiveGraph) {
+  try { graph.source.stop(); } catch { /* already stopped */ }
+  try { graph.source.disconnect(); } catch { /* already detached */ }
+  try { graph.input.disconnect(); } catch { /* already detached */ }
+  stopScheduled(graph.scheduled);
+  graph.slots.forEach((slot) => {
+    disposeSlotInstance(slot.upstream, slot.current);
+    slot.ringing.forEach((instance) => disposeSlotInstance(slot.upstream, instance));
+    slot.ringing = [];
+    try { slot.output.disconnect(); } catch { /* already detached */ }
+  });
+  try { graph.level.disconnect(); } catch { /* already detached */ }
+  try { graph.fade.disconnect(); } catch { /* already detached */ }
+  const cached = new Set([...session.namCache.values()].map((entry) => entry.node));
+  graph.namNodes.forEach((node) => { if (!cached.has(node)) disposeNamNode(node); });
+}
+
+/** Stops the graph's source but keeps its effects running until tails decay. */
+function retireGraph(session: LiveAudioSession, graph: LiveGraph) {
+  const context = session.context;
+  const now = context.currentTime;
+  rampTo(graph.input.gain, 0, now);
+  try { graph.source.stop(now + SWAP_FADE_SECONDS + 0.01); } catch { /* already stopped */ }
+  session.retiring.add(graph);
+  // Rapid structural edits: only the newest retired graph keeps ringing.
+  if (session.retiring.size > 1) {
+    const [oldest] = session.retiring;
+    session.retiring.delete(oldest);
+    rampTo(oldest.fade.gain, 0, now);
+    setTimeout(() => disposeGraph(session, oldest), SWAP_FADE_SECONDS * 1000 + 50);
+  }
+  const bypassed = new Set(graph.config.bypassed);
+  const tail = Math.min(MAX_TAIL_SECONDS, estimateTailSeconds(graph.config.chain, graph.config.values, bypassed, {
+    mode: graph.config.mode,
+    routing: graph.config.routing,
+  }));
+  setTimeout(() => {
+    if (!session.retiring.delete(graph)) return;
+    disposeGraph(session, graph);
+  }, (SWAP_FADE_SECONDS + tail) * 1000 + 100);
+}
+
+function pruneNamCache(session: LiveAudioSession, active: ReadonlyMap<string, AudioWorkletNode>) {
+  session.namCache.forEach((entry, instanceId) => {
+    if (active.get(instanceId) === entry.node) return;
+    session.namCache.delete(instanceId);
+    disposeNamNode(entry.node);
+  });
+}
+
+function installGraph(
+  session: LiveAudioSession,
+  config: BoardAudioConfig,
+  buffer: AudioBuffer,
+  offsetSeconds: number,
+  namNodes: Map<string, AudioWorkletNode>,
+) {
+  const next = buildLiveGraph(session, config, buffer, offsetSeconds, namNodes);
+  const previous = session.graph;
+  session.graph = next;
+  if (previous) retireGraph(session, previous);
+  pruneNamCache(session, namNodes);
+  session.startedAt = session.context.currentTime - (offsetSeconds % buffer.duration);
   session.duration = buffer.duration;
-  session.sourceKey = key;
+  session.sourceKey = sourceConfigKey(config.source);
+  publishStatus(session);
+}
+
+function applyParameterChanges(session: LiveAudioSession, graph: LiveGraph, config: BoardAudioConfig) {
+  const now = session.context.currentTime;
+  graph.level.gain.setTargetAtTime(masterLevel(config.output), now, 0.015);
+  graph.slots.forEach((slot, instanceId) => {
+    updateEffectSlot(session, slot, config.values[instanceId] ?? {}, graph.namNodes);
+  });
+  graph.config = config;
+}
+
+/** Stops every graph immediately (session teardown). */
+export function stopLiveGraph(session: LiveAudioSession) {
+  session.retiring.forEach((graph) => disposeGraph(session, graph));
+  session.retiring.clear();
+  if (session.graph) disposeGraph(session, session.graph);
+  session.graph = null;
 }
 
 export async function createLiveSession(config: BoardAudioConfig) {
   const AudioContextClass = window.AudioContext ||
     (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
   if (!AudioContextClass) throw new Error('当前浏览器不支持音频预览');
-  const context = new AudioContextClass();
-  let namNodes = new Map<string, AudioWorkletNode>();
+  const context = new AudioContextClass({ latencyHint: 'interactive' });
+  const session: LiveAudioSession = {
+    context,
+    graph: null,
+    retiring: new Set(),
+    buffers: new Map(),
+    bufferLoads: new Map(),
+    startedAt: 0,
+    duration: SOURCE_DURATION_SECONDS,
+    sourceKey: sourceConfigKey(config.source),
+    revision: 0,
+    namCache: new Map(),
+    status: new Map(),
+  };
   try {
     activateMobileAudio(context, window.navigator);
     await context.resume();
-    await Promise.all([prepareNoiseGateProcessor(context), preparePedalKernelProcessor(context), prepareCircuitProcessor(context)]);
-    namNodes = await prepareNamNodes(context, config);
-    const session: LiveAudioSession = {
-      context,
-      source: null,
-      output: null,
-      scheduled: [],
-      buffers: new Map(),
-      bufferLoads: new Map(),
-      startedAt: 0,
-      duration: SOURCE_DURATION_SECONDS,
-      sourceKey: sourceConfigKey(config.source),
-      revision: 0,
-      namNodes: new Map(),
-    };
+    await prepareProcessorsFor(context, config);
+    const namNodes = await prepareNamNodes(context, config, session.namCache);
     const buffer = await loadSessionBuffer(session, session.sourceKey, config.source);
     rememberSessionBuffer(session, session.sourceKey, buffer);
-    startLiveGraph(session, config, 0, buffer, namNodes);
+    installGraph(session, config, buffer, 0, namNodes);
     return session;
   } catch (error) {
-    disposeNamNodes(namNodes);
+    stopLiveGraph(session);
+    session.namCache.forEach((entry) => disposeNamNode(entry.node));
     try { await context.close(); } catch { /* preserve the original creation failure */ }
     throw error;
   }
 }
 
+/**
+ * Applies a new board configuration. Knob moves are applied in place without
+ * interrupting audio; structural edits build a new graph that fades in while
+ * the old one's delay and reverb tails ring out.
+ */
 export async function refreshLiveSession(session: LiveAudioSession, config: BoardAudioConfig) {
   if (isClosedAudioContext(session.context)) return;
-  const revision = ++session.revision;
-  await Promise.all([prepareNoiseGateProcessor(session.context), preparePedalKernelProcessor(session.context), prepareCircuitProcessor(session.context)]);
-  const namNodes = await prepareNamNodes(session.context, config);
-  const key = sourceConfigKey(config.source);
-  const offset = sourceConfigKey(config.source) === session.sourceKey
-    ? (session.context.currentTime - session.startedAt) % session.duration
-    : 0;
-  let buffer: AudioBuffer;
-  try {
-    buffer = await loadSessionBuffer(session, key, config.source);
-  } catch (error) {
-    disposeNamNodes(namNodes);
-    throw error;
-  }
-  if (session.revision !== revision || isClosedAudioContext(session.context)) {
-    disposeNamNodes(namNodes);
+  const key = structureKey(config);
+  if (session.pendingStructure !== undefined) {
+    // A rebuild for this structure is in flight: it will use the newest values.
+    if (session.pendingStructure === key) {
+      session.pendingConfig = config;
+      return;
+    }
+  } else if (session.graph && session.graph.structureKey === key) {
+    applyParameterChanges(session, session.graph, config);
     return;
   }
-  rememberSessionBuffer(session, key, buffer);
-  startLiveGraph(session, config, offset, buffer, namNodes);
+  // Structural rebuild. Knob changes arriving meanwhile update the target.
+  session.pendingConfig = config;
+  session.pendingStructure = key;
+  const revision = ++session.revision;
+  try {
+    await prepareProcessorsFor(session.context, config);
+    const namNodes = await prepareNamNodes(session.context, config, session.namCache);
+    const sourceKey = sourceConfigKey(config.source);
+    const offset = sourceKey === session.sourceKey
+      ? (session.context.currentTime - session.startedAt) % session.duration
+      : 0;
+    const buffer = await loadSessionBuffer(session, sourceKey, config.source);
+    if (session.revision !== revision || isClosedAudioContext(session.context)) return;
+    rememberSessionBuffer(session, sourceKey, buffer);
+    installGraph(session, session.pendingConfig ?? config, buffer, offset, namNodes);
+  } finally {
+    if (session.revision === revision) {
+      session.pendingConfig = undefined;
+      session.pendingStructure = undefined;
+    }
+  }
 }
 
 export async function disposeLiveSession(session: LiveAudioSession | null) {
   if (!session) return;
   session.revision += 1;
   stopLiveGraph(session);
+  session.namCache.forEach((entry) => disposeNamNode(entry.node));
+  session.namCache.clear();
   session.buffers.clear();
   session.bufferLoads.clear();
   await session.context.close();
@@ -1364,7 +1790,7 @@ export async function renderBoardToWav(config: BoardAudioConfig) {
   });
   const totalSeconds = SOURCE_DURATION_SECONDS + tail;
   const offline = new OfflineAudioContext(2, Math.ceil(totalSeconds * sampleRate), sampleRate);
-  await Promise.all([prepareNoiseGateProcessor(offline), preparePedalKernelProcessor(offline), prepareCircuitProcessor(offline)]);
+  await prepareProcessorsFor(offline, config);
   const namNodes = await prepareNamNodes(offline, config);
   const source = offline.createBufferSource();
   const input = offline.createGain();

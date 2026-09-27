@@ -34,7 +34,15 @@ class SonicCircuitProcessor extends AudioWorkletProcessor {
     } catch {
       this.ready = false;
     }
+    this.disposed = false;
     this.port.onmessage = (event) => this.receive(event.data);
+  }
+
+  dispose() {
+    this.disposed = true;
+    if (this.exports) this.handles.forEach((handle) => this.exports.destroy(handle));
+    this.handles = [];
+    this.ready = false;
   }
 
   addInstance() {
@@ -47,6 +55,10 @@ class SonicCircuitProcessor extends AudioWorkletProcessor {
   }
 
   receive(message) {
+    if (message?.type === 'dispose') {
+      this.dispose();
+      return;
+    }
     if (!this.ready || !message) return;
     if (message.type === 'control') {
       this.controls[message.index] = message.value;
@@ -73,6 +85,8 @@ class SonicCircuitProcessor extends AudioWorkletProcessor {
   }
 
   process(inputs, outputs) {
+    // Returning false lets the browser collect a disposed node.
+    if (this.disposed) return false;
     const input = inputs[0];
     const output = outputs[0];
     if (!output?.length) return true;
@@ -99,6 +113,7 @@ class SonicCircuitProcessor extends AudioWorkletProcessor {
     if (!ok) {
       // A diverged circuit falls back to dry signal rather than noise.
       this.ready = false;
+      this.port.postMessage({ type: 'fallback', reason: 'solver output invalid' });
       output.forEach((channel, index) => channel.set(input[index] ?? left));
     }
     return true;

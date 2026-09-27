@@ -2,11 +2,13 @@
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import {
+  CIRCUIT_EFFECT_IDS,
   createLiveSession,
   disposeLiveSession,
   refreshLiveSession,
   renderBoardToWav,
   type BoardAudioConfig,
+  type EffectStatus,
   type LiveAudioSession,
 } from './audio/audio-engine';
 import { LiveSessionController } from './audio/live-session-controller';
@@ -33,7 +35,7 @@ import {
   type ToneAgentBoardState,
   type ToneAgentMessage,
 } from './agent/tone-agent-runtime';
-import { isToneAgentAbort, requestToneAgentStream } from './agent/tone-agent-stream';
+import { isToneAgentAbort, requestToneAgentStream, ToneAgentHttpError } from './agent/tone-agent-stream';
 import {
   AMP_SPECS,
   CAB_SPECS,
@@ -109,6 +111,9 @@ const categoryNames: Record<'All' | EffectCategory, string> = {
 const wave = [18, 42, 72, 34, 85, 52, 66, 28, 90, 46, 74, 38, 82, 56, 26, 68, 88, 44, 72, 32, 62, 94, 48, 76, 36, 84, 54, 24, 70, 91, 42, 68, 34, 80, 52, 74, 30, 63, 87, 46];
 const initialFactoryPreset = FACTORY_PRESETS.find((preset) => preset.id === 'reverse-wall') ?? FACTORY_PRESETS[0];
 const initialBoard = instantiatePreset(initialFactoryPreset);
+
+/** Minimum spacing between live audio updates while a knob is dragged. */
+const PLAYBACK_REFRESH_INTERVAL_MS = 30;
 
 function cloneValues(values: Values) {
   return Object.fromEntries(Object.entries(values).map(([id, controls]) => [id, { ...controls }]));
@@ -314,13 +319,15 @@ function StyleFilters({ value, onChange }: { value: StyleFilter; onChange: (valu
   );
 }
 
-function DemoPedal({ item, index, values, selected, bypassed, namLoaded, tutorialEnabled, onSelect, onValue, onBypass, onDrop, onHelp }: {
+function DemoPedal({ item, index, values, selected, bypassed, namLoaded, engineStatus, tutorialEnabled, onSelect, onValue, onBypass, onDrop, onHelp }: {
   item: ChainItem;
   index: number;
   values: Record<string, number>;
   selected: boolean;
   bypassed: boolean;
   namLoaded: boolean;
+  /** Live engine state while playing; undefined when stopped. */
+  engineStatus?: EffectStatus;
   onSelect: () => void;
   onValue: (id: string, value: number) => void;
   onBypass: () => void;
@@ -362,6 +369,9 @@ function DemoPedal({ item, index, values, selected, bypassed, namLoaded, tutoria
         <span className="jack jack-left" /><span className="jack jack-right" />
         <div className="pedal-maker">{spec.maker}</div>
         {spec.nam && <span className={'nam-status ' + (namLoaded ? 'loaded' : 'missing')}>{namLoaded ? 'LOCAL NAM' : 'NAM MISSING'}</span>}
+        {!spec.nam && engineStatus === 'passthrough' && <span className="nam-status missing" title="该效果的音频引擎没有加载，当前为直通">直通 · 引擎未加载</span>}
+        {!spec.nam && engineStatus === 'fallback' && <span className="nam-status missing" title="电路求解出错，已自动切回干声">FALLBACK</span>}
+        {!spec.nam && engineStatus !== 'passthrough' && engineStatus !== 'fallback' && CIRCUIT_EFFECT_IDS.has(spec.id) && <span className="nam-status loaded" title="按原理图逐元件实时求解">CIRCUIT</span>}
         <div className="knob-row">
           {spec.controls.map((control) => (
             <KnobControl
@@ -440,6 +450,8 @@ export default function Home() {
   const playbackLoadingRef = useRef(false);
   const boardRevision = useRef(0);
   const playbackRefreshSerial = useRef(0);
+  const lastPlaybackRefreshAt = useRef(0);
+  const [effectStatus, setEffectStatus] = useState<ReadonlyMap<string, EffectStatus>>(() => new Map());
   const agentTurnSerial = useRef(0);
   const agentUndo = useRef(new Map<string, AgentUndoEntry>());
   const manualPedalSerial = useRef(0);
@@ -560,10 +572,14 @@ export default function Home() {
       previousMonitorMode.current = mode;
       return;
     }
-    const delay = previousMonitorMode.current === mode ? 140 : 0;
+    // Knob moves are applied in place by the engine, so they are throttled
+    // (heard while dragging) rather than debounced until the drag stops.
+    const sinceLast = performance.now() - lastPlaybackRefreshAt.current;
+    const delay = previousMonitorMode.current === mode ? Math.max(0, PLAYBACK_REFRESH_INTERVAL_MS - sinceLast) : 0;
     previousMonitorMode.current = mode;
     const timer = window.setTimeout(() => {
       if (playback.current !== session || !playback.requested) return;
+      lastPlaybackRefreshAt.current = performance.now();
       void refreshLiveSession(session, audioConfig).catch(async () => {
         if (refreshSerial !== playbackRefreshSerial.current || playback.current !== session || !playback.requested) return;
         try {
@@ -768,7 +784,10 @@ export default function Home() {
         setAgentTurns((current) => current.map((turn) => turn.id === turnId ? { ...turn, status: 'cancelled' } : turn));
       } else {
         const message = error instanceof Error ? error.message : '音色 Agent 暂时不可用。';
-        setAgentError(`${message} 你可以直接重试，当前音色没有被修改。`);
+        // Login, quota and rate-limit rejections carry their own next step;
+        // "just retry" only helps for transient failures.
+        const accountRejection = error instanceof ToneAgentHttpError && [401, 402, 429].includes(error.status);
+        setAgentError(accountRejection ? message : `${message} 你可以直接重试，当前音色没有被修改。`);
         setAgentTurns((current) => current.map((turn) => turn.id === turnId ? { ...turn, status: 'failed' } : turn));
       }
     } finally {
@@ -1036,6 +1055,8 @@ export default function Home() {
     try {
       const session = await playback.start(audioConfig);
       if (!session) return;
+      session.onStatus = (status) => setEffectStatus(new Map(status));
+      setEffectStatus(new Map(session.status));
       const latestConfig = latestAudioConfig.current;
       if (latestConfig !== audioConfig) await refreshLiveSession(session, latestConfig);
       if (playback.current !== session || !playback.requested) return;
@@ -1113,6 +1134,7 @@ export default function Home() {
           selected={selected === item.instanceId}
           bypassed={bypassed.has(item.instanceId)}
           namLoaded={!getEffectSpec(item.specId).nam || Boolean(namModels[getEffectSpec(item.specId).nam!.slotId])}
+          engineStatus={playing ? effectStatus.get(item.instanceId) : undefined}
           tutorialEnabled={tutorialEnabled}
           onSelect={() => selectPedal(item.instanceId)}
           onValue={(id, value) => updateValue(item.instanceId, id, value)}

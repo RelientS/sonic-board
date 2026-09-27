@@ -11,9 +11,14 @@ class SonicNoiseGateProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
     this.gate = new EnvelopeNoiseGate(sampleRate);
+    this.disposed = false;
+    this.port.onmessage = (event) => {
+      if (event.data?.type === 'dispose') this.disposed = true;
+    };
   }
 
   process(inputs, outputs, parameters) {
+    if (this.disposed) return false;
     const input = inputs[0];
     const output = outputs[0];
     if (!input?.length || !output?.length) return true;
