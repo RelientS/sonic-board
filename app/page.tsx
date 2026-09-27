@@ -14,6 +14,7 @@ import {
   type LiveAudioSession,
 } from './audio/audio-engine';
 import { LiveSessionController } from './audio/live-session-controller';
+import { BoardHistory } from './board-history';
 import type { AudioChainItem, RoutingConfig, SignalLane } from './audio/audio-core';
 import {
   createBrowserNamModelRepository,
@@ -585,6 +586,8 @@ export default function Home() {
   const agentAbort = useRef<AbortController | null>(null);
   const playbackLoadingRef = useRef(false);
   const boardRevision = useRef(0);
+  const history = useRef(new BoardHistory<BoardUiState>());
+  const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false });
   const playbackRefreshSerial = useRef(0);
   const lastPlaybackRefreshAt = useRef(0);
   const [effectStatus, setEffectStatus] = useState<ReadonlyMap<string, EffectStatus>>(() => new Map());
@@ -734,8 +737,30 @@ export default function Home() {
     void playback.dispose();
   }, [playback]);
 
-  function markBoardChanged() {
+  /** Call before every board edit; `record` adds an undo step (not for selection or monitoring). */
+  function markBoardChanged(record = true) {
     boardRevision.current += 1;
+    if (!record) return;
+    history.current.record(captureCurrentBoardUiState());
+    syncHistoryState();
+  }
+
+  function syncHistoryState() {
+    setHistoryState({ canUndo: history.current.canUndo, canRedo: history.current.canRedo });
+  }
+
+  function undoBoard() {
+    const previous = history.current.undo(captureCurrentBoardUiState());
+    if (!previous) return;
+    restoreBoardUiState(previous);
+    syncHistoryState();
+  }
+
+  function redoBoard() {
+    const next = history.current.redo(captureCurrentBoardUiState());
+    if (!next) return;
+    restoreBoardUiState(next);
+    syncHistoryState();
   }
 
   function captureCurrentBoardUiState(): BoardUiState {
@@ -756,7 +781,7 @@ export default function Home() {
 
   function selectPedal(instanceId: string) {
     if (selected === instanceId) return;
-    markBoardChanged();
+    markBoardChanged(false);
     setSelected(instanceId);
   }
 
@@ -826,7 +851,7 @@ export default function Home() {
 
   function restoreBoardUiState(state: BoardUiState) {
     const restored = cloneBoardUiState(state);
-    markBoardChanged();
+    markBoardChanged(false);
     setChain(restored.chain);
     setSnapshots(restored.snapshots);
     setSnapshot(restored.snapshot);
@@ -1143,7 +1168,7 @@ export default function Home() {
 
   function selectSnapshot(next: 'A' | 'B') {
     if (snapshot === next) return;
-    markBoardChanged();
+    markBoardChanged(false);
     setSnapshot(next);
     setRender('idle');
   }
@@ -1157,14 +1182,14 @@ export default function Home() {
 
   function setMonitorMode(next: 'dry' | 'wet') {
     if (mode === next) return;
-    markBoardChanged();
+    markBoardChanged(false);
     setMode(next);
     setRender('idle');
   }
 
   function updateOutput(next: number) {
     if (output === next) return;
-    markBoardChanged();
+    markBoardChanged(false);
     setOutput(next);
     setActivePresetName('已修改');
     setRender('idle');
@@ -1176,6 +1201,23 @@ export default function Home() {
     setActivePresetName('已修改');
     setRender('idle');
   }
+
+  // Undo shortcuts; text fields keep their own undo. Re-subscribed each render
+  // so the handlers see the current board.
+  useEffect(() => {
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('textarea, [contenteditable="true"], input:not([type="range"]):not([type="checkbox"])')) return;
+      const key = event.key.toLowerCase();
+      if (key === 'z' && !event.shiftKey) undoBoard();
+      else if (key === 'z' || key === 'y') redoBoard();
+      else return;
+      event.preventDefault();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
 
   async function toggleLiveInput() {
     if (liveInputBusy) return;
@@ -1252,7 +1294,7 @@ export default function Home() {
       const captured = captureUserPreset({ name: presetName, chain, values, bypassed, source, output, routing, amp });
       const next = [captured, ...userPresets].slice(0, 24);
       window.localStorage.setItem('sonic-board-user-presets', JSON.stringify(next));
-      markBoardChanged();
+      markBoardChanged(false);
       setUserPresets(next);
       setActivePresetName(captured.name);
       setSaveState('saved');
@@ -1484,6 +1526,7 @@ export default function Home() {
               <span className="current-tone-indicator" aria-live="polite"><small>当前音色</small><strong>{activePresetName}</strong></span>
             </div>
             <div className="edit-actions">
+              <div className="history-actions"><button type="button" aria-label="撤销" title="撤销（⌘/Ctrl+Z）" disabled={!historyState.canUndo} onClick={undoBoard}>↶</button><button type="button" aria-label="重做" title="重做（⇧⌘/Ctrl+Shift+Z）" disabled={!historyState.canRedo} onClick={redoBoard}>↷</button></div>
               <div className="move-actions"><button type="button" disabled={selectedLaneIndex <= 0} onClick={() => moveSelected(-1)}>前移</button><button type="button" disabled={selectedLaneIndex < 0 || selectedLaneIndex >= selectedLaneItems.length - 1} onClick={() => moveSelected(1)}>后移</button><button type="button" disabled={selectedIndex < 0} onClick={removeSelected}>移除</button></div>
               {routing.mode === 'parallel' && <div className="lane-actions" aria-label="分配已选效果器到通道"><span>放到</span>{(['A', 'B'] as const).map((lane) => <button key={lane} type="button" className={selectedLane === lane ? 'active' : ''} aria-pressed={selectedLane === lane} disabled={selectedIndex < 0} onClick={() => assignSelectedLane(lane)}>{lane} 路</button>)}</div>}
             </div>

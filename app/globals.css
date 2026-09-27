@@ -43,7 +43,7 @@
   --paper: #f2f0e9;
   --panel: #fbfaf6;
   --accent-ui: #b83b28;
-  --mobile-transport-clearance: 224px;
+  --mobile-transport-clearance: 264px;
   --fast: 140ms;
   --font-geist-sans: 'Geist';
   --font-geist-mono: 'Geist Mono';
@@ -227,8 +227,12 @@ button:active:not(:disabled) { filter: brightness(.93); }
 .selected-meta small { margin-top: 4px; color: var(--muted); font-size: 9px; }
 .current-tone-indicator { display: none; }
 .move-actions { gap: 5px; }
+.history-actions { display: flex; gap: 5px; }
+.history-actions button { min-width: 38px; min-height: 38px; padding: 0; border: 1px solid var(--line); border-radius: 8px; background: #fff; cursor: pointer; font-size: 15px; }
+.history-actions button:disabled { cursor: default; opacity: .4; }
 .move-actions button { min-height: 38px; padding: 0 11px; font-size: 10px; font-weight: 650; }
-.edit-actions { display: grid; gap: 6px; }
+.edit-actions { display: grid; grid-template-columns: auto auto; justify-content: start; gap: 6px; }
+.edit-actions > :not(.history-actions):not(.move-actions) { grid-column: 1 / -1; }
 .lane-actions { display: grid; grid-template-columns: auto 1fr 1fr; align-items: center; gap: 4px; }
 .lane-actions span { color: var(--muted); font-size: 8px; font-weight: 700; }
 .lane-actions button { min-height: 28px; border: 1px solid var(--line); border-radius: 6px; background: #fff; cursor: pointer; font-size: 9px; font-weight: 750; }
@@ -566,9 +570,10 @@ button:active:not(:disabled) { filter: brightness(.93); }
   .play { grid-column: 2; grid-row: 2; }
   .render { grid-column: 3; grid-row: 2; }
   .segments { grid-row: 3; }
-  .output { display: flex; grid-column: 3; grid-row: 3; min-width: 0; }
+  .segments.ab { grid-column: 2 / -1; }
+  .output { display: flex; grid-column: 1 / -1; grid-row: 4; min-width: 0; }
   .output span { display: none; }
-  .output input { width: 100%; min-height: 44px; }
+  .output input { width: 100%; min-height: 32px; }
   .filters { flex-wrap: nowrap; overflow-x: auto; overscroll-behavior-x: contain; }
   .filters button { min-width: 64px; flex: 0 0 64px; }
   .filters button, .style-filters button, .library-item button, .move-actions button, .zoom button, .segments button, .model-list button, .cab-list button { min-height: 44px; }

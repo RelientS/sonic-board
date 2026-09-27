@@ -55,7 +55,7 @@ test('agent modal traps focus, restores its opener, and makes background inert',
 });
 
 test('mobile board hands vertical gestures to the page and clears transport overlay', () => {
-  assert.match(styles, /--mobile-transport-clearance:\s*224px/);
+  assert.match(styles, /--mobile-transport-clearance:\s*264px/);
   assert.match(styles, /touch-action:\s*pan-x/);
   assert.match(styles, /overscroll-behavior-y:\s*auto/);
   assert.match(styles, /overflow-y:\s*clip/);
