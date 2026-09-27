@@ -38,3 +38,6 @@ next-env.d.ts
 /work/
 /dsp/**/target/
 /public/audio/nam/
+
+# account store (SONIC_DATA_DIR default)
+/.data/

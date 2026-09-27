@@ -1,0 +1,40 @@
+/* Account strip inside the Tone Agent dock. Uses the dock's palette from globals.css. */
+.tone-agent-dock.has-account { grid-template-rows: auto auto auto minmax(0, 1fr) auto; }
+
+.account-panel { min-width: 0; max-height: 46dvh; overflow-y: auto; padding: 9px 14px; border-bottom: 1px solid #dedbd2; background: #fbfaf6; font-size: 10px; }
+.account-panel.is-loading { color: #70736c; }
+.account-panel button { cursor: pointer; }
+
+.account-auth-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.account-auth-head > span { display: flex; align-items: center; gap: 5px; color: #4e514c; font-weight: 720; }
+.account-tabs { display: grid; grid-template-columns: repeat(2, 1fr); gap: 3px; padding: 3px; border: 1px solid var(--line); border-radius: 8px; background: #e9e7df; }
+.account-tabs button { min-width: 44px; min-height: 26px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: #5e615c; font-size: 10px; font-weight: 700; }
+.account-tabs button.active { background: #fff; color: var(--ink); box-shadow: 0 1px 4px rgb(31 31 28 / 10%); }
+.account-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 6px; }
+.account-fields input, .account-share-link input { min-width: 0; height: 36px; padding: 0 9px; border: 1px solid #cbc8bf; border-radius: 8px; background: #fff; color: var(--ink); font-size: 11px; }
+.account-fields button { min-height: 36px; padding: 0 12px; border: 1px solid #922d1f; border-radius: 8px; background: var(--accent-ui); color: #fff; font-size: 10px; font-weight: 750; }
+.account-fields button:disabled { opacity: .6; cursor: default; }
+.account-hint { display: block; margin-top: 6px; color: #62655f; font-size: 9px; line-height: 1.45; }
+.account-error { margin-top: 7px; padding: 7px 9px; border: 1px solid #e2b8ad; border-radius: 7px; background: #fff1ed; color: #8c3528; font-size: 9px; line-height: 1.45; }
+
+.account-bar-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; align-items: center; gap: 6px; }
+.account-user { display: flex; min-width: 0; align-items: center; gap: 5px; color: #4e514c; }
+.account-user b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 720; }
+.account-credits { padding: 4px 7px; border: 1px solid #dad7ce; border-radius: 999px; background: #fff; color: #5d605a; font: 650 9px/1 var(--font-geist-mono), monospace; }
+.account-credits b { color: var(--ink); }
+.account-bar.is-empty .account-credits { border-color: #e2b8ad; background: #fff1ed; color: #8c3528; }
+.account-bar-row button { display: flex; min-height: 30px; align-items: center; gap: 4px; padding: 0 8px; border: 1px solid #dad7ce; border-radius: 7px; background: #f7f5ef; color: #4e514c; font-size: 9px; font-weight: 700; }
+.account-bar-row button:hover { border-color: #b8b5ac; background: #efede6; }
+.account-share { display: grid; gap: 6px; margin-top: 8px; padding: 9px; border: 1px solid #ddd3aa; border-radius: 9px; background: #fff9df; }
+.account-empty { margin: 0; color: #5c4d15; font-weight: 720; }
+.account-share-link { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
+.account-share-link input { height: 32px; font: 600 10px/1 var(--font-geist-mono), monospace; }
+.account-share-link button { display: flex; min-height: 32px; align-items: center; gap: 4px; padding: 0 10px; border: 1px solid #922d1f; border-radius: 7px; background: var(--accent-ui); color: #fff; font-size: 9px; font-weight: 750; }
+.account-share small { color: #5c4d15; font-size: 9px; line-height: 1.45; }
+
+@media (max-width: 720px) {
+  .account-fields { grid-template-columns: minmax(0, 1fr); }
+  .account-fields input { font-size: 16px; height: 44px; }
+  .account-fields button, .account-tabs button, .account-bar-row button, .account-share-link button { min-height: 44px; }
+  .account-share-link input { height: 44px; font-size: 16px; }
+}

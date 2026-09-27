@@ -53,11 +53,40 @@ npm run test:circuit
 
 常规 Web 构建直接使用仓库中已提交的 WASM，不要求托管环境安装 Rust。
 
+## 账号与音色 Agent 额度
+
+音色 Agent 需要登录后使用，额度按账号计算：
+
+- 注册：用户名 3–24 位字母、数字、`_` 或 `-`，密码至少 8 位；密码以 scrypt 加盐存储，会话 Cookie `sb_session` 有效期 30 天（服务端只保存令牌的 SHA-256）。
+- 额度：新账号 20 次，每次 Agent 请求在受理时扣 1 次；上游在产生任何输出前失败会自动退回。
+- 分享得次数：每个账号都有邀请链接 `https://h5.tryx402.xyz/?ref=<邀请码>`。每成功邀请 1 人注册 +15 次，新用户 +5 次，最多 10 人；同一网络地址注册不计邀请奖励，每个 IP 24 小时内最多注册 3 个账号。
+- 限流：每个账号每分钟最多 5 次 Agent 请求，全站同时最多 4 个进行中的请求；登录 / 注册每个 IP 每分钟最多 10 次。
+- 额度流水是只追加的账本（`signup` / `referral` / `agent_use` / `refund` / `admin_grant`），后续接入付费充值只需新增条目类型。
+
+环境变量：
+
+| 变量 | 说明 |
+| --- | --- |
+| `SONIC_DATA_DIR` | 账号 JSON 存储目录，默认 `./.data`（已加入 `.gitignore`）。生产环境应放在发布目录之外。 |
+| `AGENT_UPSTREAM_URL` | 设置后 `/api/tone-agent` 作为网关，校验登录与额度后把 SSE 流原样转发到该地址；未设置时使用本机 Agent（需要 `TOKEN_SHARE_KEY`）。 |
+| `AGENT_UPSTREAM_TIMEOUT_MS` | 上游请求超时，默认 240000。 |
+| `AGENT_GATEWAY_SECRET` | 网关与上游共享的密钥：网关转发时附带 `X-Sonic-Gateway-Secret`，上游收到匹配的密钥时跳过账号校验直接运行 Agent。 |
+| `SONIC_SITE_ORIGIN` | 额外允许的站点来源（同源校验），默认已包含 `https://h5.tryx402.xyz`。 |
+
+管理脚本直接读写同一个 JSON 存储（与服务共用文件锁，可在服务运行时使用）：
+
+```bash
+SONIC_DATA_DIR=/srv/sonic-board/data node scripts/account-admin.mjs list
+SONIC_DATA_DIR=/srv/sonic-board/data node scripts/account-admin.mjs show <用户名>
+SONIC_DATA_DIR=/srv/sonic-board/data node scripts/account-admin.mjs grant <用户名> <次数> [备注]
+```
+
 ## 目录
 
 - `app/audio`：Web Audio 图、采样渲染、路由与回归测试
 - `app/effects`：效果器目录、参数帮助与保真状态
 - `app/agent`：Pi Agent、站内工具与可逆操作
+- `app/account`：账号、会话、额度账本、邀请奖励与 Agent 网关逻辑
 - `dsp/circuit`：SPICE 网表电路求解引擎、单块网表、ngspice 验证与真机对比工具
 - `dsp/pedalkernel-wasm`：PedalKernel 浏览器封装与固定电路定义
 - `public/audio`：真实 DI 素材、AudioWorklet 和编译后的 WASM（`circuit.wasm` / `pedalkernel.wasm`）

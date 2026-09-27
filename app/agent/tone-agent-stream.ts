@@ -105,6 +105,24 @@ export function parseToneAgentSseChunk(previous: string, chunk: string, flush = 
   return { events, rest: buffer };
 }
 
+export class ToneAgentHttpError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'ToneAgentHttpError';
+    this.status = status;
+  }
+}
+
+/** Friendly Chinese text for account/quota rejections from the gateway. */
+export function toneAgentHttpErrorMessage(status: number, serverMessage?: string) {
+  if (status === 401) return '登录已失效，请在 Agent 面板中重新登录。';
+  if (status === 402) return serverMessage || '免费次数已用完，分享邀请链接给朋友即可获得更多次数。';
+  if (status === 429) return serverMessage || '请求太频繁，请稍等一会儿再试。';
+  return serverMessage || `Agent 请求失败（${status}）`;
+}
+
 function makeAbortError() {
   return new DOMException('Aborted', 'AbortError');
 }
@@ -129,7 +147,7 @@ export async function requestToneAgentStream(
   }
   if (!response.ok) {
     const payload = await response.json().catch(() => ({})) as { error?: string };
-    throw new Error(payload.error || `Agent 请求失败（${response.status}）`);
+    throw new ToneAgentHttpError(response.status, toneAgentHttpErrorMessage(response.status, payload.error));
   }
   if (!response.body) throw new Error('Agent 流不可用。');
 
