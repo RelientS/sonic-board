@@ -73,6 +73,14 @@ const namWasmModules = new WeakMap<BaseAudioContext, WebAssembly.Module>();
 let namWasmModulePromise: Promise<WebAssembly.Module> | null = null;
 let pedalKernelModulePromise: Promise<WebAssembly.Module> | null = null;
 const PEDALKERNEL_RUNTIME_VERSION = 4;
+// /audio/* is served with a one-year immutable cache, so every change to a
+// worklet file must bump its query version (independent of the WASM ABI).
+const WORKLET_VERSIONS = {
+  noiseGate: 2,
+  pedalKernel: 5,
+  nam: 4,
+  circuit: 3,
+} as const;
 const circuitReady = new WeakSet<BaseAudioContext>();
 const circuitLoading = new WeakMap<BaseAudioContext, Promise<void>>();
 type CircuitRuntime = { wasmModule: WebAssembly.Module; modelIndex: Map<string, number> };
@@ -166,7 +174,7 @@ async function prepareNoiseGateProcessor(context: BaseAudioContext) {
   if (!worklet || typeof AudioWorkletNode === 'undefined') return;
   let pending = noiseGateLoading.get(context);
   if (!pending) {
-    pending = worklet.addModule('/audio/noise-gate-processor.js').then(() => {
+    pending = worklet.addModule(`/audio/noise-gate-processor.js?v=${WORKLET_VERSIONS.noiseGate}`).then(() => {
       noiseGateReady.add(context);
     }).catch(() => {
       // A calibrated soft gate below keeps preview and export usable on older browsers.
@@ -201,7 +209,7 @@ async function preparePedalKernelProcessor(context: BaseAudioContext) {
   if (!pending) {
     pending = Promise.all([
       loadPedalKernelModule(),
-      worklet.addModule(`/audio/pedalkernel-processor.js?v=${PEDALKERNEL_RUNTIME_VERSION}`),
+      worklet.addModule(`/audio/pedalkernel-processor.js?v=${WORKLET_VERSIONS.pedalKernel}`),
     ]).then(([module]) => {
       pedalKernelModules.set(context, module);
       pedalKernelReady.add(context);
@@ -236,7 +244,7 @@ export async function prepareNamProcessor(context: BaseAudioContext) {
     }
     pending = Promise.all([
       namWasmModulePromise,
-      worklet.addModule('/audio/nam-processor.js?v=3'),
+      worklet.addModule(`/audio/nam-processor.js?v=${WORKLET_VERSIONS.nam}`),
     ]).then(([wasmModule]) => {
       namWasmModules.set(context, wasmModule);
       namProcessorReady.add(context);
@@ -619,7 +627,7 @@ async function prepareCircuitProcessor(context: BaseAudioContext) {
     circuitRuntimePromise ??= loadCircuitRuntime();
     pending = Promise.all([
       circuitRuntimePromise,
-      worklet.addModule(`/audio/circuit-processor.js?v=${CIRCUIT_RUNTIME_VERSION}`),
+      worklet.addModule(`/audio/circuit-processor.js?v=${WORKLET_VERSIONS.circuit}`),
     ]).then(([runtime]) => {
       circuitRuntimes.set(context, runtime);
       circuitReady.add(context);

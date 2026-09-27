@@ -9,6 +9,9 @@ User=ubuntu
 Group=ubuntu
 WorkingDirectory=/srv/sonic-board/current
 Environment=NODE_ENV=production
+# TOKEN_SHARE_KEY (agent model access) and SONIC_DATA_DIR (accounts).
+EnvironmentFile=/etc/sonic-board.env
+ReadWritePaths=/srv/sonic-board/data
 ExecStart=/usr/bin/npm start -- --port 3111 --hostname 127.0.0.1
 Restart=always
 RestartSec=3
