@@ -55,7 +55,7 @@ const rms = (xs: number[]) => Math.sqrt(xs.reduce((sum, x) => sum + x * x, 0) / 
 test('ships the circuit runtime with its model table', async () => {
   assert.ok(existsSync(wasmUrl), 'circuit.wasm is missing; run npm run build:circuit');
   const w = await load();
-  assert.equal(w.runtime_version(), 2);
+  assert.equal(w.runtime_version(), 3);
   assert.ok(w.model_count() >= 1);
   const ids = Array.from({ length: w.model_count() }, (_, model) => info(w, model).id);
   assert.ok(ids.includes('rams-head-muff'));

@@ -166,12 +166,12 @@ const EFFECT_SPECS_BASE: EffectSpec[] = [
   {
     id: 'fuzz-face', name: 'Dallas-Arbiter Fuzz Face', maker: 'DALLAS-ARBITER', category: 'Drive', family: 'Fuzz Face 锗管法兹',
     description: '两级晶体管反馈法兹，能随输入动态从粗粝清理到饱和。', finish: '#bb2f30', ink: '#f8efe2', accent: '#d6b24d',
-    controls: [c('fuzz', '法兹', 70), level('volume', '音量', 60)],
+    controls: [knob('fuzz', '法兹', 70), knob('volume', '音量', 60)],
   },
   {
     id: 'ocd-drive', name: 'Fulltone OCD', maker: 'FULLTONE', category: 'Drive', family: 'OCD MOSFET 过载',
     description: 'MOSFET 硬削波配宽频动态，适合从轻推到颗粒失真。', finish: '#e8e5db', ink: '#202124', accent: '#d13b32',
-    controls: [c('drive', '驱动', 50), tone(50), level('volume', '音量', 62)],
+    controls: [knob('drive', '驱动', 50), knob('tone', '音色', 50), knob('volume', '音量', 62), c('hp', 'HP/LP', 100)],
   },
   {
     id: 'klon-centaur', name: 'Klon Centaur', maker: 'KLON', category: 'Drive', family: 'Centaur 电路级仿真',
@@ -181,12 +181,12 @@ const EFFECT_SPECS_BASE: EffectSpec[] = [
   {
     id: 'sd1-drive', name: 'Boss SD-1 Super OverDrive', maker: 'BOSS', category: 'Drive', family: 'SD-1 非对称软削波',
     description: '非对称二极管软削波和中频聚焦，适合推动后级失真。', finish: '#e7c928', ink: '#27220b', accent: '#d24231',
-    controls: [c('drive', '驱动', 50), tone(50), level('level', '电平', 62)],
+    controls: [knob('drive', '驱动', 50), knob('tone', '音色', 50), knob('level', '电平', 62)],
   },
   {
     id: 'tube-screamer', name: 'Ibanez TS808 Tube Screamer', maker: 'IBANEZ', category: 'Drive', family: 'TS808 对称软削波',
     description: '对称反馈削波和经典中频隆起，让失真链更集中。', finish: '#4d9664', ink: '#f2f2dc', accent: '#d24b34',
-    controls: [c('drive', '驱动', 50), tone(50), level('level', '电平', 62)],
+    controls: [knob('drive', '驱动', 50), knob('tone', '音色', 50), knob('level', '电平', 62)],
   },
   {
     id: 'chainsaw-dist', name: 'Boss HM-2 Heavy Metal', maker: 'BOSS', category: 'Drive', family: 'HM-2 风格双频段高增益',

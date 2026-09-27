@@ -49,9 +49,14 @@ export const CIRCUIT_MODELS: Record<string, { model: string; controls: string[];
   'ds1-dist': { model: 'boss-ds1', controls: ['level', 'tone', 'dist'] },
   'blue-drive': { model: 'boss-bd2', controls: ['level', 'tone', 'gain'] },
   'klon-centaur': { model: 'klon-centaur', controls: ['gain', 'treble', 'output'] },
+  'fuzz-face': { model: 'fuzz-face', controls: ['volume', 'fuzz'] },
+  'tube-screamer': { model: 'ibanez-ts808', controls: ['drive', 'tone', 'level'] },
+  'sd1-drive': { model: 'boss-sd1', controls: ['drive', 'tone', 'level'] },
+  'ocd-drive': { model: 'fulltone-ocd', controls: ['volume', 'tone', 'drive'], switches: ['hp'] },
 };
 export const CIRCUIT_EFFECT_IDS: ReadonlySet<string> = new Set(Object.keys(CIRCUIT_MODELS));
-const CIRCUIT_RUNTIME_VERSION = 2;
+// Also the circuit.wasm cache key: bump whenever the WASM or its models change.
+const CIRCUIT_RUNTIME_VERSION = 3;
 export { EFFECT_FIDELITY_PROFILES, type EffectFidelityProfile };
 
 const MAX_CURVE_CACHE_ENTRIES = 32;
@@ -993,10 +998,14 @@ function buildEffect(
     shaper.curve = cachedDriveCurve(drive * legacyDrive.curveScale);
     shaper.oversample = '4x';
     highPass.type = 'highpass';
-    highPass.frequency.value = legacyDrive.highPassHz;
+    // The OCD's HP mode passes more low end than LP mode.
+    highPass.frequency.value = specId === 'ocd-drive' && parameter(values, 'hp', 100) >= 50
+      ? legacyDrive.highPassHz * 0.5
+      : legacyDrive.highPassHz;
     if (legacyDrive.toneControl === 'tone') {
       toneFilter.type = 'lowpass';
-      toneFilter.frequency.value = physical(specId, values, 'tone', legacyDrive.lowPassHz);
+      // Circuit pedals store knob positions: map them to the legacy ranges.
+      toneFilter.frequency.value = legacyExponential(parameter(values, 'tone', 50), 800, 12_000);
       toneFilter.Q.value = 0.68;
     } else if (legacyDrive.toneControl === 'treble') {
       toneFilter.type = 'highshelf';
@@ -1011,7 +1020,7 @@ function buildEffect(
     mids.frequency.value = legacyDrive.midHz;
     mids.Q.value = 0.82;
     mids.gain.value = legacyDrive.midGainDb;
-    output.gain.value = dbToGain(physical(specId, values, legacyDrive.outputControl, -1)) * legacyDrive.outputTrim;
+    output.gain.value = dbToGain(legacyLinear(parameter(values, legacyDrive.outputControl, 62), -18, 12)) * legacyDrive.outputTrim;
     cursor.connect(preGain).connect(shaper).connect(highPass).connect(toneFilter).connect(mids).connect(output);
     cursor = output;
     return cursor;

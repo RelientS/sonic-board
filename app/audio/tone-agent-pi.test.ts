@@ -29,7 +29,8 @@ test('pi prompt treats history and board summaries as untrusted context', () => 
   assert.match(prompt, /经典名称只用于标识参考对象/);
   assert.match(prompt, /SPICE 网表逐元件实时求解/);
   assert.match(prompt, /spiceNrmsePercent/);
-  assert.match(prompt, /PedalKernel 效果使用 WDF.*实时修正/s);
+  assert.match(prompt, /Fuzz Face、TS808、SD-1、OCD/);
+  assert.match(prompt, /PedalKernel 效果使用 WDF/);
   assert.match(prompt, /DM-2.*Deluxe Memory Man.*BBD.*Web Audio/s);
   assert.doesNotMatch(prompt, /旧引擎/);
   assert.match(prompt, /没有真机盲测分数/);

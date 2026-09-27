@@ -1,0 +1,107 @@
+* Boss SD-1 Super OverDrive
+*@name Boss SD-1 Super OverDrive
+*@input Vin
+*@output out 1
+*@oversample 4
+*@opamp UPC4558 gbw=3e6 slew=1e6 aol=1e5 vlo=1.0 vhi=8.0 rout=75
+*@pot drive Rdrv - 1meg lin
+*@pot tone RtoneA RtoneB 20k lin
+*@pot level RlvlA RlvlB 10k lin
+*@control Drive drive default=0.5
+*@control Tone tone default=0.5
+*@control Level level default=0.5
+*
+* Sources:
+*  - Boss factory schematic (reproduced at hobby-hour.com/electronics/s/
+*    sd1-super-overdrive.php, fetched via web.archive.org; same drawing as
+*    schematicheaven.net/effects/boss_sd1_super_overdrive.pdf). All values
+*    and Boss designators below are read from it.
+*  - hobby-hour parts list: IC uPC4558C, Q5/Q6 2SC732TM-GR, Q1/Q2
+*    2SK30ATM-Y, D3-D8 1S2473; spec input impedance 470k.
+*  - Electric Druid "Designing a classic OD-1/TS-808/SD-1 overdrive" for the
+*    SD-1 vs TS topology comparison (no 51p across the clipper, 1+2 diodes).
+*
+* Effect-on path. Q1 (2SK30ATM JFET switch, on) is its ~200 ohm on
+* resistance; the bypass JFET Q2 with C9/R13 (1M load on Q5's emitter),
+* the Q3/Q4 flip-flop, LED and D1/D2/D3 protection are omitted.
+* Supply: R18/R19 33k divider + C11 47u; C17 across the ideal 9 V omitted.
+*
+* Devices:
+*  - uPC4558C: 4558-class macro (Aol 100 dB, GBW 3 MHz, SR 1 V/us, swing
+*    ~1..8 V on 9 V), same as the TS808 file.
+*  - 2SC732TM-GR: no published model; the 2SC1815-GR stand-in (Toshiba,
+*    same hFE grade) used in boss_bd2.cir / ibanez_ts808.cir.
+*  - 1S2473: Toshiba small-signal switching diode, 1N4148-class. UNCERTAIN:
+*    some builders claim a higher Vf; the 1N4148/1N914 model is used. The
+*    2-diode string D5+D6 is one diode with N doubled (exact for identical
+*    series diodes).
+*
+* Controls (rotation 1.0 = fully clockwise):
+*  - Drive VR1 1MB: rheostat (lug1 at R5, wiper tied to lug3 at the op-amp
+*    output) in series with R5 33k: gain 1 + (33k + VR1)/4.7k = 8 .. 221.
+*  - Tone VR3 20kW: lug1 at the C4/(+) node, lug3 at the (-) node, wiper to
+*    C5/R8; CW = brighter. UNCERTAIN: Boss "W" taper (S-shaped, symmetric
+*    about the centre) approximated as linear.
+*  - Level VR2 10kB: lug1 VB, lug3 R10, wiper to the JFET switch.
+
+Vcc vcc 0 9
+R18 vcc vb 33k
+R19 vb 0 33k
+C11 vb 0 47u
+
+* Guitar pickup source impedance (DI samples act as pickup EMF).
+Vin src 0 0
+Rpu src pu 6.5k
+Lpu pu jack 2.3
+
+* Q5 input buffer (emitter follower)
+R1 jack n1 10k
+C1 n1 b5 0.047u
+R2 b5 vb 470k
+Q5 vcc b5 e5 Q2SC732
+R3 e5 0 10k
+
+* IC half 1: asymmetric clipping amplifier
+C2 e5 p1 0.018u
+R4 p1 vb 100k
+XIC1 p1 m1 o1 UPC4558
+R6 m1 n6 4.7k
+C3 n6 vb 0.047u
+R5 m1 n5 33k
+Rdrv n5 o1 500k
+D4 m1 o1 D1S2473
+D56 o1 m1 D1S2473X2
+
+* R7/C4 low-pass, IC half 2 active tone stage
+R7 o1 p2 10k
+C4 p2 vb 0.018u
+RtoneA p2 tw 10k
+RtoneB tw m2 10k
+C5 tw n8 0.027u
+R8 n8 0 470
+R9 m2 o2 10k
+C6 m2 o2 0.01u
+XIC2 p2 m2 o2 UPC4558
+
+* Level, Q1 JFET switch (on), R14, Q6 output buffer
+C7 o2 n7 1u
+R10 n7 ltop 4.7k
+RlvlB ltop lw 5k
+RlvlA lw vb 5k
+RQ1 lw n14 200
+R14 n14 n8b 22k
+C8 n8b b6 0.047u
+R12 b6 vb 1meg
+Q6 vcc b6 e6 Q2SC732
+R15 e6 0 10k
+R16 e6 n16 1k
+C10 n16 out 1u
+R17 out 0 100k
+* Amplifier input load
+Rload out 0 1meg
+
+.model Q2SC732 NPN(IS=2.04f BF=300 BR=3.377 VAF=100)
+* 1S2473 ~ 1N4148 (IS 2.52n N 1.752, RS omitted).
+.model D1S2473 D(IS=2.52n N=1.752)
+.model D1S2473X2 D(IS=2.52n N=3.504)
+.end

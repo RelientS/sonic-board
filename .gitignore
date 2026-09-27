@@ -41,3 +41,4 @@ next-env.d.ts
 
 # account store (SONIC_DATA_DIR default)
 /.data/
+/dsp/circuit/scratch/

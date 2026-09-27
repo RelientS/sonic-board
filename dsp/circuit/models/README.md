@@ -38,6 +38,10 @@ oversampling; the browser (WASM) build runs at roughly 60-70% of that.
 | `boss_ds1.cir` | Boss DS-1 | Boss DS-1A service schematic | 4× | 0.56% | 11× |
 | `boss_bd2.cir` | Boss BD-2 | Boss MT board 70567645 service schematic | 2× | 1.12% | 8.5× |
 | `klon_centaur.cir` | Klon Centaur (Studio Daydream KCM-OD) | ElectroSmash Klon analysis | 2× | 0.05% | 25× |
+| `fuzz_face.cir` | Dallas-Arbiter Fuzz Face (germanium AC128) | ElectroSmash Fuzz Face analysis | 4× | 0.13% | 25× |
+| `ibanez_ts808.cir` | Ibanez TS808 Tube Screamer | ElectroSmash TS analysis, Geofex tstech | 4× | 0.21% | 15× |
+| `boss_sd1.cir` | Boss SD-1 Super OverDrive | Boss service schematic (hobby-hour) | 4× | 0.06% | 14.5× |
+| `fulltone_ocd.cir` | Fulltone OCD ("version 3" trace) | tuemmueh trace via PCB Guitar Mania TOC doc | 4× | 0.08% | 22× |
 
 Each file's header lists its sources, cross-checks and uncertain values
 (transistor substitutes, unpublished part choices, omitted switching).
