@@ -55,7 +55,7 @@ const rms = (xs: number[]) => Math.sqrt(xs.reduce((sum, x) => sum + x * x, 0) / 
 test('ships the circuit runtime with its model table', async () => {
   assert.ok(existsSync(wasmUrl), 'circuit.wasm is missing; run npm run build:circuit');
   const w = await load();
-  assert.equal(w.runtime_version(), 5);
+  assert.equal(w.runtime_version(), 6);
   assert.ok(w.model_count() >= 1);
   const ids = Array.from({ length: w.model_count() }, (_, model) => info(w, model).id);
   assert.ok(ids.includes('rams-head-muff'));
@@ -169,4 +169,41 @@ test('Dyna Comp: the envelope follower compresses loud input and Sensitivity low
   const sensitive = settledDb(0.01, 1);
   const insensitive = settledDb(0.01, 0);
   assert.ok(sensitive - insensitive > 12, `Sensitivity only adds ${(sensitive - insensitive).toFixed(1)} dB of gain to quiet notes`);
+});
+
+test('CE-2: the bucket brigade delays the wet path ~4.7 ms and the LFO sweeps the delay', async () => {
+  const w = await load();
+  const model = Array.from({ length: w.model_count() }, (_, index) => index).find((index) => info(w, index).id === 'boss-ce2');
+  assert.ok(model !== undefined, 'boss-ce2 is bundled');
+  assert.deepEqual(info(w, model).controls.map((control) => control.label), ['Rate', 'Depth']);
+  // Clicks every 70 ms; the wet echo is the largest peak 2-10 ms after each.
+  const echoLagsMs = (rate: number, depth: number) => {
+    const handle = w.create(model, 48_000);
+    w.set_control(handle, 0, rate);
+    w.set_control(handle, 1, depth);
+    const period = 3_360;
+    const out: number[] = [];
+    let n = 0;
+    for (let block = 0; block < (48_000 * 0.8) / 128; block += 1) {
+      const buf = new Float32Array(w.memory.buffer, w.buffer_ptr(handle, 128), 128);
+      for (let i = 0; i < 128; i += 1, n += 1) buf[i] = n >= 9_600 && n % period === 0 ? 0.5 : 0;
+      w.process(handle, 128);
+      out.push(...new Float32Array(w.memory.buffer, w.buffer_ptr(handle, 128), 128));
+    }
+    assert.equal(w.failures(handle), 0);
+    w.destroy(handle);
+    const lags: number[] = [];
+    for (let click = 9_600 + ((period - (9_600 % period)) % period); click + 480 < out.length; click += period) {
+      let best = click + 96;
+      for (let k = click + 96; k < click + 480; k += 1) if (Math.abs(out[k]) > Math.abs(out[best])) best = k;
+      lags.push(((best - click) / 48_000) * 1_000);
+    }
+    return lags;
+  };
+  const still = echoLagsMs(0.5, 0);
+  assert.ok(still.every((lag) => lag > 4.3 && lag < 5.4), `echo lags at depth 0: ${still.map((l) => l.toFixed(2)).join(', ')} ms`);
+  assert.ok(Math.max(...still) - Math.min(...still) < 0.1, 'depth 0 barely moves the delay');
+  const swept = echoLagsMs(1, 1);
+  const spread = Math.max(...swept) - Math.min(...swept);
+  assert.ok(spread > 0.8 && spread < 2, `full depth sweeps the delay by ${spread.toFixed(2)} ms`);
 });

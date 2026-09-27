@@ -81,6 +81,8 @@ const overrides: Record<string, Partial<LessonText>> = {
   'rodent-dist.filter': { summary: '控制失真后的低通滤波，方向与普通音色旋钮相反：向右会削掉更多高频。' },
   'soft-detune.cents': { tip: '日常增厚先从 5–10 音分附近开始，超过约 15 音分会明显像跑调。' },
   'studio-comp.sustain': { tip: '清音、布鲁斯和放克先从中低位置开始；需要更长的分解尾音时再逐步提高。灵敏度调高会同时提高底噪，原机也是如此。' },
+  'analog-chorus.rate': { summary: '控制 CE-2 三角波 LFO 的速度：线性电位器，约 0.3 Hz（最左）到 3.6 Hz（最右）。', tip: '盯鞋铺底从 0–1 之间开始；超过 5 左右会明显变成颤音式的抖动。' },
+  'analog-chorus.depth': { summary: '控制 LFO 送进 BBD 时钟的幅度，也就是约 4.7 ms 的延迟摆动多宽（满深度约 3.9–5.4 ms）。', tip: '慢速时深度要开大才听得出流动；速度快时适当收小，避免跑调感。' },
   'studio-comp.level': { tip: '原机输出是对数电位器，余量不大：压缩后要开到 8–9 左右才与旁通音量相当，灵敏度越高，需要的输出越少。' },
   'blue-drive.gain': { tip: '布鲁斯和独立摇滚可从轻推开始；若后面已有失真，保留起音通常比继续加增益更清楚。' },
   'fuzz-face.fuzz': { tip: '布鲁斯或复古清理先从中低位置开始，再用吉他音量退回清音；满法兹更适合需要持续的段落。' },

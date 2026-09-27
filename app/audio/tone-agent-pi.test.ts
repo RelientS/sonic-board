@@ -29,8 +29,9 @@ test('pi prompt treats history and board summaries as untrusted context', () => 
   assert.match(prompt, /经典名称只用于标识参考对象/);
   assert.match(prompt, /SPICE 网表逐元件实时求解/);
   assert.match(prompt, /spiceNrmsePercent/);
-  assert.match(prompt, /Fuzz Face、TS808、SD-1、OCD、Phase 90、Dyna Comp 由 SPICE/);
-  assert.doesNotMatch(prompt, /其余 Dyna Comp/);
+  assert.match(prompt, /Fuzz Face、TS808、SD-1、OCD、Phase 90、Dyna Comp、CE-2 由 SPICE/);
+  assert.doesNotMatch(prompt, /其余 (Dyna Comp|CE-2)/);
+  assert.match(prompt, /CE-2 的 MN3007 BBD 与 MN3101 时钟是按时钟计数的采样延迟模型/);
   assert.match(prompt, /PedalKernel 效果使用 WDF/);
   assert.match(prompt, /DM-2.*Deluxe Memory Man.*BBD.*Web Audio/s);
   assert.doesNotMatch(prompt, /旧引擎/);

@@ -203,9 +203,9 @@ const EFFECT_SPECS_BASE: EffectSpec[] = [
     controls: [rate(18), c('depth', '深度', 38), c('res', '共振', 18), mix(44)],
   },
   {
-    id: 'analog-chorus', name: 'Boss CE-2 Chorus', maker: 'BOSS', category: 'Mod', family: 'CE-2 风格 BBD 合唱',
-    description: '经典双旋钮 BBD 合唱，用速率和深度控制宽阔的周期漂移。', finish: '#66a7b8', ink: '#10282e', accent: '#e14f3c',
-    controls: [rate(30), c('depth', '深度', 48)],
+    id: 'analog-chorus', name: 'Boss CE-2 Chorus', maker: 'BOSS', category: 'Mod', family: 'CE-2 BBD 电路级仿真',
+    description: '经典双旋钮 BBD 合唱：MN3007 1024 级延迟约 4–5 ms，三角波 LFO 调制时钟，干湿 1:1 混合。', finish: '#66a7b8', ink: '#10282e', accent: '#e14f3c',
+    controls: [knob('rate', '速率', 30), knob('depth', '深度', 50)],
   },
   {
     id: 'phase90', name: 'MXR Phase 90', maker: 'MXR', category: 'Mod', family: 'Phase 90 四级相位',
@@ -414,7 +414,7 @@ const FACTORY_PRESETS_BASE: FactoryPreset[] = [
     amp: makeAmpCabConfig('glass-120', 'open-2x12', { gain: 14, treble: 61, presence: 58 }),
     chain: [
       { specId: 'studio-comp', settings: { sustain: 52 } },
-      { specId: 'analog-chorus', settings: { rate: 24, depth: 38 } },
+      { specId: 'analog-chorus', settings: { rate: 8, depth: 60 } },
       { specId: 'tape-echo', settings: { time: 42, repeats: 28, mix: 24, wow: 18 } },
       { specId: 'cloud-hall', settings: { mix: 42, decay: 58, motion: 26 } },
     ],
@@ -482,7 +482,7 @@ const FACTORY_PRESETS_BASE: FactoryPreset[] = [
     amp: makeAmpCabConfig('glass-120', 'open-2x12', { gain: 17, mid: 55, treble: 59, presence: 57 }, { distance: 22, room: 15 }),
     chain: [
       { specId: 'studio-comp', lane: 'A', settings: { sustain: 40 } },
-      { specId: 'analog-chorus', lane: 'A', settings: { rate: 21, depth: 43 } },
+      { specId: 'analog-chorus', lane: 'A', settings: { rate: 5, depth: 65 } },
       { specId: 'digital-delay', lane: 'A', settings: { time: 36, feedback: 28, mix: 25, width: 76 } },
       { specId: 'reverse-space', lane: 'B', settings: { mix: 54, decay: 52, density: 80, highCut: 55 } },
       { specId: 'wall-fuzz', lane: 'B', settings: { sustain: 72, tone: 46, volume: 57 } },

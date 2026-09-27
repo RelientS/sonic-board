@@ -56,23 +56,6 @@ const circuitProfile = (
 
 const PEDALKERNEL_COMMIT = '0278b397c861b5ebef2e8e38d15ab281b8e669dc';
 
-const fidelityProfile = (
-  upstreamModel: string,
-  engine: EffectFidelityEngine = 'PedalKernel WDF + calibrated corrections',
-): PedalKernelFidelityProfile => ({
-  engine,
-  upstreamCommit: PEDALKERNEL_COMMIT,
-  upstreamModel,
-  targetScore: 8,
-  verifiedScore: null,
-  evidence: ['upstream-circuit', 'runtime-regression'],
-  runtime: 'pedalkernel',
-  status: 'candidate',
-  note: engine === 'PedalKernel realtime correction'
-    ? '浏览器使用实时修正路径而非完整 WDF 求解；持续输出、有限值、输出校准和控制响应门禁已通过，仍需与真实硬件盲测后才能给出还原分。'
-    : '持续输出、有限值、输出校准和控制响应门禁已通过；仍需与真实硬件盲测后才能给出还原分。',
-});
-
 const bbdFallbackProfile = (upstreamModel: string): PedalKernelFidelityProfile => ({
   engine: 'Web Audio BBD approximation',
   upstreamCommit: PEDALKERNEL_COMMIT,
@@ -118,7 +101,15 @@ export const EFFECT_FIDELITY_PROFILES: Record<string, EffectFidelityProfile> = {
     0.13,
     4,
   ),
-  'analog-chorus': fidelityProfile('examples/pedals/modulation/boss_ce2.pedal'),
+  'analog-chorus': {
+    ...circuitProfile(
+      'dsp/circuit/models/boss_ce2.cir',
+      'Boss CE-2 service schematic (hobby-hour); values cross-checked with the ElectroSmash CE-2 analysis part list',
+      0.7,
+      2,
+    ),
+    note: '模拟部分（输入缓冲、预加重、抗混叠/重建滤波、混合器、LFO→时钟调制）按原理图逐元件实时求解并与 ngspice 对齐；MN3007 BBD 与 MN3101 时钟是按时钟计数实现的采样延迟模型（ngspice 无法仿真），时钟频率由电路节点电压按 RC 充电公式计算。尚未与真机录音做 ABX，因此不给还原分。',
+  },
   'ocd-drive': circuitProfile(
     'dsp/circuit/models/fulltone_ocd.cir',
     'PCB Guitar Mania TOC v2.1 docs (tuemmueh trace, OCD version 3); cross-checked with Sabrotone and analogisnotdead',

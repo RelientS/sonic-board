@@ -14,7 +14,9 @@ test('agent prompt exposes the bounded catalog and requires strict JSON', () => 
   assert.match(input, /reverse-space/);
   assert.match(input, /gpt-5\.6-terra/);
   assert.match(input, /只输出 JSON/);
-  assert.match(input, /PedalKernel WDF/);
+  // Every former PedalKernel pedal now runs on the circuit engine.
+  assert.match(input, /SPICE netlist \+ DK circuit solver/);
+  assert.doesNotMatch(input, /PedalKernel WDF/);
   assert.match(input, /phase90/);
   assert.doesNotMatch(input, /legacy-fallback/);
   assert.match(input, /verifiedScore[^}]*null/);

@@ -55,10 +55,11 @@ export const CIRCUIT_MODELS: Record<string, { model: string; controls: string[];
   'ocd-drive': { model: 'fulltone-ocd', controls: ['volume', 'tone', 'drive'], switches: ['hp'] },
   'phase90': { model: 'mxr-phase90', controls: ['speed'], switches: ['script'] },
   'studio-comp': { model: 'mxr-dynacomp', controls: ['level', 'sustain'] },
+  'analog-chorus': { model: 'boss-ce2', controls: ['rate', 'depth'] },
 };
 export const CIRCUIT_EFFECT_IDS: ReadonlySet<string> = new Set(Object.keys(CIRCUIT_MODELS));
 // Also the circuit.wasm cache key: bump whenever the WASM or its models change.
-const CIRCUIT_RUNTIME_VERSION = 5;
+const CIRCUIT_RUNTIME_VERSION = 6;
 export { EFFECT_FIDELITY_PROFILES, type EffectFidelityProfile };
 
 const MAX_CURVE_CACHE_ENTRIES = 32;
@@ -475,6 +476,17 @@ function phase90SpeedHz(knob: number) {
   const rotation = Math.min(1, Math.max(0, knob / 100));
   const resistance = 4_700 + 500_000 * (81 ** (1 - rotation) - 1) / 80;
   return 1 / (15e-6 * resistance * 1.008);
+}
+
+/**
+ * CE-2 LFO rate for a rate-knob position: the TL022 triangle generator runs
+ * at R30 / (4 C19 R29 R32) = 3.56 Hz scaled by the fraction of the
+ * comparator swing at the linear RATE wiper, (R31 + VR1 part) / (R31 + VR1)
+ * (see dsp/circuit/models/boss_ce2.cir): 0.32 Hz to 3.56 Hz.
+ */
+function ce2RateHz(knob: number) {
+  const rotation = Math.min(1, Math.max(0, knob / 100));
+  return 3.56 * (10_000 + 100_000 * rotation) / 110_000;
 }
 
 function legacyLinear(knob: number, min: number, max: number) {
@@ -1126,10 +1138,12 @@ function buildEffect(
       const pan = context.createStereoPanner();
       const lfo = context.createOscillator();
       const modulation = context.createGain();
-      const depth = specId === 'soft-detune' ? physical(specId, values, 'cents', 7) / 30_000 : 0.0006 + parameter(values, 'depth', 48) / 18_000;
-      delay.delayTime.value = specId === 'soft-detune' ? 0.009 + index * 0.0013 : 0.014 + index * 0.002;
+      // CE-2 circuit numbers: 4.7 ms idle delay, full depth sweeps it
+      // about +-0.8 ms (dsp/circuit/models/boss_ce2.cir).
+      const depth = specId === 'soft-detune' ? physical(specId, values, 'cents', 7) / 30_000 : 0.0008 * parameter(values, 'depth', 50) / 100;
+      delay.delayTime.value = specId === 'soft-detune' ? 0.009 + index * 0.0013 : 0.0047 + index * 0.0003;
       pan.pan.value = direction * spread;
-      lfo.frequency.value = specId === 'soft-detune' ? 0.18 + index * 0.047 : physical(specId, values, 'rate', 0.6) * (1 + index * 0.05);
+      lfo.frequency.value = specId === 'soft-detune' ? 0.18 + index * 0.047 : ce2RateHz(parameter(values, 'rate', 30)) * (1 + index * 0.05);
       modulation.gain.value = depth;
       lfo.connect(modulation).connect(delay.delayTime);
       lfo.start(0); scheduled.push(lfo);
