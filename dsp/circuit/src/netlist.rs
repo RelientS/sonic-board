@@ -15,6 +15,7 @@
 //! *@switch LABEL ELEMENT VALUE_OFF VALUE_ON [default=0]
 //! *@lfo    VSRC SHAPE [rate=LABEL] key=value...   see `Lfo`
 //! *@ota    SUBCKT is=1e-14 n=1 beta=125 v0=1 w=0.15   see `OtaModel`
+//! *@bbd    VSRC in=NODE stages=1024 key=value...  see `Bbd`
 //! ```
 //!
 //! Op-amps are `X<name> in+ in- out SUBCKT`; OTAs (CA3080 style) are
@@ -165,9 +166,14 @@ pub enum LfoRate {
     /// Relaxation timing network: tau = C · (series + pot), where the pot is
     /// a variable resistor whose resistance falls to 0 at rotation 1.0.
     Rc { cap: f64, series: f64, pot: f64, taper: Taper },
+    /// Integrator driven through a pot divider (triangle generators such as
+    /// the CE-2's): the frequency is proportional to the fraction of the
+    /// comparator swing at the wiper, `(fixed + pot · taper(rotation)) /
+    /// (fixed + pot)`, reaching `max` Hz fully clockwise.
+    Divider { max: f64, fixed: f64, pot: f64, taper: Taper },
 }
 
-/// `*@lfo VSRC SHAPE [rate=LABEL] lo=V hi=V [hz=MIN:MAX | c=F r=OHM pot=OHM:TAPER] [vlo=V vhi=V] [load=OHM:V]`
+/// `*@lfo VSRC SHAPE [rate=LABEL] lo=V hi=V [hz=MIN:MAX | c=F r=OHM pot=OHM:TAPER | hzmax=F r=OHM pot=OHM:TAPER] [vlo=V vhi=V] [load=OHM:V]`
 ///
 /// Drives voltage source VSRC per sample, so a modulation oscillator that
 /// is not part of the audio path costs no solver work. `lo`/`hi` bound the
@@ -184,6 +190,41 @@ pub struct Lfo {
     pub hi: f64,
     pub rate: LfoRate,
     pub load: Option<(f64, f64)>,
+}
+
+/// How a bucket brigade's clock frequency is set.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BbdClock {
+    /// Constant clock (Hz), for tests and fixed delays.
+    Fixed { hz: f64 },
+    /// MN3101-style clock: a timing capacitor `c` charges through `r` from
+    /// `vcc` and is discharged at the CMOS threshold `vth`; after each
+    /// discharge it restarts from an offset set by node `node` through a
+    /// diode (`vf` drop, never below `vmin`). The oscillator period is
+    /// `r c ln((vcc - v0) / (vcc - vth)) + tdis` and the chip divides it by
+    /// `div` to drive the two-phase clock.
+    Rc { node: String, r: f64, c: f64, vcc: f64, vth: f64, vf: f64, vmin: f64, tdis: f64, div: f64 },
+}
+
+/// `*@bbd VSRC in=NODE stages=N (hz=F | clk=NODE r=OHM c=F vcc=V vth=V [vf=V vmin=V tdis=S div=2]) [cti=E] [gain=G] [clip=V]`
+///
+/// A bucket-brigade delay line (MN3007 style): node `in` is sampled at every
+/// clock period and the samples leave the chain `stages / 2` clock periods
+/// later, so the delay is `stages / (2 f_clock)` and follows the clock as it
+/// is modulated. The output drives voltage source VSRC (the netlist's
+/// source value is only a placeholder; the DC level tracks the input's).
+/// `cti` is the charge-transfer inefficiency per transfer, `gain` the
+/// insertion gain and `clip` the peak signal swing (volts around the DC
+/// level) where the chain saturates.
+#[derive(Clone, Debug)]
+pub struct Bbd {
+    pub source: String,
+    pub input: String,
+    pub stages: usize,
+    pub clock: BbdClock,
+    pub cti: f64,
+    pub gain: f64,
+    pub clip: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -204,6 +245,7 @@ pub struct Netlist {
     pub controls: Vec<Control>,
     pub switches: Vec<Switch>,
     pub lfos: Vec<Lfo>,
+    pub bbds: Vec<Bbd>,
 }
 
 pub fn parse_value(token: &str) -> Result<f64, String> {
@@ -283,9 +325,13 @@ fn parse_lfo(rest: &[&str], text: &str) -> Result<Lfo, String> {
         let (min, max) = parse_pair(hz)?;
         LfoRate::Hz { min, max }
     } else {
-        let pot = kv.get("pot").ok_or_else(|| format!("lfo needs hz= or c=/r=/pot=: {text}"))?;
+        let pot = kv.get("pot").ok_or_else(|| format!("lfo needs hz=, c=/r=/pot= or hzmax=/r=/pot=: {text}"))?;
         let (total, taper) = pot.split_once(':').ok_or("lfo pot is OHM:TAPER")?;
-        LfoRate::Rc { cap: num("c")?, series: num("r")?, pot: parse_value(total)?, taper: parse_taper(taper)? }
+        if kv.contains_key("hzmax") {
+            LfoRate::Divider { max: num("hzmax")?, fixed: num("r")?, pot: parse_value(total)?, taper: parse_taper(taper)? }
+        } else {
+            LfoRate::Rc { cap: num("c")?, series: num("r")?, pot: parse_value(total)?, taper: parse_taper(taper)? }
+        }
     };
     let lfo = Lfo {
         source: rest[0].to_string(),
@@ -308,6 +354,50 @@ fn parse_lfo(rest: &[&str], text: &str) -> Result<Lfo, String> {
         }
     }
     Ok(lfo)
+}
+
+fn parse_bbd(rest: &[&str], text: &str) -> Result<Bbd, String> {
+    let source = rest.first().ok_or_else(|| format!("bbd needs VSRC: {text}"))?.to_string();
+    let mut kv: HashMap<&str, &str> = HashMap::new();
+    for token in &rest[1..] {
+        let (k, v) = token.split_once('=').ok_or_else(|| format!("bbd option {token} is not key=value"))?;
+        kv.insert(k, v);
+    }
+    let num = |k: &str| -> Result<f64, String> { parse_value(kv.get(k).ok_or_else(|| format!("bbd needs {k}=: {text}"))?) };
+    let opt = |k: &str, d: f64| -> Result<f64, String> { kv.get(k).map(|v| parse_value(v)).unwrap_or(Ok(d)) };
+    let clock = if let Some(hz) = kv.get("hz") {
+        BbdClock::Fixed { hz: parse_value(hz)? }
+    } else {
+        BbdClock::Rc {
+            node: kv.get("clk").ok_or_else(|| format!("bbd needs hz= or clk=: {text}"))?.to_string(),
+            r: num("r")?,
+            c: num("c")?,
+            vcc: num("vcc")?,
+            vth: num("vth")?,
+            vf: opt("vf", 0.6)?,
+            vmin: opt("vmin", 0.1)?,
+            tdis: opt("tdis", 0.0)?,
+            div: opt("div", 2.0)?,
+        }
+    };
+    let stages = num("stages")? as usize;
+    if stages < 16 || stages % 2 != 0 {
+        return Err(format!("bbd stages must be an even number >= 16: {text}"));
+    }
+    if let BbdClock::Rc { vcc, vth, .. } = &clock {
+        if !(vth < vcc) {
+            return Err(format!("bbd clock needs vth < vcc: {text}"));
+        }
+    }
+    Ok(Bbd {
+        source,
+        input: kv.get("in").ok_or_else(|| format!("bbd needs in=: {text}"))?.to_string(),
+        stages,
+        clock,
+        cti: opt("cti", 0.0)?,
+        gain: opt("gain", 1.0)?,
+        clip: kv.get("clip").map(|v| parse_value(v)).transpose()?,
+    })
 }
 
 pub fn is_ground(node: &str) -> bool {
@@ -431,6 +521,7 @@ impl Netlist {
                 });
             }
             "lfo" => self.lfos.push(parse_lfo(&rest, text)?),
+            "bbd" => self.bbds.push(parse_bbd(&rest, text)?),
             "opamp" => {
                 let name = rest.first().ok_or("opamp needs subckt name")?.to_ascii_lowercase();
                 let p = kv_params(&rest[1..].join(" "));
@@ -654,7 +745,30 @@ impl Netlist {
                 }
             }
         }
+        let has_node = |n: &str| self.elements.iter().any(|e| e.nodes.iter().any(|x| x.eq_ignore_ascii_case(n)));
+        for bbd in &self.bbds {
+            let source = self.elements.iter().find(|e| e.name.eq_ignore_ascii_case(&bbd.source));
+            let is_lfo = self.lfos.iter().any(|l| l.source.eq_ignore_ascii_case(&bbd.source));
+            match source {
+                Some(e) if e.kind == Kind::VSource && !e.name.eq_ignore_ascii_case(&self.input) && !is_lfo => {}
+                _ => return Err(format!("bbd source {} must be a voltage source other than the input or an lfo", bbd.source)),
+            }
+            if is_ground(&bbd.input) || !has_node(&bbd.input) {
+                return Err(format!("bbd {} input node {} not found", bbd.source, bbd.input));
+            }
+            if let BbdClock::Rc { node, .. } = &bbd.clock {
+                if is_ground(node) || !has_node(node) {
+                    return Err(format!("bbd {} clock node {node} not found", bbd.source));
+                }
+            }
+        }
         Ok(())
+    }
+
+    /// Voltage sources driven per sample (LFOs, then bucket-brigade
+    /// outputs), in the solver's aux column order.
+    pub fn aux_sources(&self) -> Vec<String> {
+        self.lfos.iter().map(|l| l.source.clone()).chain(self.bbds.iter().map(|b| b.source.clone())).collect()
     }
 
     /// Resistances for every pot element at the given control positions

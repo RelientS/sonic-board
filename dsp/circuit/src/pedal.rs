@@ -1,6 +1,7 @@
 //! A circuit netlist wrapped as an audio effect: controls, oversampling and
 //! level calibration around the DK solver.
 
+use crate::bbd::BbdState;
 use crate::lfo::LfoState;
 use crate::netlist::Netlist;
 use crate::oversample::Oversampler;
@@ -23,6 +24,8 @@ pub struct Pedal {
     applied: HashMap<String, f64>,
     /// Internal oscillators with the control index setting their rate.
     lfos: Vec<(LfoState, Option<usize>)>,
+    /// Bucket-brigade delay lines.
+    bbds: Vec<BbdState>,
     dt: f64,
     dc_x: f64,
     dc_y: f64,
@@ -73,7 +76,35 @@ impl Pedal {
                 (LfoState::new(spec.clone(), circuit.aux_initial[k], position), control)
             })
             .collect();
-        let solver = Solver::new(circuit, sample_rate * factor as f64, applied.clone())?;
+        let taps: Vec<(usize, Option<usize>)> = netlist
+            .bbds
+            .iter()
+            .map(|b| {
+                let clock = match &b.clock {
+                    crate::netlist::BbdClock::Rc { node, .. } => circuit.tap_index(node),
+                    crate::netlist::BbdClock::Fixed { .. } => None,
+                };
+                (circuit.tap_index(&b.input).unwrap(), clock)
+            })
+            .collect();
+        let mut solver = Solver::new(circuit, sample_rate * factor as f64, applied.clone())?;
+        let dt = 1.0 / (sample_rate * factor as f64);
+        let mut bbds = Vec::new();
+        if !netlist.bbds.is_empty() {
+            // A BBD passes its input's DC level: re-solve the operating point
+            // with each output source at its input's DC voltage so the output
+            // coupling capacitor starts charged.
+            let first = netlist.lfos.len();
+            for (j, &(tin, _)) in taps.iter().enumerate() {
+                let v = solver.tap(tin);
+                solver.set_aux(first + j, v);
+            }
+            solver.restart_dc()?;
+            for (j, (spec, &(tin, tclk))) in netlist.bbds.iter().zip(&taps).enumerate() {
+                let v_clock = tclk.map(|t| solver.tap(t)).unwrap_or(0.0);
+                bbds.push(BbdState::new(spec.clone(), first + j, tin, tclk, solver.tap(tin), v_clock, dt));
+            }
+        }
         let mut pedal = Pedal {
             solver,
             oversampler: Oversampler::new(factor),
@@ -82,7 +113,8 @@ impl Pedal {
             dirty: false,
             applied,
             lfos,
-            dt: 1.0 / (sample_rate * factor as f64),
+            bbds,
+            dt,
             dc_x: 0.0,
             dc_y: 0.0,
             dc_r: (-2.0 * std::f64::consts::PI * 8.0 / sample_rate).exp(),
@@ -167,7 +199,15 @@ impl Pedal {
             for (i, (lfo, _)) in self.lfos.iter_mut().enumerate() {
                 self.solver.set_aux(i, lfo.next(self.dt));
             }
+            for bbd in &mut self.bbds {
+                self.solver.set_aux(bbd.aux, bbd.begin_step(self.dt));
+            }
             self.buf[k] = self.solver.step(up[k]);
+            for bbd in &mut self.bbds {
+                let x = self.solver.tap(bbd.tap_in);
+                let v = bbd.tap_clock.map(|t| self.solver.tap(t)).unwrap_or(0.0);
+                bbd.end_step(self.dt, x, v);
+            }
         }
         let volts = self.oversampler.down(&self.buf);
         let y = volts * self.netlist.output_gain;
@@ -192,6 +232,11 @@ impl Pedal {
 
     pub fn refactors(&self) -> u64 {
         self.solver.refactors()
+    }
+
+    /// Bucket-brigade clock frequencies (Hz) and delays (s) (diagnostics).
+    pub fn bbd_clocks(&self) -> Vec<(f64, f64)> {
+        self.bbds.iter().map(|b| (b.frequency(), b.delay())).collect()
     }
 
     /// Current LFO rates in Hz (diagnostics).

@@ -22,6 +22,10 @@ fn relax_period_taus(lo: f64, hi: f64, to_lo: f64, to_hi: f64) -> f64 {
     ((to_hi - lo) / (to_hi - hi)).ln() + ((hi - to_lo) / (lo - to_lo)).ln()
 }
 
+fn divider_hz(max: f64, fixed: f64, pot: f64, fraction: f64) -> f64 {
+    (max * (fixed + pot * fraction) / (fixed + pot)).max(1e-3)
+}
+
 impl LfoState {
     /// `start` is the oscillator's initial voltage (the source's DC value).
     pub fn new(spec: Lfo, start: f64, position: f64) -> LfoState {
@@ -64,7 +68,7 @@ impl LfoState {
             (LfoShape::Relax { target_lo, target_hi }, rate) => {
                 let (r, cap) = match *rate {
                     LfoRate::Rc { cap, series, pot, taper } => (series + pot * (1.0 - taper.fraction(pos)), cap),
-                    LfoRate::Hz { .. } => (0.0, 0.0),
+                    LfoRate::Hz { .. } | LfoRate::Divider { .. } => (0.0, 0.0),
                 };
                 // A resistive load on the timing capacitor shifts the charge
                 // targets (Thevenin) and shortens tau.
@@ -87,9 +91,14 @@ impl LfoState {
                         self.freq = min * (max / min).powf(pos);
                         self.tau = 1.0 / (self.freq * taus);
                     }
+                    LfoRate::Divider { max, fixed, pot, taper } => {
+                        self.freq = divider_hz(max, fixed, pot, taper.fraction(pos));
+                        self.tau = 1.0 / (self.freq * taus);
+                    }
                 }
             }
             (_, LfoRate::Hz { min, max }) => self.freq = min * (max / min).powf(pos),
+            (_, LfoRate::Divider { max, fixed, pot, taper }) => self.freq = divider_hz(*max, *fixed, *pot, taper.fraction(pos)),
             // Parsing rejects RC timing for sine/triangle; keep a sane rate.
             (_, LfoRate::Rc { cap, series, pot, taper }) => {
                 self.freq = 1.0 / (cap * (series + pot * (1.0 - taper.fraction(pos)))).max(1e-3)

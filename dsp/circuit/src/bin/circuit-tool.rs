@@ -3,6 +3,7 @@
 //! ```text
 //! circuit-tool op      <file.cir> [--controls a,b,c]
 //! circuit-tool compare <file.cir> [--controls ..] [--signal f:amp[,f:amp]] [--rate 192000] [--dur 0.1] [--skip 0.04]
+//!                      [--node NAME] [--bbd f:amp]   (probe another node; drive *@bbd outputs with a sine)
 //! circuit-tool render  <file.cir> <in.wav> <out.wav> [--controls ..] [--gain-db 0]
 //! circuit-tool bench   <file.cir> [--rate 48000]
 //! circuit-tool sweep   <file.cir> [--controls ..]   (small-signal magnitude response)
@@ -114,6 +115,31 @@ fn lfo_waveforms(net: &Netlist, controls: &[f64], initial: &[f64], dur: f64) -> 
                 points.push((j as f64 * STEP, lfo.next(STEP)));
             }
             (spec.source.to_ascii_lowercase(), points)
+        })
+        .collect()
+}
+
+/// Waveforms for the `*@bbd` output sources in `compare`: their netlist DC
+/// value plus an optional sine (`--bbd f:amp`), so the circuit around a
+/// bucket brigade can be checked against ngspice with the delay line cut.
+fn bbd_waveforms(args: &Args, net: &Netlist, dur: f64) -> Vec<(String, Pwl)> {
+    const STEP: f64 = 5e-6;
+    let (f, a) = args
+        .flags
+        .get("bbd")
+        .and_then(|s| s.split_once(':'))
+        .map(|(f, a)| (f.parse().unwrap_or(0.0), a.parse().unwrap_or(0.0)))
+        .unwrap_or((0.0, 0.0));
+    net.bbds
+        .iter()
+        .map(|b| {
+            let dc = net.elements.iter().find(|e| e.name.eq_ignore_ascii_case(&b.source)).map(|e| e.value).unwrap_or(0.0);
+            let steps = (dur / STEP).ceil() as usize + 2;
+            let points = (0..=steps).map(|j| {
+                let t = j as f64 * STEP;
+                (t, dc + a * (2.0 * PI * f * t).sin())
+            });
+            (b.source.to_ascii_lowercase(), points.collect())
         })
         .collect()
 }
@@ -399,7 +425,10 @@ fn cmd_op(args: &Args) {
 }
 
 fn cmd_compare(args: &Args) {
-    let (source, net) = load(&args.positional[1]);
+    let (source, mut net) = load(&args.positional[1]);
+    if let Some(node) = args.flags.get("node") {
+        net.output = node.clone();
+    }
     let controls = controls_arg(args, &net);
     let switches = switches_arg(args, &net);
     let ov = overrides(&net, &controls, &switches);
@@ -409,7 +438,8 @@ fn cmd_compare(args: &Args) {
     let skip: f64 = flag(args, "skip", 0.04);
 
     let burst = burst_arg(args);
-    let aux = lfo_waveforms(&net, &controls, &lfo_initial(&net), dur);
+    let mut aux = lfo_waveforms(&net, &controls, &lfo_initial(&net), dur);
+    aux.extend(bbd_waveforms(args, &net, dur));
     let deck = spice_deck(&source, &net, &ov, &signal, burst, &aux, rate, dur, "__OUT__");
     if let Some(p) = args.flags.get("deck") {
         fs::write(p, &deck).unwrap();
@@ -706,6 +736,79 @@ fn cmd_alias(args: &Args) {
     );
 }
 
+/// Modulation-pedal spectrum check: a bin-centred sine through the pedal,
+/// reporting the clock / delay range seen by every `*@bbd`, the LFO rate,
+/// the RMS width of the sidebands around the tone and its harmonics, and the
+/// energy outside those bands (images, aliasing, clock artefacts) relative
+/// to the tonal energy.
+fn cmd_chorus(args: &Args) {
+    let (source, net) = load(&args.positional[1]);
+    let rate = 48_000.0;
+    let n = 1 << 17;
+    let bin: usize = flag(args, "bin", 2731); // ~1 kHz
+    let amp: f64 = flag(args, "amp", 0.2);
+    let band: f64 = flag(args, "band", 80.0);
+    let f0 = bin as f64 * rate / n as f64;
+    let mut pedal = make_pedal(args, &source, net, rate);
+    let warm = 48_000;
+    let mut buf: Vec<f32> = (0..n + warm).map(|k| (amp * (2.0 * PI * f0 * k as f64 / rate).sin()) as f32).collect();
+    let (mut fmin, mut fmax, mut dmin, mut dmax) = (f64::MAX, 0.0f64, f64::MAX, 0.0f64);
+    for block in buf.chunks_mut(128) {
+        pedal.process(block);
+        for (f, d) in pedal.bbd_clocks() {
+            fmin = fmin.min(f);
+            fmax = fmax.max(f);
+            dmin = dmin.min(d);
+            dmax = dmax.max(d);
+        }
+    }
+    let seg = &buf[warm..];
+    // Blackman-Harris window keeps leakage below the levels of interest.
+    let w = |k: usize| {
+        let x = 2.0 * PI * k as f64 / n as f64;
+        0.35875 - 0.48829 * x.cos() + 0.14128 * (2.0 * x).cos() - 0.01168 * (3.0 * x).cos()
+    };
+    let mut re: Vec<f64> = seg.iter().enumerate().map(|(k, x)| *x as f64 * w(k)).collect();
+    let mut im = vec![0.0; n];
+    fft(&mut re, &mut im);
+    let df = rate / n as f64;
+    let (mut tonal, mut other, mut spread, mut carrier_band) = (0.0, 0.0, 0.0, 0.0);
+    for k in 1..n / 2 {
+        let f = k as f64 * df;
+        if !(20.0..=20_000.0).contains(&f) {
+            continue;
+        }
+        let p = re[k] * re[k] + im[k] * im[k];
+        let h = (f / f0).round().max(1.0);
+        let off = f - h * f0;
+        if off.abs() <= band * h {
+            tonal += p;
+            if h == 1.0 {
+                spread += p * off * off;
+                carrier_band += p;
+            }
+        } else {
+            other += p;
+        }
+    }
+    let (s_, it, fails) = pedal.stats();
+    println!(
+        "{}: {:.1} Hz @ {amp} | LFO {:?} Hz | clock {:.1}-{:.1} kHz, delay {:.2}-{:.2} ms\n  sideband RMS width {:.2} Hz ({:.1} cents) | non-tonal energy {:.1} dB re tonal | newton {:.2} it/step, {} failures",
+        pedal.netlist.name,
+        f0,
+        pedal.lfo_frequencies().iter().map(|f| (f * 1000.0).round() / 1000.0).collect::<Vec<_>>(),
+        fmin / 1e3,
+        fmax / 1e3,
+        dmin * 1e3,
+        dmax * 1e3,
+        (spread / carrier_band).sqrt(),
+        1200.0 * ((f0 + (spread / carrier_band).sqrt()) / f0).log2(),
+        10.0 * (other / tonal).log10(),
+        it as f64 / s_ as f64,
+        fails
+    );
+}
+
 fn main() {
     let args = parse_args();
     if std::env::var("DEBUG_NEWTON").is_ok() {
@@ -718,6 +821,7 @@ fn main() {
         Some("bench") => cmd_bench(&args),
         Some("sweep") => cmd_sweep(&args),
         Some("alias") => cmd_alias(&args),
+        Some("chorus") => cmd_chorus(&args),
         _ => eprintln!("usage: circuit-tool op|compare|render|bench|sweep <file.cir> ..."),
     }
 }

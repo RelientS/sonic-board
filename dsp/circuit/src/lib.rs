@@ -1,6 +1,7 @@
 //! Sonic Board circuit engine: SPICE netlists solved in realtime with the
 //! nodal DK method, validated offline against ngspice.
 
+pub mod bbd;
 pub mod devices;
 pub mod lfo;
 pub mod linalg;

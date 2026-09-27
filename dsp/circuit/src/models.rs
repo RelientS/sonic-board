@@ -19,6 +19,7 @@ pub const MODELS: &[ModelSource] = &[
     ModelSource { id: "fulltone-ocd", source: include_str!("../models/fulltone_ocd.cir") },
     ModelSource { id: "mxr-phase90", source: include_str!("../models/mxr_phase90.cir") },
     ModelSource { id: "mxr-dynacomp", source: include_str!("../models/mxr_dynacomp.cir") },
+    ModelSource { id: "boss-ce2", source: include_str!("../models/boss_ce2.cir") },
 ];
 
 pub fn find(id: &str) -> Option<usize> {

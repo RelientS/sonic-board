@@ -90,6 +90,8 @@ pub struct Circuit {
     pub node_names: Vec<String>,
     /// DC values of the time-varying sources (their starting voltages).
     pub aux_initial: Vec<f64>,
+    /// Nodes whose voltages are reported after every step (see `Solver::tap`).
+    pub taps: Vec<usize>,
 }
 
 struct Builder {
@@ -140,7 +142,8 @@ impl Circuit {
         let mut resistors = Vec::new();
         let mut reactives = Vec::new();
         let mut sources_pending: Vec<(Node, Node, f64, bool, Option<usize>)> = Vec::new();
-        let aux_index = |name: &str| net.lfos.iter().position(|l| l.source.eq_ignore_ascii_case(name));
+        let aux_names = net.aux_sources();
+        let aux_index = |name: &str| aux_names.iter().position(|a| a.eq_ignore_ascii_case(name));
         let mut vcvs_pending: Vec<(Node, Node, Node, Node, f64)> = Vec::new();
         let mut devices = Vec::new();
         let is_be = |name: &str| be_elements.iter().any(|e| e.eq_ignore_ascii_case(name));
@@ -278,7 +281,7 @@ impl Circuit {
         let output = b.node(&net.output).ok_or("output cannot be ground")?;
         let n_nodes = b.names.len();
         let mut branch = n_nodes;
-        let mut aux_initial = vec![0.0; net.lfos.len()];
+        let mut aux_initial = vec![0.0; aux_names.len()];
         for &(_, _, value, _, aux) in &sources_pending {
             if let Some(k) = aux {
                 aux_initial[k] = value;
@@ -301,6 +304,21 @@ impl Circuit {
             })
             .collect::<Vec<_>>();
         b.branches = branch - n_nodes;
+        // Node voltages the per-sample elements read back (bucket-brigade
+        // inputs and clock controls).
+        let mut taps: Vec<usize> = Vec::new();
+        for bbd in &net.bbds {
+            let mut names = vec![bbd.input.as_str()];
+            if let crate::netlist::BbdClock::Rc { node, .. } = &bbd.clock {
+                names.push(node.as_str());
+            }
+            for name in names {
+                let node = b.node(name).ok_or("tap cannot be ground")?;
+                if !taps.contains(&node) {
+                    taps.push(node);
+                }
+            }
+        }
 
         merge_antiparallel_diodes(&mut devices);
 
@@ -330,6 +348,7 @@ impl Circuit {
             limits,
             node_names: b.names,
             aux_initial,
+            taps,
         })
     }
 
@@ -343,6 +362,12 @@ impl Circuit {
 
     pub fn aux_sources(&self) -> usize {
         self.aux_initial.len()
+    }
+
+    /// Index of `name` among the tapped nodes.
+    pub fn tap_index(&self, name: &str) -> Option<usize> {
+        let node = self.node_names.iter().position(|n| n.eq_ignore_ascii_case(name))?;
+        self.taps.iter().position(|&t| t == node)
     }
 
     /// Copy with every op-amp's output swing widened (DC continuation).
@@ -462,7 +487,7 @@ impl Circuit {
         (bs, bu, b0, ni)
     }
 
-    fn row_selectors(&self) -> (Mat, Mat, Mat) {
+    fn row_selectors(&self) -> (Mat, Mat, Mat, Mat) {
         let mut nvm = Mat::zeros(self.nv, self.nx);
         for d in &self.devices {
             for (k, (p, n)) in d.sense.iter().enumerate() {
@@ -487,7 +512,11 @@ impl Circuit {
         }
         let mut no = Mat::zeros(1, self.nx);
         no.set(0, self.output, 1.0);
-        (nvm, nst, no)
+        let mut nt = Mat::zeros(self.taps.len(), self.nx);
+        for (k, &node) in self.taps.iter().enumerate() {
+            nt.set(k, node, 1.0);
+        }
+        (nvm, nst, no, nt)
     }
 }
 
@@ -553,6 +582,12 @@ struct Reduced {
     mo_a: Vec<f64>,
     mo_0: f64,
     mo_i: Vec<f64>,
+    // Tapped node voltages, like the output (rows = taps).
+    mt_s: Mat,
+    mt_u: Vec<f64>,
+    mt_a: Mat,
+    mt_0: Vec<f64>,
+    mt_i: Mat,
 }
 
 fn reduce(circuit: &Circuit, overrides: &HashMap<String, f64>, dt: Option<f64>) -> Result<Reduced, String> {
@@ -579,7 +614,7 @@ fn reduce(circuit: &Circuit, overrides: &HashMap<String, f64>, dt: Option<f64>) 
         }
     }
     let z = lu.solve_mat(&rhs);
-    let (nvm, nst, no) = circuit.row_selectors();
+    let (nvm, nst, no, nt) = circuit.row_selectors();
     let split = |m: &Mat| -> (Mat, Vec<f64>, Mat, Vec<f64>, Mat) {
         let prod = m.mul(&z);
         let mut s = Mat::zeros(prod.rows, ns);
@@ -605,6 +640,7 @@ fn reduce(circuit: &Circuit, overrides: &HashMap<String, f64>, dt: Option<f64>) 
     let (mv_s, mv_u, mv_a, mv_0, k) = split(&nvm);
     let (mst_s, mst_u, mst_a, mst_0, mst_i) = split(&nst);
     let (mo_s, mo_u, mo_a, mo_0, mo_i) = split(&no);
+    let (mt_s, mt_u, mt_a, mt_0, mt_i) = split(&nt);
     let mut kt = vec![0.0; k.rows * k.cols];
     for r in 0..k.rows {
         for c in 0..k.cols {
@@ -627,6 +663,11 @@ fn reduce(circuit: &Circuit, overrides: &HashMap<String, f64>, dt: Option<f64>) 
         mo_a: mo_a.data,
         mo_0: mo_0[0],
         mo_i: mo_i.data,
+        mt_s,
+        mt_u,
+        mt_a,
+        mt_0,
+        mt_i,
     })
 }
 
@@ -900,6 +941,7 @@ fn advance(
     u: f64,
     aux: &[f64],
     max_iter: usize,
+    taps: &mut [f64],
 ) -> (f64, bool, usize) {
     let nv = circuit.nv;
     for k in 0..nv {
@@ -947,6 +989,16 @@ fn advance(
     }
     for (a, b) in r.mo_i.iter().zip(&newton.i) {
         y += a * b;
+    }
+    if !taps.is_empty() {
+        for (k, t) in taps.iter_mut().enumerate() {
+            *t = r.mt_u[k] * u + r.mt_0[k];
+        }
+        r.mt_s.mul_vec_add(state, taps);
+        r.mt_i.mul_vec_add(&newton.i, taps);
+        if !aux.is_empty() {
+            r.mt_a.mul_vec_add(aux, taps);
+        }
     }
     for k in 0..ns {
         state[k] = alpha[k] * g[k] * vst[k] + beta[k] * state[k];
@@ -1160,6 +1212,9 @@ pub struct Solver {
     aux: Vec<f64>,
     aux_prev: Vec<f64>,
     aux_mid: Vec<f64>,
+    /// Tapped node voltages after the last step (DC operating point before
+    /// the first).
+    taps: Vec<f64>,
     /// Reduced systems at dt / 2^level for adaptive sub-stepping, built on
     /// first use and dropped when the knobs change.
     fine: Vec<Option<(Reduced, Vec<f64>)>>,
@@ -1211,6 +1266,7 @@ impl Solver {
             aux: circuit.aux_initial.clone(),
             aux_prev: circuit.aux_initial.clone(),
             aux_mid: circuit.aux_initial.clone(),
+            taps: vec![0.0; circuit.taps.len()],
             fine: (0..=MAX_SUBSTEP_LEVEL).map(|_| None).collect(),
             save_v: vec![0.0; circuit.nv],
             save_state: vec![0.0; ns],
@@ -1295,6 +1351,9 @@ impl Solver {
         let mut x = vec![0.0; self.circuit.nx];
         lu.solve(&rhs, &mut x);
         self.dc_nodes = x[..self.circuit.node_names.len()].to_vec();
+        for (k, &node) in self.circuit.taps.iter().enumerate() {
+            self.taps[k] = x[node];
+        }
         self.v_prev = self.newton.v.clone();
         self.newton.lu_valid = false;
         for (k, x) in self.circuit.reactives.iter().enumerate() {
@@ -1303,6 +1362,20 @@ impl Solver {
             self.vst[k] = if x.inductor { 0.0 } else { vst[k] };
         }
         Ok(())
+    }
+
+    /// Re-solve the DC operating point with the current aux source values
+    /// (e.g. after a bucket brigade's output level is known).
+    pub fn restart_dc(&mut self) -> Result<(), String> {
+        self.init_dc()?;
+        self.aux_prev.copy_from_slice(&self.aux);
+        Ok(())
+    }
+
+    /// Voltage of tapped node `k` (see `Circuit::taps`) after the last step.
+    #[inline]
+    pub fn tap(&self, k: usize) -> f64 {
+        self.taps[k]
     }
 
     /// Set time-varying source `k` for the next `step` (volts).
@@ -1348,7 +1421,7 @@ impl Solver {
         }
         let (mut y, mut ok, iters) = advance(
             &self.circuit, &mut self.newton, &self.reduced, &self.g, &self.alpha, &self.beta,
-            &mut self.state, &mut self.vst, u, &self.aux, 12,
+            &mut self.state, &mut self.vst, u, &self.aux, 12, &mut self.taps,
         );
         self.iterations += iters as u64;
         if !ok {
@@ -1357,7 +1430,7 @@ impl Solver {
             self.newton.lu_valid = false;
             let (y2, ok2, more) = advance(
                 &self.circuit, &mut self.newton, &self.reduced, &self.g, &self.alpha, &self.beta,
-                &mut self.state, &mut self.vst, u, &self.aux, 40,
+                &mut self.state, &mut self.vst, u, &self.aux, 40, &mut self.taps,
             );
             self.iterations += more as u64;
             y = y2;
@@ -1434,7 +1507,7 @@ impl Solver {
             }
             let (yj, ok, iters) = advance(
                 &self.circuit, &mut self.newton, fine, g_fine, &self.alpha, &self.beta,
-                &mut self.state, &mut self.vst, uj, &self.aux_mid, 40,
+                &mut self.state, &mut self.vst, uj, &self.aux_mid, 40, &mut self.taps,
             );
             self.iterations += iters as u64;
             if !ok {
