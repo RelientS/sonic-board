@@ -24,7 +24,7 @@ test('knobs drag vertically with fine mode, reset on double-click and announce t
 
 test('two-position controls render as switches with their silk-screen labels', () => {
   const switches = EFFECT_SPECS.flatMap((spec) => spec.controls.filter((control) => control.options).map((control) => ({ spec, control })));
-  assert.deepEqual(switches.map(({ spec, control }) => spec.id + ':' + control.id).sort(), ['ocd-drive:hp', 'opamp-muff:tonebypass']);
+  assert.deepEqual(switches.map(({ spec, control }) => spec.id + ':' + control.id).sort(), ['ocd-drive:hp', 'opamp-muff:tonebypass', 'phase90:script']);
   for (const { control } of switches) {
     assert.ok(control.defaultValue === 0 || control.defaultValue === 100);
     assert.equal(formatControlValue(control, 0), control.options![0]);
@@ -43,7 +43,7 @@ test('library marks and filters circuit-level pedals', () => {
   assert.match(page, /isCircuitModelled\(spec\.id\) && <em className="circuit-badge"/);
   assert.match(page, /const engineMatches = !circuitOnly \|\| isCircuitModelled\(spec\.id\)/);
   const circuit = EFFECT_SPECS.filter((spec) => getEffectFidelity(spec.id)?.runtime === 'circuit');
-  assert.equal(circuit.length, 10);
+  assert.equal(circuit.length, 11);
 });
 
 test('live instrument input replaces the DI loop and is released on stop', () => {

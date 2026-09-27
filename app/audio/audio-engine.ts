@@ -53,10 +53,11 @@ export const CIRCUIT_MODELS: Record<string, { model: string; controls: string[];
   'tube-screamer': { model: 'ibanez-ts808', controls: ['drive', 'tone', 'level'] },
   'sd1-drive': { model: 'boss-sd1', controls: ['drive', 'tone', 'level'] },
   'ocd-drive': { model: 'fulltone-ocd', controls: ['volume', 'tone', 'drive'], switches: ['hp'] },
+  'phase90': { model: 'mxr-phase90', controls: ['speed'], switches: ['script'] },
 };
 export const CIRCUIT_EFFECT_IDS: ReadonlySet<string> = new Set(Object.keys(CIRCUIT_MODELS));
 // Also the circuit.wasm cache key: bump whenever the WASM or its models change.
-const CIRCUIT_RUNTIME_VERSION = 3;
+const CIRCUIT_RUNTIME_VERSION = 4;
 export { EFFECT_FIDELITY_PROFILES, type EffectFidelityProfile };
 
 const MAX_CURVE_CACHE_ENTRIES = 32;
@@ -462,6 +463,17 @@ function physical(specId: string, values: Record<string, number>, id: string, fa
   const control = getEffectSpec(specId).controls.find((entry) => entry.id === id);
   if (!control) return fallback;
   return mapControlValue(control, parameter(values, id, control.defaultValue));
+}
+
+/**
+ * Phase 90 LFO rate for a speed-knob position: C7 15 uF charged through
+ * R20 4k7 + R21 500k reverse-log between the Schmitt thresholds
+ * (see dsp/circuit/models/mxr_phase90.cir), 0.13 Hz to 14 Hz.
+ */
+function phase90SpeedHz(knob: number) {
+  const rotation = Math.min(1, Math.max(0, knob / 100));
+  const resistance = 4_700 + 500_000 * (81 ** (1 - rotation) - 1) / 80;
+  return 1 / (15e-6 * resistance * 1.008);
 }
 
 function legacyLinear(knob: number, min: number, max: number) {
@@ -1089,13 +1101,15 @@ function buildEffect(
       lfo.connect(modulation);
       return modulation;
     });
+    // Block-logo feedback (script switch off) sharpens the notches.
+    const script = parameter(values, 'script', 100) >= 50;
     filters.forEach((filter, index) => {
       filter.type = 'allpass';
       filter.frequency.value = [360, 680, 1_150, 1_900][index];
-      filter.Q.value = 1.15;
+      filter.Q.value = script ? 1.15 : 1.7;
       depths[index].connect(filter.frequency);
     });
-    lfo.frequency.value = physical(specId, values, 'speed', 0.25);
+    lfo.frequency.value = phase90SpeedHz(parameter(values, 'speed', 40));
     lfo.start(0); scheduled.push(lfo);
     cursor.connect(filters[0]).connect(filters[1]).connect(filters[2]).connect(filters[3]);
     cursor = mixParallel(context, cursor, filters[3], 50);

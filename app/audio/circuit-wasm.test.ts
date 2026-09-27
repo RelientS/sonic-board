@@ -55,7 +55,7 @@ const rms = (xs: number[]) => Math.sqrt(xs.reduce((sum, x) => sum + x * x, 0) / 
 test('ships the circuit runtime with its model table', async () => {
   assert.ok(existsSync(wasmUrl), 'circuit.wasm is missing; run npm run build:circuit');
   const w = await load();
-  assert.equal(w.runtime_version(), 3);
+  assert.equal(w.runtime_version(), 4);
   assert.ok(w.model_count() >= 1);
   const ids = Array.from({ length: w.model_count() }, (_, model) => info(w, model).id);
   assert.ok(ids.includes('rams-head-muff'));
@@ -95,4 +95,47 @@ test('every circuit control changes the sound', async () => {
       w.destroy(high);
     });
   }
+});
+
+test('Phase 90: the internal LFO sweeps the notches and the script switch opens the feedback', async () => {
+  const w = await load();
+  const model = Array.from({ length: w.model_count() }, (_, index) => index).find((index) => info(w, index).id === 'mxr-phase90');
+  assert.ok(model !== undefined, 'mxr-phase90 is bundled');
+  const meta = info(w, model);
+  assert.deepEqual(meta.controls.map((control) => control.label), ['Speed']);
+  assert.deepEqual(meta.switches.map((sw) => sw.label), ['Script']);
+  const tone = (handle: number, seconds: number) => {
+    const out: number[] = [];
+    let n = 0;
+    for (let block = 0; block < (seconds * 48_000) / 128; block += 1) {
+      const buf = new Float32Array(w.memory.buffer, w.buffer_ptr(handle, 128), 128);
+      for (let i = 0; i < 128; i += 1, n += 1) buf[i] = 0.2 * Math.sin((2 * Math.PI * 700 * n) / 48_000);
+      w.process(handle, 128);
+      out.push(...new Float32Array(w.memory.buffer, w.buffer_ptr(handle, 128), 128));
+    }
+    return out;
+  };
+  const windows = (out: number[]) => {
+    const levels: number[] = [];
+    for (let start = 4_800; start + 480 <= out.length; start += 480) levels.push(20 * Math.log10(rms(out.slice(start, start + 480))));
+    return levels;
+  };
+  // Fast speed: several sweeps a second move the notches across 700 Hz.
+  const fast = w.create(model, 48_000);
+  w.set_control(fast, 0, 0.9);
+  const levels = windows(tone(fast, 1.2));
+  const swing = Math.max(...levels) - Math.min(...levels);
+  assert.ok(swing > 6, `sweep only modulates a 700 Hz tone by ${swing.toFixed(1)} dB`);
+  assert.equal(w.failures(fast), 0);
+  w.destroy(fast);
+  // Script (default) vs block-logo feedback: different notch depth.
+  const script = w.create(model, 48_000);
+  const block = w.create(model, 48_000);
+  w.set_switch(block, 0, 0);
+  const a = tone(script, 0.3);
+  const b = tone(block, 0.3);
+  const difference = rms(a.map((x, i) => x - b[i])) / Math.max(rms(a), rms(b));
+  assert.ok(difference > 0.05, `script switch barely changes the output (${difference})`);
+  w.destroy(script);
+  w.destroy(block);
 });

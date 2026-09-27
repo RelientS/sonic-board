@@ -138,7 +138,12 @@ export const EFFECT_FIDELITY_PROFILES: Record<string, EffectFidelityProfile> = {
     0.21,
     4,
   ),
-  'phase90': fidelityProfile('examples/pedals/phaser/phase90.pedal'),
+  'phase90': circuitProfile(
+    'dsp/circuit/models/mxr_phase90.cir',
+    'General Guitar Gadgets MXR Phase 90 schematic (2015-06-30); cross-checked with the ElectroSmash Phase 90 analysis',
+    0.04,
+    2,
+  ),
   'ds1-dist': circuitProfile(
     'dsp/circuit/models/boss_ds1.cir',
     'Boss DS-1 board assy service schematic (hobby-hour); cross-checked with ElectroSmash and Aion FX Comet',

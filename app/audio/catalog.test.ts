@@ -59,7 +59,7 @@ test('classic-inspired effects preserve their defining control layouts', () => {
   assert.deepEqual(getEffectSpec('analog-delay').controls.map((control) => control.id), ['time', 'feedback', 'mix']);
   assert.deepEqual(getEffectSpec('analog-chorus').controls.map((control) => control.id), ['rate', 'depth']);
   assert.deepEqual(getEffectSpec('fuzz-face').controls.map((control) => control.id), ['fuzz', 'volume']);
-  assert.deepEqual(getEffectSpec('phase90').controls.map((control) => control.id), ['speed']);
+  assert.deepEqual(getEffectSpec('phase90').controls.map((control) => control.id), ['speed', 'script']);
   assert.equal(getEffectSpec('graphic-eq').controls.length, 8);
   assert.ok(getEffectSpec('reverse-space').controls.some((control) => control.id === 'preDelay'));
   assert.ok(getEffectSpec('reverse-space').controls.some((control) => control.id === 'lowCut'));

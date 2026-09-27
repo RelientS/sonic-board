@@ -209,8 +209,8 @@ const EFFECT_SPECS_BASE: EffectSpec[] = [
   },
   {
     id: 'phase90', name: 'MXR Phase 90', maker: 'MXR', category: 'Mod', family: 'Phase 90 四级相位',
-    description: '单旋钮控制四级相移网络的扫动速度，适合缓慢流动的音墙。', finish: '#e46e27', ink: '#24150e', accent: '#f1d24f',
-    controls: [c('speed', '速度', 18, 0.05, 10, 'Hz', 2, 'exponential')],
+    description: '单旋钮控制四级相移网络的扫动速度，适合缓慢流动的音墙；SCRIPT 开关切换早期无反馈版本与 Block 版的反馈共振。', finish: '#e46e27', ink: '#24150e', accent: '#f1d24f',
+    controls: [knob('speed', '速度', 40), toggle('script', 'SCRIPT', true, ['BLOCK', 'SCRIPT'])],
   },
   {
     id: 'jet-flanger', name: 'Electro-Harmonix Electric Mistress', maker: 'ELECTRO-HARMONIX', category: 'Mod', family: 'Electric Mistress 风格镶边',

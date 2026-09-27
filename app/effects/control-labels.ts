@@ -43,6 +43,7 @@ const CONTROL_LABELS: Record<string, string> = {
   dist: 'DIST',
   tonebypass: 'BYPASS',
   hp: 'HP',
+  script: 'SCRIPT',
   hold: 'HOLD',
   motion: 'MOTION',
   '100': '100',
