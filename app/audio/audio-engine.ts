@@ -1,6 +1,6 @@
 import {
   clampParameter,
-  encodePcm16Wav,
+  encodePcmWav,
   estimateTailSeconds,
   makeDriveCurve,
   makeGateCurve,
@@ -18,7 +18,8 @@ import { renderSampledSourceBuffer } from './sample-renderer.ts';
 import { applySampleInputHeadroom } from './sample-library.ts';
 import { getEffectSpec, mapControlValue } from '../effects/catalog.ts';
 import { EFFECT_FIDELITY_PROFILES, type EffectFidelityProfile } from '../effects/fidelity.ts';
-import { AMP_SPECS, CAB_SPECS, getAmpSpec, getCabSpec, type AmpCabConfig } from '../amps/catalog.ts';
+import { AMP_SPECS, CAB_SPECS, getAmpSpec, getCabSpec, type AmpCabConfig, type CabSpec } from '../amps/catalog.ts';
+import { minimumPhaseImpulse, speakerMagnitude, type SpeakerVoicing } from './dsp-math.ts';
 import { computeLaneMix, partitionChain } from './routing.ts';
 import type { NamModelRecord } from './nam-model.ts';
 
@@ -80,7 +81,43 @@ const WORKLET_VERSIONS = {
   pedalKernel: 5,
   nam: 4,
   circuit: 3,
+  fx: 1,
 } as const;
+const fxReady = new WeakSet<BaseAudioContext>();
+const fxLoading = new WeakMap<BaseAudioContext, Promise<void>>();
+
+/** Reverb, flanger and master limiter worklets (plain JS, loaded once). */
+async function prepareFxProcessor(context: BaseAudioContext) {
+  if (fxReady.has(context)) return;
+  const worklet = (context as BaseAudioContext & {
+    audioWorklet?: { addModule: (moduleUrl: string) => Promise<void> };
+  }).audioWorklet;
+  if (!worklet || typeof AudioWorkletNode === 'undefined') return;
+  let pending = fxLoading.get(context);
+  if (!pending) {
+    pending = worklet.addModule(`/audio/fx-processor.js?v=${WORKLET_VERSIONS.fx}`).then(() => {
+      fxReady.add(context);
+    }).catch(() => {
+      // The Web Audio versions below keep working without the worklets.
+    });
+    fxLoading.set(context, pending);
+  }
+  await pending;
+}
+
+function makeFxNode(context: BaseAudioContext, name: 'sonic-reverb' | 'sonic-flanger' | 'sonic-limiter', params: Record<string, number>) {
+  if (!fxReady.has(context) || typeof AudioWorkletNode === 'undefined') return null;
+  try {
+    return new AudioWorkletNode(context, name, {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [2],
+      processorOptions: params,
+    });
+  } catch {
+    return null;
+  }
+}
 const circuitReady = new WeakSet<BaseAudioContext>();
 const circuitLoading = new WeakMap<BaseAudioContext, Promise<void>>();
 type CircuitRuntime = { wasmModule: WebAssembly.Module; modelIndex: Map<string, number> };
@@ -283,6 +320,8 @@ type LiveGraph = {
   input: GainNode;
   /** Master output level (the "output" control). */
   level: GainNode;
+  /** Last master node (the limiter worklet when available). */
+  masterOutput: AudioNode;
   /** Crossfade gate between this graph and the destination. */
   fade: GainNode;
   scheduled: AudioScheduledSourceNode[];
@@ -552,6 +591,7 @@ function makeImpulse(
 
     for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
       const data = buffer.getChannelData(channel);
+      let lowpassed = 0;
       for (let index = 0; index < length; index += 1) {
         const phase = index / length;
         const envelope = kind === 'reverse'
@@ -560,7 +600,12 @@ function makeImpulse(
             ? phase < 0.58 ? (1 - phase * 0.72) : ((1 - phase) / 0.42) ** 2
             : (1 - phase) ** 2.5;
         const active = Math.abs(random()) <= density / 100;
-        data[index] = active ? random() * envelope * 0.72 : 0;
+        const noise = active ? random() : 0;
+        // Air absorbs highs faster than lows: the tail darkens as it decays.
+        const time = kind === 'reverse' ? 1 - phase : phase;
+        const coefficient = 0.92 - 0.8 * time;
+        lowpassed += (noise - lowpassed) * coefficient;
+        data[index] = lowpassed * envelope * (0.72 / Math.sqrt(coefficient));
       }
     }
 
@@ -583,6 +628,14 @@ function mixParallelNodes(
   dryInput.connect(dry).connect(sum);
   wetInput.connect(wet).connect(sum);
   return { sum, dry, wet };
+}
+
+/** Equal-power dry/wet change without a click. */
+function setMix(context: BaseAudioContext, mix: { dry: GainNode; wet: GainNode }, wetAmount: number) {
+  const amount = clampParameter(wetAmount) / 100;
+  const now = context.currentTime;
+  mix.dry.gain.setTargetAtTime(Math.cos(amount * Math.PI * 0.5), now, 0.015);
+  mix.wet.gain.setTargetAtTime(Math.sin(amount * Math.PI * 0.5), now, 0.015);
 }
 
 function mixParallel(
@@ -732,6 +785,8 @@ export type EffectBuild = {
   engine: 'circuit' | 'pedalkernel' | 'nam' | 'web-audio' | 'passthrough';
   worklets: AudioWorkletNode[];
   scheduled: AudioScheduledSourceNode[];
+  /** Applies new knob values in place; when set, knob changes skip a rebuild. */
+  update?: (values: Record<string, number>) => void;
   /** Live-tweakable NAM gains: parameter changes skip a rebuild. */
   nam?: { node: AudioWorkletNode; input: GainNode; output: GainNode; dry: GainNode; wet: GainNode };
 };
@@ -1058,6 +1113,23 @@ function buildEffect(
   }
 
   if (specId === 'jet-flanger') {
+    const flangerParams = (v: Record<string, number>) => ({
+      manual: parameter(v, 'manual', 52) / 100,
+      rate: physical(specId, v, 'rate', 0.4),
+      depth: parameter(v, 'depth', 62) / 100,
+      feedback: (parameter(v, 'res', 38) / 100) * 0.92,
+    });
+    const flanger = makeFxNode(context, 'sonic-flanger', flangerParams(values));
+    if (flanger) {
+      built.worklets.push(flanger);
+      cursor.connect(flanger);
+      const mix = mixParallelNodes(context, cursor, flanger, parameter(values, 'mix', 46));
+      built.update = (next) => {
+        flanger.port.postMessage({ type: 'params', params: flangerParams(next) });
+        setMix(context, mix, parameter(next, 'mix', 46));
+      };
+      return mix.sum;
+    }
     const delay = context.createDelay(0.03);
     const feedback = context.createGain();
     const lfo = context.createOscillator();
@@ -1163,6 +1235,30 @@ function buildEffect(
     return cursor;
   }
 
+  if (specId === 'cloud-hall') {
+    const reverbParams = (v: Record<string, number>) => ({
+      decay: physical(specId, v, 'decay', 6),
+      preDelay: physical(specId, v, 'preDelay', 20) / 1000,
+      tone: physical(specId, v, 'tone', 6_000),
+      motion: parameter(v, 'motion', 31) / 100,
+      size: 1.5,
+    });
+    const reverb = makeFxNode(context, 'sonic-reverb', reverbParams(values));
+    if (reverb) {
+      built.worklets.push(reverb);
+      const highPass = context.createBiquadFilter();
+      highPass.type = 'highpass';
+      highPass.frequency.value = 45;
+      cursor.connect(reverb).connect(highPass);
+      const mix = mixParallelNodes(context, cursor, highPass, parameter(values, 'mix', 40));
+      built.update = (next) => {
+        reverb.port.postMessage({ type: 'params', params: reverbParams(next) });
+        setMix(context, mix, parameter(next, 'mix', 40));
+      };
+      return mix.sum;
+    }
+  }
+
   if (specId === 'reverse-space' || specId === 'gated-room' || specId === 'cloud-hall') {
     const preDelay = context.createDelay(1.05);
     const convolver = context.createConvolver();
@@ -1203,31 +1299,66 @@ function buildEffect(
   return cursor;
 }
 
-function makeCabinetImpulse(context: BaseAudioContext, seconds: number, distance: number, room: number, seed: number) {
+/**
+ * Cabinet impulse: a minimum-phase miked-speaker response designed from the
+ * cab's voicing (resonance, body, presence, roll-off, cone-breakup ripple)
+ * plus a few early room reflections, decorrelated left/right.
+ */
+function makeCabinetImpulse(context: BaseAudioContext, cab: CabSpec, position: number, distance: number, room: number) {
   let cache = cabinetImpulseCaches.get(context);
   if (!cache) {
     cache = new Map();
     cabinetImpulseCaches.set(context, cache);
   }
-  const key = `${seconds}:${distance}:${room}:${seed}`;
+  const key = `${cab.id}:${Math.round(position)}:${Math.round(distance)}:${Math.round(room)}`;
   return cachedValue(cache, key, MAX_CABINET_CACHE_ENTRIES, () => {
-    const roomTail = room / 100 * 0.055;
-    const length = Math.max(1, Math.ceil(context.sampleRate * (seconds + roomTail)));
-    const buffer = context.createBuffer(2, length, context.sampleRate);
-    const random = seededRandom(seed);
-    const distanceDelay = Math.floor((0.0004 + distance / 100 * 0.0045) * context.sampleRate);
-
+    const sampleRate = context.sampleRate;
+    const n = 4096;
+    const closed = cab.format === 'CLOSED BACK';
+    const voicing: SpeakerVoicing = {
+      resonanceHz: cab.voicing.lowCut * (closed ? 1.3 : 1.2),
+      resonanceQ: closed ? 1.3 : 0.85,
+      openBackHz: closed ? 0 : cab.voicing.lowCut * 1.35,
+      bodyHz: cab.voicing.bodyHz,
+      bodyGain: cab.voicing.bodyGain,
+      presenceHz: cab.voicing.airHz,
+      presenceGain: cab.voicing.airGain,
+      highCut: cab.voicing.highCut * 0.72,
+      seed: [...cab.id].reduce((hash, char) => Math.imul(hash ^ char.charCodeAt(0), 16777619), 2166136261),
+    };
+    const speaker = minimumPhaseImpulse(speakerMagnitude(voicing, { position, distance }, sampleRate, n), n);
+    const speakerLength = Math.min(n, Math.ceil(sampleRate * 0.045));
+    // Distance adds propagation delay; the room adds a floor bounce and a few
+    // wall reflections, slightly different per channel for width.
+    const directDelay = Math.round(sampleRate * (0.0003 + distance / 100 * 0.0026));
+    const roomAmount = room / 100;
+    const reflections = [
+      { seconds: 0.0021 + distance / 100 * 0.0018, gain: 0.32 + distance / 100 * 0.2 },
+      { seconds: 0.0073, gain: 0.55 * roomAmount },
+      { seconds: 0.0118, gain: 0.42 * roomAmount },
+      { seconds: 0.0187, gain: 0.3 * roomAmount },
+    ];
+    const tailFrames = Math.ceil(sampleRate * (0.024 + roomAmount * 0.03));
+    const length = directDelay + speakerLength + tailFrames;
+    const buffer = context.createBuffer(2, length, sampleRate);
     for (let channel = 0; channel < 2; channel += 1) {
       const data = buffer.getChannelData(channel);
-      data[Math.min(length - 1, distanceDelay + channel * 2)] = 0.92;
-      for (let index = distanceDelay + 1; index < length; index += 1) {
-        const phase = (index - distanceDelay) / Math.max(1, length - distanceDelay);
-        const cabinetDecay = Math.exp(-phase * (7.5 - room / 24));
-        const earlyReflection = index % Math.max(7, Math.floor(context.sampleRate * 0.0017)) === 0 ? 0.34 : 0.08;
-        data[index] += random() * cabinetDecay * earlyReflection * (0.42 + room / 180);
-      }
+      const add = (offset: number, gain: number, darken: number) => {
+        let state = 0;
+        for (let i = 0; i < speakerLength && offset + i < length; i += 1) {
+          // Reflections lose top end: a one-pole low-pass per bounce.
+          state += (speaker[i] - state) * (1 - darken);
+          const fade = i > speakerLength * 0.75 ? (speakerLength - i) / (speakerLength * 0.25) : 1;
+          data[offset + i] += state * gain * fade;
+        }
+      };
+      add(directDelay, 1, 0);
+      reflections.forEach((reflection, index) => {
+        if (reflection.gain <= 0.001) return;
+        const skew = channel === 0 ? 1 : 1 + 0.07 * (index + 1);
+        add(directDelay + Math.round(sampleRate * reflection.seconds * skew), reflection.gain * (index % 2 ? -1 : 1), 0.35 + index * 0.12);
+      });
     }
-
     return buffer;
   });
 }
@@ -1259,24 +1390,23 @@ function connectAmpCab(context: BaseAudioContext, input: AudioNode, ampConfig: A
   master.gain.value = (0.12 + parameter(ampValues, 'master', 60) / 94) / (0.74 + gainValue / 115);
   input.connect(inputGain).connect(bass).connect(mids).connect(treble).connect(shaper).connect(presence).connect(ampCut).connect(master);
 
-  const cabHighPass = context.createBiquadFilter();
-  const cabLowPass = context.createBiquadFilter();
-  const body = context.createBiquadFilter();
-  const air = context.createBiquadFilter();
   const position = parameter(cabValues, 'position', 48);
   const distance = parameter(cabValues, 'distance', 18);
   const room = parameter(cabValues, 'room', 10);
-  cabHighPass.type = 'highpass'; cabHighPass.frequency.value = cab.voicing.lowCut + distance * 0.32;
-  cabLowPass.type = 'lowpass'; cabLowPass.frequency.value = Math.max(2_000, cab.voicing.highCut * (1.12 - position / 330 - distance / 520)); cabLowPass.Q.value = 0.72;
-  body.type = 'peaking'; body.frequency.value = cab.voicing.bodyHz; body.Q.value = 0.95; body.gain.value = cab.voicing.bodyGain;
-  air.type = 'peaking'; air.frequency.value = cab.voicing.airHz; air.Q.value = 1.08; air.gain.value = cab.voicing.airGain + (50 - position) * 0.045;
-  master.connect(cabHighPass).connect(body).connect(air).connect(cabLowPass);
 
-  if (cab.voicing.impulseSeconds <= 0) return cabLowPass;
+  if (cab.voicing.impulseSeconds <= 0) {
+    // Direct / full range: only a gentle safety roll-off.
+    const safety = context.createBiquadFilter();
+    safety.type = 'lowpass';
+    safety.frequency.value = cab.voicing.highCut;
+    safety.Q.value = 0.6;
+    master.connect(safety);
+    return safety;
+  }
   const convolver = context.createConvolver();
   convolver.normalize = true;
-  convolver.buffer = makeCabinetImpulse(context, cab.voicing.impulseSeconds, distance, room, cab.id.length * 1877);
-  cabLowPass.connect(convolver);
+  convolver.buffer = makeCabinetImpulse(context, cab, position, distance, room);
+  master.connect(convolver);
   return convolver;
 }
 
@@ -1317,25 +1447,42 @@ function connectBoardGraph(
   return monitorMakeup;
 }
 
-function masterLevel(outputValue: number) {
-  return 0.04 + (clampParameter(outputValue) / 100) * 0.34;
+/**
+ * Output knob to master gain. With the true-peak limiter in place the range
+ * is ~10 dB hotter (the old path relied on heavy bus compression instead).
+ */
+function masterLevel(outputValue: number, limited: boolean) {
+  const knob = clampParameter(outputValue) / 100;
+  return limited ? 0.12 + knob * 1.1 : 0.04 + knob * 0.34;
 }
 
 function connectMaster(
   context: BaseAudioContext,
   input: AudioNode,
   outputValue: number,
-): GainNode {
+): { level: GainNode; output: AudioNode; limited: boolean } {
+  const level = context.createGain();
+  const limiter = makeFxNode(context, 'sonic-limiter', { ceilingDb: -1, releaseMs: 80 });
+  level.gain.value = masterLevel(outputValue, Boolean(limiter));
+  if (limiter) {
+    // Gentle glue compression, the output level, then a true-peak ceiling.
+    const glue = context.createDynamicsCompressor();
+    glue.threshold.value = -16;
+    glue.knee.value = 10;
+    glue.ratio.value = 3;
+    glue.attack.value = 0.01;
+    glue.release.value = 0.2;
+    input.connect(glue).connect(level).connect(limiter);
+    return { level, output: limiter, limited: true };
+  }
   const compressor = context.createDynamicsCompressor();
-  const output = context.createGain();
   compressor.threshold.value = -8;
   compressor.knee.value = 6;
   compressor.ratio.value = 8;
   compressor.attack.value = 0.004;
   compressor.release.value = 0.16;
-  output.gain.value = masterLevel(outputValue);
-  input.connect(compressor).connect(output);
-  return output;
+  input.connect(compressor).connect(level);
+  return { level, output: level, limited: false };
 }
 
 /** Crossfade length for graph and slot swaps: short enough to feel instant. */
@@ -1487,6 +1634,8 @@ function updateEffectSlot(session: LiveAudioSession, slot: EffectSlot, values: R
     build.nam.output.gain.setTargetAtTime(dbToGain(physical(specId, values, 'output', 0)), now, 0.015);
     build.nam.dry.gain.setTargetAtTime(Math.cos(mix * Math.PI * 0.5), now, 0.015);
     build.nam.wet.gain.setTargetAtTime(Math.sin(mix * Math.PI * 0.5), now, 0.015);
+  } else if (build.update) {
+    build.update(values);
   } else if (build.engine !== 'passthrough') {
     // Web Audio models: build the new instance beside the old one, crossfade
     // their inputs, and let the old instance's tail ring out before release.
@@ -1550,10 +1699,11 @@ function structureKey(config: BoardAudioConfig) {
 
 /** Loads only the worklet runtimes the active chain needs. */
 async function prepareProcessorsFor(context: BaseAudioContext, config: BoardAudioConfig) {
-  if (config.mode === 'dry') return;
+  const fx = prepareFxProcessor(context);
+  if (config.mode === 'dry') return fx;
   const bypassed = new Set(config.bypassed);
   const active = config.chain.filter((item) => !bypassed.has(item.instanceId)).map((item) => item.specId);
-  const jobs: Promise<void>[] = [];
+  const jobs: Promise<void>[] = [fx];
   if (active.includes('noise-gate')) jobs.push(prepareNoiseGateProcessor(context));
   const needsCircuit = active.some((id) => CIRCUIT_EFFECT_IDS.has(id));
   if (needsCircuit) jobs.push(prepareCircuitProcessor(context));
@@ -1581,17 +1731,20 @@ function buildLiveGraph(
   const scheduled: AudioScheduledSourceNode[] = [];
   const slots = new Map<string, EffectSlot>();
   let level: GainNode | null = null;
+  let masterOutput: AudioNode | null = null;
   try {
     source.buffer = buffer;
     source.loop = true;
     source.loopEnd = buffer.duration;
     source.connect(input);
     const effected = connectBoardGraph(context, input, config, scheduled, namNodes, slots);
-    level = connectMaster(context, effected, config.output);
+    const master = connectMaster(context, effected, config.output);
+    level = master.level;
+    masterOutput = master.output;
     const now = context.currentTime;
     fade.gain.setValueAtTime(0, now);
     fade.gain.linearRampToValueAtTime(1, now + SWAP_FADE_SECONDS);
-    level.connect(fade).connect(context.destination);
+    master.output.connect(fade).connect(context.destination);
     source.start(0, offsetSeconds % buffer.duration);
   } catch (error) {
     stopScheduled(scheduled);
@@ -1599,6 +1752,7 @@ function buildLiveGraph(
     try { source.stop(); } catch { /* not started */ }
     source.disconnect();
     level?.disconnect();
+    if (masterOutput && masterOutput !== level) disposeWorklet(masterOutput as AudioWorkletNode);
     fade.disconnect();
     throw error;
   }
@@ -1608,6 +1762,7 @@ function buildLiveGraph(
     source,
     input,
     level,
+    masterOutput: masterOutput ?? level,
     fade,
     scheduled,
     slots,
@@ -1630,6 +1785,7 @@ function disposeGraph(session: LiveAudioSession, graph: LiveGraph) {
     try { slot.output.disconnect(); } catch { /* already detached */ }
   });
   try { graph.level.disconnect(); } catch { /* already detached */ }
+  if (graph.masterOutput !== graph.level) disposeWorklet(graph.masterOutput as AudioWorkletNode);
   try { graph.fade.disconnect(); } catch { /* already detached */ }
   const cached = new Set([...session.namCache.values()].map((entry) => entry.node));
   graph.namNodes.forEach((node) => { if (!cached.has(node)) disposeNamNode(node); });
@@ -1688,7 +1844,7 @@ function installGraph(
 
 function applyParameterChanges(session: LiveAudioSession, graph: LiveGraph, config: BoardAudioConfig) {
   const now = session.context.currentTime;
-  graph.level.gain.setTargetAtTime(masterLevel(config.output), now, 0.015);
+  graph.level.gain.setTargetAtTime(masterLevel(config.output, graph.masterOutput !== graph.level), now, 0.015);
   graph.slots.forEach((slot, instanceId) => {
     updateEffectSlot(session, slot, config.values[instanceId] ?? {}, graph.namNodes);
   });
@@ -1806,7 +1962,7 @@ export async function renderBoardToWav(config: BoardAudioConfig) {
   source.buffer = await makeAudioBuffer(offline, config.source);
   source.connect(input);
   const effected = connectBoardGraph(offline, input, config, scheduled, namNodes);
-  connectMaster(offline, effected, config.output).connect(offline.destination);
+  connectMaster(offline, effected, config.output).output.connect(offline.destination);
   source.start(0);
   let rendered: AudioBuffer;
   try {
@@ -1818,5 +1974,6 @@ export async function renderBoardToWav(config: BoardAudioConfig) {
   const exportChannels = config.mode === 'wet'
     ? trimRenderedTail(channels, rendered.sampleRate)
     : channels;
-  return new Blob([encodePcm16Wav(exportChannels, rendered.sampleRate)], { type: 'audio/wav' });
+  // 24-bit keeps the quiet tails of reverbs and delays free of quantisation grit.
+  return new Blob([encodePcmWav(exportChannels, rendered.sampleRate, { bits: 24 })], { type: 'audio/wav' });
 }

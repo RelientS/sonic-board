@@ -395,6 +395,59 @@ function writeAscii(view: DataView, offset: number, value: string) {
   }
 }
 
+export type WavEncodeOptions = {
+  bits: 16 | 24;
+  /** Triangular (TPDF) dither of one LSB; recommended for 16-bit output. */
+  dither?: boolean;
+  random?: () => number;
+};
+
+/** Interleaved little-endian PCM WAV at 16 or 24 bits. */
+export function encodePcmWav(channels: Float32Array[], sampleRate: number, options: WavEncodeOptions) {
+  if (channels.length === 0) throw new Error('At least one channel is required');
+  const frameCount = Math.min(...channels.map((channel) => channel.length));
+  const channelCount = channels.length;
+  const bytesPerSample = options.bits / 8;
+  const dataLength = frameCount * channelCount * bytesPerSample;
+  const buffer = new ArrayBuffer(44 + dataLength);
+  const view = new DataView(buffer);
+  const random = options.random ?? Math.random;
+  const fullScale = options.bits === 24 ? 0x7fffff : 0x7fff;
+  const lsb = 1 / fullScale;
+
+  writeAscii(view, 0, 'RIFF');
+  view.setUint32(4, 36 + dataLength, true);
+  writeAscii(view, 8, 'WAVE');
+  writeAscii(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, channelCount, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * channelCount * bytesPerSample, true);
+  view.setUint16(32, channelCount * bytesPerSample, true);
+  view.setUint16(34, options.bits, true);
+  writeAscii(view, 36, 'data');
+  view.setUint32(40, dataLength, true);
+
+  let offset = 44;
+  for (let frame = 0; frame < frameCount; frame += 1) {
+    for (let channel = 0; channel < channelCount; channel += 1) {
+      let sample = channels[channel][frame];
+      if (options.dither) sample += (random() - random()) * lsb;
+      const value = Math.round(Math.min(1, Math.max(-1, sample)) * fullScale);
+      if (options.bits === 24) {
+        view.setUint8(offset, value & 0xff);
+        view.setUint8(offset + 1, (value >> 8) & 0xff);
+        view.setUint8(offset + 2, (value >> 16) & 0xff);
+      } else {
+        view.setInt16(offset, value, true);
+      }
+      offset += bytesPerSample;
+    }
+  }
+  return buffer;
+}
+
 export function encodePcm16Wav(channels: Float32Array[], sampleRate: number) {
   if (channels.length === 0) throw new Error('At least one channel is required');
   const frameCount = Math.min(...channels.map((channel) => channel.length));

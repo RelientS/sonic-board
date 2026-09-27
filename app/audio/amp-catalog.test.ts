@@ -50,6 +50,6 @@ test('amp and cabinet references use their classic names without claiming offici
     'Direct / Full Range',
   ]);
   AMP_SPECS.forEach((amp) => assert.match(amp.modeling, /算法近似·非官方/));
-  CAB_SPECS.slice(0, -1).forEach((cab) => assert.match(cab.modeling, /合成箱体·非实测 IR/));
+  CAB_SPECS.slice(0, -1).forEach((cab) => assert.match(cab.modeling, /扬声器频响模型·最小相位 IR·非实测/));
   assert.match(CAB_SPECS.at(-1)!.modeling, /无箱体建模/);
 });

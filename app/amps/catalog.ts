@@ -100,19 +100,19 @@ export const AMP_SPECS: AmpSpec[] = [
 
 export const CAB_SPECS: CabSpec[] = [
   {
-    id: 'open-1x12', name: "Fender '65 Deluxe Reverb 1×12 Jensen C12K", format: 'OPEN BACK', description: '参考开背 1×12 Jensen 箱体的轻、松和近场感。', modeling: '合成箱体·非实测 IR·非官方', controls: cabControls(),
+    id: 'open-1x12', name: "Fender '65 Deluxe Reverb 1×12 Jensen C12K", format: 'OPEN BACK', description: '参考开背 1×12 Jensen 箱体的轻、松和近场感。', modeling: '扬声器频响模型·最小相位 IR·非实测·非官方', controls: cabControls(),
     voicing: { lowCut: 78, highCut: 8_900, bodyHz: 175, bodyGain: 2.2, airHz: 3_600, airGain: 1.4, impulseSeconds: 0.024 },
   },
   {
-    id: 'open-2x12', name: "Fender '65 Twin Reverb 2×12 Jensen C12K", format: 'OPEN BACK', description: '参考 Twin Reverb 开背 2×12 的宽松、饱满和明亮清音。', modeling: '合成箱体·非实测 IR·非官方', controls: cabControls(),
+    id: 'open-2x12', name: "Fender '65 Twin Reverb 2×12 Jensen C12K", format: 'OPEN BACK', description: '参考 Twin Reverb 开背 2×12 的宽松、饱满和明亮清音。', modeling: '扬声器频响模型·最小相位 IR·非实测·非官方', controls: cabControls(),
     voicing: { lowCut: 64, highCut: 8_500, bodyHz: 145, bodyGain: 2.8, airHz: 3_300, airGain: 1.2, impulseSeconds: 0.032 },
   },
   {
-    id: 'blue-2x12', name: 'VOX AC30C2X 2×12 Celestion Alnico Blue', format: 'ALNICO', description: '参考 AC30C2X 蓝盆 2×12 的铃音上端和柔和压缩。', modeling: '合成箱体·非实测 IR·非官方', controls: cabControls(),
+    id: 'blue-2x12', name: 'VOX AC30C2X 2×12 Celestion Alnico Blue', format: 'ALNICO', description: '参考 AC30C2X 蓝盆 2×12 的铃音上端和柔和压缩。', modeling: '扬声器频响模型·最小相位 IR·非实测·非官方', controls: cabControls(),
     voicing: { lowCut: 70, highCut: 9_600, bodyHz: 155, bodyGain: 2.1, airHz: 4_100, airGain: 2.4, impulseSeconds: 0.029 },
   },
   {
-    id: 'closed-4x12', name: 'Marshall 1960A 4×12 Celestion G12T-75', format: 'CLOSED BACK', description: '参考 1960A 封闭 4×12 的紧低频、密集中低频和强推动感。', modeling: '合成箱体·非实测 IR·非官方', controls: cabControls(),
+    id: 'closed-4x12', name: 'Marshall 1960A 4×12 Celestion G12T-75', format: 'CLOSED BACK', description: '参考 1960A 封闭 4×12 的紧低频、密集中低频和强推动感。', modeling: '扬声器频响模型·最小相位 IR·非实测·非官方', controls: cabControls(),
     voicing: { lowCut: 72, highCut: 7_600, bodyHz: 125, bodyGain: 4.2, airHz: 2_900, airGain: 1.1, impulseSeconds: 0.041 },
   },
   {
