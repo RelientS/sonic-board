@@ -15,6 +15,7 @@ import {
 } from './audio/audio-engine';
 import { LiveSessionController } from './audio/live-session-controller';
 import { BoardHistory } from './board-history';
+import { AccountButton } from './account/AccountButton';
 import type { AudioChainItem, RoutingConfig, SignalLane } from './audio/audio-core';
 import {
   createBrowserNamModelRepository,
@@ -1382,6 +1383,7 @@ export default function Home() {
             />
             <i aria-hidden="true"><b /></i><strong>参数教程</strong>
           </label>
+          <AccountButton />
           <button type="button" className="quiet" onClick={resetBoard}>重置</button>
           <button type="button" className="accent" onClick={saveCurrentPreset}>{saveState === 'saved' ? '已保存' : '保存音色'}</button>
         </div>

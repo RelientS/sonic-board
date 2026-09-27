@@ -38,3 +38,16 @@
   .account-fields button, .account-tabs button, .account-bar-row button, .account-share-link button { min-height: 44px; }
   .account-share-link input { height: 44px; font-size: 16px; }
 }
+
+.account-dialog { width: min(420px, calc(100vw - 32px)); padding: 0; border: 0; border-radius: 16px; background: transparent; color: var(--ink); box-shadow: 0 26px 80px rgb(0 0 0 / 38%); }
+.account-dialog::backdrop { background: rgb(15 15 14 / 45%); }
+.account-dialog-sheet { padding: 16px; border-radius: 16px; background: var(--paper, #f7f5ef); }
+.account-dialog-sheet > header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.account-dialog-sheet > header h2 { margin: 0; font-size: 15px; }
+.account-dialog-sheet > header button { min-height: 36px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; background: #fff; cursor: pointer; }
+.account-open-button { max-width: 140px; overflow: hidden; padding: 0 12px; text-overflow: ellipsis; white-space: nowrap; }
+.account-label-short { display: none; }
+@media (max-width: 720px) {
+  .account-label-long { display: none; }
+  .account-label-short { display: inline; }
+}

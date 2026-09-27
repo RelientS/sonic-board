@@ -540,7 +540,8 @@ button:active:not(:disabled) { filter: brightness(.93); }
   .app-shell { display: block; min-width: 320px; padding-bottom: calc(var(--mobile-transport-clearance) + env(safe-area-inset-bottom)); }
   .topbar { position: sticky; top: 0; min-height: 64px; padding: 0 14px; }
   .brand small, .top-actions > span, .quiet { display: none; }
-  .accent { min-height: 44px; padding: 0 11px; }
+  .top-actions .account-open-button { display: inline-flex; align-items: center; max-width: 64px; padding: 0 8px; font-size: 11px; white-space: nowrap; }
+  .accent { min-height: 44px; padding: 0 9px; white-space: nowrap; }
   .tutorial-toggle { min-height: 44px; }
   .agent-open-button { min-height: 44px; padding-inline: 11px; }
   .library-panel { max-height: 398px; padding: 16px 14px; }
