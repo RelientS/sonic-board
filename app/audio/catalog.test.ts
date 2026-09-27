@@ -69,7 +69,7 @@ test('pedals use the classic model names shown on the physical board', () => {
   assert.equal(getEffectSpec('studio-comp').name, 'MXR Dyna Comp');
   assert.equal(getEffectSpec('blue-drive').name, 'Boss BD-2 Blues Driver');
   assert.equal(getEffectSpec('rodent-dist').name, 'Pro Co RAT 2');
-  assert.equal(getEffectSpec('wall-fuzz').name, 'Electro-Harmonix Big Muff Pi');
+  assert.equal(getEffectSpec('wall-fuzz').name, "Electro-Harmonix Big Muff Pi Ram's Head");
   assert.equal(getEffectSpec('slow-phase').name, 'Electro-Harmonix Small Stone');
   assert.equal(getEffectSpec('analog-chorus').name, 'Boss CE-2 Chorus');
   assert.equal(getEffectSpec('dm2-delay').name, 'Boss DM-2 Delay');

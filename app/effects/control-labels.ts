@@ -40,6 +40,8 @@ const CONTROL_LABELS: Record<string, string> = {
   lowCut: 'LOW CUT',
   highCut: 'HIGH CUT',
   density: 'DENSITY',
+  dist: 'DIST',
+  tonebypass: 'BYPASS',
   hold: 'HOLD',
   motion: 'MOTION',
   '100': '100',

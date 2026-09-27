@@ -10,11 +10,13 @@ Sonic Board 是一个面向盯鞋与氛围吉他的开源浏览器效果器工�
 
 | 参考对象 | 当前运行引擎 | 自动门禁 | 真机盲测 | 当前结论 |
 | --- | --- | --- | --- | --- |
-| Dyna Comp、BD-2、RAT 2 | PedalKernel WDF / WASM | 持续输出、有限值、输出校准、逐旋钮响应通过 | 未完成 | 电路候选，目标 ≥8，未评分 |
-| Big Muff Pi、Fuzz Face | PedalKernel WASM 实时修正路径 | 持续输出、有限值、输出校准、逐旋钮响应通过 | 未完成 | 实时修正候选，目标 ≥8，未评分 |
-| DM-2、Deluxe Memory Man | PedalKernel WDF / WASM | 持续输出、有限值、输出校准、逐旋钮响应通过 | 未完成 | 电路候选，目标 ≥8，未评分 |
-| CE-2、OCD、Klon Centaur | PedalKernel WDF / WASM | 持续输出、有限值、输出校准、逐旋钮响应通过 | 未完成 | 电路候选，目标 ≥8，未评分 |
+| Big Muff Pi Ram's Head、Op-Amp Big Muff、RAT 2、DS-1、BD-2、Klon Centaur | SPICE 网表 + DK 实时电路求解 / WASM | 与 ngspice 同网表对齐（最差 NRMSE 0.05–1.1%）、逐旋钮响应、零 Newton 失败 | 未完成 | 原理图级候选，目标 ≥8，未评分 |
+| Dyna Comp、CE-2、OCD | PedalKernel WDF / WASM | 持续输出、有限值、输出校准、逐旋钮响应通过 | 未完成 | 电路候选，目标 ≥8，未评分 |
+| Fuzz Face | PedalKernel WASM 实时修正路径 | 持续输出、有限值、输出校准、逐旋钮响应通过 | 未完成 | 实时修正候选，目标 ≥8，未评分 |
+| DM-2、Deluxe Memory Man | Web Audio BBD 近似 | 持续输出、有限值、输出校准、逐旋钮响应通过 | 未完成 | 回退近似，未评分 |
 | SD-1、TS808、Phase 90 | PedalKernel WDF / WASM | 持续输出、有限值、输出校准、逐旋钮响应通过 | 未完成 | 电路候选，目标 ≥8，未评分 |
+
+电路求解引擎位于 `dsp/circuit`：每个单块是一份可以直接交给 ngspice 的 SPICE 网表，浏览器里用节点 DK 方法逐采样求解（牛顿迭代 + SPICE 结限幅，困难采样回退到 Levenberg-Marquardt、同伦延拓与时间子步）。各网表的原理图来源、交叉核对和不确定元件写在文件头，验证数据见 [`dsp/circuit/models/README.md`](dsp/circuit/models/README.md)。NRMSE 衡量的是求解器对原理图的忠实度，不是与真机的接近程度；`dsp/circuit/examples/capture.rs` 提供与 reamp 真机录音对比的工具。
 
 其余效果器、箱头与箱体目前仍是非官方算法近似。经典名称只用于说明参考对象，不表示厂商授权或官方模型。
 
@@ -38,12 +40,16 @@ npm run typecheck
 npm run build
 ```
 
-重新编译 PedalKernel WASM 需要 Rust 与 `wasm32-unknown-unknown` 目标：
+重新编译 WASM 需要 Rust 与 `wasm32-unknown-unknown` 目标：
 
 ```bash
-npm run build:dsp
+npm run build:dsp        # PedalKernel
 npm run test:dsp
+npm run build:circuit    # 电路求解引擎
+npm run test:circuit
 ```
+
+电路网表的 ngspice 对照验证需要本机安装 ngspice：`dsp/circuit/scripts/validate.sh`。
 
 常规 Web 构建直接使用仓库中已提交的 WASM，不要求托管环境安装 Rust。
 
@@ -52,8 +58,9 @@ npm run test:dsp
 - `app/audio`：Web Audio 图、采样渲染、路由与回归测试
 - `app/effects`：效果器目录、参数帮助与保真状态
 - `app/agent`：Pi Agent、站内工具与可逆操作
+- `dsp/circuit`：SPICE 网表电路求解引擎、单块网表、ngspice 验证与真机对比工具
 - `dsp/pedalkernel-wasm`：PedalKernel 浏览器封装与固定电路定义
-- `public/audio`：真实 DI 素材、AudioWorklet 和编译后的 WASM
+- `public/audio`：真实 DI 素材、AudioWorklet 和编译后的 WASM（`circuit.wasm` / `pedalkernel.wasm`）
 
 ## 许可证
 

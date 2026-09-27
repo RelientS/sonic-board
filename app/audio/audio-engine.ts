@@ -24,7 +24,7 @@ import type { NamModelRecord } from './nam-model.ts';
 
 export const SUPPORTED_EFFECT_IDS = new Set([
   'studio-comp', 'noise-gate', 'graphic-eq',
-  'blue-drive', 'rodent-dist', 'fuzz-war-nam', 'wall-fuzz', 'chainsaw-dist',
+  'blue-drive', 'rodent-dist', 'fuzz-war-nam', 'wall-fuzz', 'opamp-muff', 'ds1-dist', 'chainsaw-dist',
   'fuzz-face', 'ocd-drive', 'klon-centaur', 'sd1-drive', 'tube-screamer',
   'slow-phase', 'phase90', 'analog-chorus', 'jet-flanger', 'tape-vibrato', 'bias-tremolo', 'soft-detune',
   'analog-delay', 'dm2-delay', 'tape-echo', 'digital-delay',
@@ -39,6 +39,18 @@ export const PEDALKERNEL_EFFECT_IDS: ReadonlySet<string> = new Set([
 ]);
 export const PEDALKERNEL_FALLBACK_EFFECT_IDS: ReadonlySet<string> = new Set(PEDALKERNEL_EFFECT_IDS);
 export const NAM_EFFECT_IDS: ReadonlySet<string> = new Set(['fuzz-war-nam']);
+// Pedals solved from their schematics by the DK circuit engine
+// (dsp/circuit). Control ids are listed in the netlist's control order.
+export const CIRCUIT_MODELS: Record<string, { model: string; controls: string[]; switches?: string[] }> = {
+  'wall-fuzz': { model: 'rams-head-muff', controls: ['volume', 'tone', 'sustain'] },
+  'opamp-muff': { model: 'opamp-big-muff', controls: ['volume', 'tone', 'sustain'], switches: ['tonebypass'] },
+  'rodent-dist': { model: 'proco-rat2', controls: ['volume', 'filter', 'distortion'] },
+  'ds1-dist': { model: 'boss-ds1', controls: ['level', 'tone', 'dist'] },
+  'blue-drive': { model: 'boss-bd2', controls: ['level', 'tone', 'gain'] },
+  'klon-centaur': { model: 'klon-centaur', controls: ['gain', 'treble', 'output'] },
+};
+export const CIRCUIT_EFFECT_IDS: ReadonlySet<string> = new Set(Object.keys(CIRCUIT_MODELS));
+const CIRCUIT_RUNTIME_VERSION = 2;
 export { EFFECT_FIDELITY_PROFILES, type EffectFidelityProfile };
 
 const MAX_CURVE_CACHE_ENTRIES = 32;
@@ -61,6 +73,11 @@ const namWasmModules = new WeakMap<BaseAudioContext, WebAssembly.Module>();
 let namWasmModulePromise: Promise<WebAssembly.Module> | null = null;
 let pedalKernelModulePromise: Promise<WebAssembly.Module> | null = null;
 const PEDALKERNEL_RUNTIME_VERSION = 4;
+const circuitReady = new WeakSet<BaseAudioContext>();
+const circuitLoading = new WeakMap<BaseAudioContext, Promise<void>>();
+type CircuitRuntime = { wasmModule: WebAssembly.Module; modelIndex: Map<string, number> };
+const circuitRuntimes = new WeakMap<BaseAudioContext, CircuitRuntime>();
+let circuitRuntimePromise: Promise<CircuitRuntime> | null = null;
 
 const PEDALKERNEL_MODELS: Record<string, { modelId: number; controls: string[] }> = {
   'studio-comp': { modelId: 0, controls: ['sustain', 'level'] },
@@ -350,6 +367,14 @@ function physical(specId: string, values: Record<string, number>, id: string, fa
   return mapControlValue(control, parameter(values, id, control.defaultValue));
 }
 
+function legacyLinear(knob: number, min: number, max: number) {
+  return min + (max - min) * knob / 100;
+}
+
+function legacyExponential(knob: number, min: number, max: number) {
+  return min * (max / min) ** (knob / 100);
+}
+
 function dbToGain(db: number) {
   return 10 ** (db / 20);
 }
@@ -511,6 +536,81 @@ function mixParallel(
   return sum;
 }
 
+async function loadCircuitRuntime(): Promise<CircuitRuntime> {
+  const response = await fetch(`/audio/circuit.wasm?v=${CIRCUIT_RUNTIME_VERSION}`);
+  if (!response.ok) throw new Error(`Circuit WASM ${response.status}`);
+  const wasmModule = await WebAssembly.compile(await response.arrayBuffer());
+  // Read the model table once on the main thread; the worklet only gets indices.
+  const exports = new WebAssembly.Instance(wasmModule, {}).exports as unknown as {
+    memory: WebAssembly.Memory;
+    runtime_version: () => number;
+    model_count: () => number;
+    model_info: (model: number) => number;
+    info_ptr: () => number;
+  };
+  if (exports.runtime_version() !== CIRCUIT_RUNTIME_VERSION) throw new Error('Circuit runtime version mismatch');
+  const modelIndex = new Map<string, number>();
+  for (let index = 0; index < exports.model_count(); index += 1) {
+    const length = exports.model_info(index);
+    const info = JSON.parse(new TextDecoder().decode(new Uint8Array(exports.memory.buffer, exports.info_ptr(), length))) as { id: string };
+    modelIndex.set(info.id, index);
+  }
+  return { wasmModule, modelIndex };
+}
+
+async function prepareCircuitProcessor(context: BaseAudioContext) {
+  if (circuitReady.has(context)) return;
+  const worklet = (context as BaseAudioContext & {
+    audioWorklet?: { addModule: (moduleUrl: string) => Promise<void> };
+  }).audioWorklet;
+  if (!worklet || typeof AudioWorkletNode === 'undefined') return;
+  let pending = circuitLoading.get(context);
+  if (!pending) {
+    circuitRuntimePromise ??= loadCircuitRuntime();
+    pending = Promise.all([
+      circuitRuntimePromise,
+      worklet.addModule(`/audio/circuit-processor.js?v=${CIRCUIT_RUNTIME_VERSION}`),
+    ]).then(([runtime]) => {
+      circuitRuntimes.set(context, runtime);
+      circuitReady.add(context);
+    }).catch(() => {
+      // PedalKernel and the Web Audio models keep playback working.
+      circuitRuntimePromise = null;
+    });
+    circuitLoading.set(context, pending);
+  }
+  await pending;
+}
+
+function makeCircuitNode(
+  context: BaseAudioContext,
+  specId: string,
+  values: Record<string, number>,
+) {
+  const circuit = CIRCUIT_MODELS[specId];
+  const runtime = circuitRuntimes.get(context);
+  const modelIndex = runtime?.modelIndex.get(circuit?.model ?? '');
+  if (!circuit || !runtime || modelIndex === undefined || typeof AudioWorkletNode === 'undefined') return null;
+  const spec = getEffectSpec(specId);
+  const knob = (id: string) => parameter(values, id, spec.controls.find((control) => control.id === id)?.defaultValue ?? 50) / 100;
+  try {
+    return new AudioWorkletNode(context, 'sonic-circuit', {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [2],
+      processorOptions: {
+        wasmModule: runtime.wasmModule,
+        expectedRuntimeVersion: CIRCUIT_RUNTIME_VERSION,
+        modelIndex,
+        controls: circuit.controls.map(knob),
+        switches: (circuit.switches ?? []).map((id) => (knob(id) >= 0.5 ? 1 : 0)),
+      },
+    });
+  } catch {
+    return null;
+  }
+}
+
 function makePedalKernelNode(
   context: BaseAudioContext,
   specId: string,
@@ -567,6 +667,15 @@ export function connectEffectChain(
         cursor = mixParallel(context, effectInput, outputGain, parameter(values, 'mix', 100));
       }
       return;
+    }
+
+    if (CIRCUIT_EFFECT_IDS.has(specId)) {
+      const processor = makeCircuitNode(context, specId, values);
+      if (processor) {
+        cursor.connect(processor);
+        cursor = processor;
+        return;
+      }
     }
 
     if (PEDALKERNEL_EFFECT_IDS.has(specId)) {
@@ -662,9 +771,10 @@ export function connectEffectChain(
       lowPass.type = 'lowpass';
       lowPass.frequency.value = specId === 'rodent-dist'
         ? 11_500 - parameter(values, 'filter', 45) * 91
-        : physical(specId, values, 'tone', 4_800);
+        : legacyExponential(parameter(values, 'tone', 54), 800, 12_000);
       lowPass.Q.value = 0.68;
-      output.gain.value = dbToGain(physical(specId, values, specId === 'blue-drive' ? 'level' : 'volume', -1)) * (specId === 'rodent-dist' ? 0.46 : 0.58);
+      const levelKnob = parameter(values, specId === 'blue-drive' ? 'level' : 'volume', 58);
+      output.gain.value = dbToGain(legacyLinear(levelKnob, -18, 12)) * (specId === 'rodent-dist' ? 0.46 : 0.58);
       cursor.connect(preGain).connect(shaper).connect(highPass).connect(lowPass).connect(output);
       cursor = output;
       return;
@@ -684,13 +794,15 @@ export function connectEffectChain(
       shaper.curve = cachedDriveCurve(sustain * 1.15);
       shaper.oversample = '4x';
       toneFilter.type = 'lowpass';
-      toneFilter.frequency.value = physical(specId, values, 'tone', 4_200);
+      // Circuit pedals expose knob positions; map them to the legacy
+      // approximation's 800-12k Hz tone and -18..+12 dB volume ranges.
+      toneFilter.frequency.value = legacyExponential(parameter(values, 'tone', 43), 800, 12_000);
       toneFilter.Q.value = 0.78;
       mids.type = 'peaking';
       mids.frequency.value = 1_050;
       mids.Q.value = 0.92;
       mids.gain.value = physical(specId, values, 'mids', 0);
-      output.gain.value = dbToGain(physical(specId, values, 'volume', -1)) * 0.27;
+      output.gain.value = dbToGain(legacyLinear(parameter(values, 'volume', 58), -18, 12)) * 0.27;
       dryInput.connect(preGain).connect(gate).connect(shaper).connect(toneFilter).connect(mids).connect(output);
       if (parameter(values, 'attack', 22) > 1) {
         const attackFilter = context.createBiquadFilter();
@@ -1185,7 +1297,7 @@ export async function createLiveSession(config: BoardAudioConfig) {
   try {
     activateMobileAudio(context, window.navigator);
     await context.resume();
-    await Promise.all([prepareNoiseGateProcessor(context), preparePedalKernelProcessor(context)]);
+    await Promise.all([prepareNoiseGateProcessor(context), preparePedalKernelProcessor(context), prepareCircuitProcessor(context)]);
     namNodes = await prepareNamNodes(context, config);
     const session: LiveAudioSession = {
       context,
@@ -1214,7 +1326,7 @@ export async function createLiveSession(config: BoardAudioConfig) {
 export async function refreshLiveSession(session: LiveAudioSession, config: BoardAudioConfig) {
   if (isClosedAudioContext(session.context)) return;
   const revision = ++session.revision;
-  await Promise.all([prepareNoiseGateProcessor(session.context), preparePedalKernelProcessor(session.context)]);
+  await Promise.all([prepareNoiseGateProcessor(session.context), preparePedalKernelProcessor(session.context), prepareCircuitProcessor(session.context)]);
   const namNodes = await prepareNamNodes(session.context, config);
   const key = sourceConfigKey(config.source);
   const offset = sourceConfigKey(config.source) === session.sourceKey
@@ -1252,7 +1364,7 @@ export async function renderBoardToWav(config: BoardAudioConfig) {
   });
   const totalSeconds = SOURCE_DURATION_SECONDS + tail;
   const offline = new OfflineAudioContext(2, Math.ceil(totalSeconds * sampleRate), sampleRate);
-  await Promise.all([prepareNoiseGateProcessor(offline), preparePedalKernelProcessor(offline)]);
+  await Promise.all([prepareNoiseGateProcessor(offline), preparePedalKernelProcessor(offline), prepareCircuitProcessor(offline)]);
   const namNodes = await prepareNamNodes(offline, config);
   const source = offline.createBufferSource();
   const input = offline.createGain();

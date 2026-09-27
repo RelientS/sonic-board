@@ -16,7 +16,9 @@
     "test": "node --test app/audio/*.test.ts",
     "build:dsp": "bash scripts/build-pedalkernel-wasm.sh",
     "test:dsp": "node --test app/audio/pedalkernel-wasm.test.ts",
-    "sync:nam": "node scripts/sync-nam-wasm.mjs"
+    "sync:nam": "node scripts/sync-nam-wasm.mjs",
+    "build:circuit": "bash scripts/build-circuit-wasm.sh",
+    "test:circuit": "cargo test --release --manifest-path dsp/circuit/Cargo.toml && node --test app/audio/circuit-wasm.test.ts"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "^0.74.2",

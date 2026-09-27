@@ -103,6 +103,9 @@ const c = (
 const level = (id = 'level', label = '电平', defaultValue = 58) => c(id, label, defaultValue, -18, 12, 'dB', 1);
 const mix = (defaultValue = 40) => c('mix', '混合', defaultValue);
 const rate = (defaultValue = 25) => c('rate', '速率', defaultValue, 0.05, 10, 'Hz', 2, 'exponential');
+// Circuit-modelled pedals show the real knob scale (0-10) because the value
+// is the pot rotation handed to the schematic, not a derived parameter.
+const knob = (id: string, label: string, defaultValue: number) => c(id, label, defaultValue, 0, 10, '', 1);
 const tone = (defaultValue = 50) => c('tone', '音色', defaultValue, 800, 12_000, 'Hz', 0, 'exponential');
 
 const EFFECT_SPECS_BASE: EffectSpec[] = [
@@ -126,14 +129,14 @@ const EFFECT_SPECS_BASE: EffectSpec[] = [
     ],
   },
   {
-    id: 'blue-drive', name: 'Boss BD-2 Blues Driver', maker: 'BOSS', category: 'Drive', family: 'BD-2 风格动态过载',
-    description: '低到中增益的前级推动，适合放在空间效果之前。', finish: '#2f66b1', ink: '#f7f4e9', accent: '#f04d37',
-    controls: [level(), tone(54), c('gain', '增益', 38)],
+    id: 'blue-drive', name: 'Boss BD-2 Blues Driver', maker: 'BOSS', category: 'Drive', family: 'BD-2 电路级仿真',
+    description: '按原厂原理图逐元件求解：两级分立 JFET 差分放大、双联增益电位器与 IC 低音补偿，动态随拨弦力度变化。', finish: '#2f66b1', ink: '#f7f4e9', accent: '#f04d37',
+    controls: [knob('level', '电平', 58), knob('tone', '音色', 54), knob('gain', '增益', 38)],
   },
   {
-    id: 'rodent-dist', name: 'Pro Co RAT 2', maker: 'PRO CO', category: 'Drive', family: 'RAT 风格硬削波失真',
-    description: '失真到法兹之间的粗糙质感，反向滤波顺时针会削高频。', finish: '#242426', ink: '#f3f0df', accent: '#da3f34',
-    controls: [c('distortion', '失真', 56), c('filter', '滤波', 45), level('volume', '音量', 62)],
+    id: 'rodent-dist', name: 'Pro Co RAT 2', maker: 'PRO CO', category: 'Drive', family: 'RAT 2 电路级仿真',
+    description: '按 RAT 2 原理图求解：LM308 的有限带宽与压摆率、1N914 硬削波和反向 Filter，顺时针滤波更暗。', finish: '#242426', ink: '#f3f0df', accent: '#da3f34',
+    controls: [knob('distortion', '失真', 56), knob('filter', '滤波', 45), knob('volume', '音量', 62)],
   },
   {
     id: 'fuzz-war-nam', name: 'Death By Audio Fuzz War', maker: 'DEATH BY AUDIO', category: 'Drive', family: 'Fuzz War 私人 NAM capture', wide: true,
@@ -146,9 +149,19 @@ const EFFECT_SPECS_BASE: EffectSpec[] = [
     controls: [c('input', '输入', 67, -24, 12, 'dB', 1), c('output', '输出', 67, -24, 12, 'dB', 1), mix(100)],
   },
   {
-    id: 'wall-fuzz', name: 'Electro-Harmonix Big Muff Pi', maker: 'ELECTRO-HARMONIX', category: 'Drive', family: 'Big Muff 风格持续法兹', wide: true,
-    description: '四级晶体管与被动音色网络带来厚重延音和经典中频凹陷。', finish: '#d5d0c1', ink: '#20201e', accent: '#ed4f34',
-    controls: [level('volume', '音量', 58), tone(43), c('sustain', '延音', 67)],
+    id: 'ds1-dist', name: 'Boss DS-1 Distortion', maker: 'BOSS', category: 'Drive', family: 'DS-1 电路级仿真',
+    description: '按原厂 DS-1 原理图求解：晶体管前级、运放增益与对 4.5V 的二极管硬削波，Big-Muff 式被动音色。', finish: '#f07c1e', ink: '#1d1b19', accent: '#2a2826',
+    controls: [knob('level', '电平', 55), knob('tone', '音色', 50), knob('dist', '失真', 60)],
+  },
+  {
+    id: 'wall-fuzz', name: "Electro-Harmonix Big Muff Pi Ram's Head", maker: 'ELECTRO-HARMONIX', category: 'Drive', family: "Ram's Head 电路级仿真", wide: true,
+    description: '按 1973 紫字 Ram\'s Head 原理图逐元件求解：四级晶体管、反馈回路二极管削波与 33k/4nF 音色网络。', finish: '#d9d6cf', ink: '#6d3f7f', accent: '#d83a3a',
+    controls: [knob('volume', '音量', 58), knob('tone', '音色', 43), knob('sustain', '延音', 67)],
+  },
+  {
+    id: 'opamp-muff', name: 'Electro-Harmonix Op-Amp Big Muff', maker: 'ELECTRO-HARMONIX', category: 'Drive', family: 'Op-Amp Big Muff 电路级仿真', wide: true,
+    description: '按 1978 运放版原理图求解：4558 与 741 两级、三串二极管反馈削波和 Tone 旁路开关，比晶体管版更硬更亮。', finish: '#e9793a', ink: '#27231f', accent: '#d8d4c9',
+    controls: [knob('volume', '音量', 58), knob('tone', '音色', 50), knob('sustain', '延音', 65), c('tonebypass', '旁路', 0)],
   },
   {
     id: 'fuzz-face', name: 'Dallas-Arbiter Fuzz Face', maker: 'DALLAS-ARBITER', category: 'Drive', family: 'Fuzz Face 锗管法兹',
@@ -161,9 +174,9 @@ const EFFECT_SPECS_BASE: EffectSpec[] = [
     controls: [c('drive', '驱动', 50), tone(50), level('volume', '音量', 62)],
   },
   {
-    id: 'klon-centaur', name: 'Klon Centaur', maker: 'KLON', category: 'Drive', family: 'Centaur 双路混合过载',
-    description: '清音与锗二极管削波并行混合，适合保留起音的前级推动。', finish: '#b79b62', ink: '#241d12', accent: '#7c3328',
-    controls: [c('gain', '增益', 45), c('treble', '高频', 50), level('output', '输出', 62)],
+    id: 'klon-centaur', name: 'Klon Centaur', maker: 'KLON', category: 'Drive', family: 'Centaur 电路级仿真',
+    description: '按 Centaur 原理图求解：双联增益在清音与锗管削波路径间交叉混合，18V 电荷泵供电的运放留足余量。Studio Daydream KCM-OD 即此电路。', finish: '#b79b62', ink: '#241d12', accent: '#7c3328',
+    controls: [knob('gain', '增益', 45), knob('treble', '高频', 50), knob('output', '输出', 62)],
   },
   {
     id: 'sd1-drive', name: 'Boss SD-1 Super OverDrive', maker: 'BOSS', category: 'Drive', family: 'SD-1 非对称软削波',
@@ -279,8 +292,16 @@ const effectDiscovery: Record<string, EffectDiscovery> = {
     searchTerms: ['fuzz war', 'death by audio', 'nam', 'capture', '法兹', '盯鞋', 'shoegaze', 'noise', '噪音', 'wall of sound', '音墙', 'experimental', '实验'],
     styleTags: ['shoegaze', 'indie', 'experimental'],
   },
+  'ds1-dist': {
+    searchTerms: ['distortion', '失真', 'ds-1', 'boss', 'hard clipping', '硬削波', 'rock', '摇滚', 'grunge', '粗粝', 'indie', '独立', 'shoegaze', '盯鞋'],
+    styleTags: ['indie', 'metal', 'shoegaze'],
+  },
+  'opamp-muff': {
+    searchTerms: ['fuzz', '法兹', 'big muff', 'op-amp', '运放', 'sustain', '延音', 'shoegaze', '盯鞋', 'wall of sound', '音墙', 'indie', '独立', 'experimental', '实验'],
+    styleTags: ['shoegaze', 'indie', 'experimental'],
+  },
   'wall-fuzz': {
-    searchTerms: ['fuzz', '法兹', 'fuzz pedal', 'sustain', '延音', 'shoegaze', '盯鞋', 'ambient', '氛围', 'indie', '独立', 'wall of sound', '音墙', 'experimental', '实验'],
+    searchTerms: ['fuzz', '法兹', 'fuzz pedal', "ram's head", 'big muff', 'sustain', '延音', 'shoegaze', '盯鞋', 'ambient', '氛围', 'indie', '独立', 'wall of sound', '音墙', 'experimental', '实验'],
     styleTags: ['shoegaze', 'ambient', 'indie', 'experimental'],
   },
   'fuzz-face': {

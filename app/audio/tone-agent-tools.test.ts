@@ -27,14 +27,14 @@ test('tool runtime reads the actual board and returns catalog-grounded teaching 
   assert.equal(board.selectedInstanceId, 'fuzz-1');
   assert.match(board.chain[0].name, /Big Muff/);
   assert.equal(effect?.values.sustain, 78);
-  assert.equal(effect?.fidelity?.runtime, 'pedalkernel');
+  assert.equal(effect?.fidelity?.runtime, 'circuit');
   assert.equal(effect?.fidelity?.status, 'candidate');
   assert.ok(effect?.controls.some((control) => control.id === 'sustain' && control.help.length > 20));
   assert.ok(search.some((item) => item.id === 'slow-phase'));
   assert.ok(runtime.searchEffects('metal').some((item) => item.id === 'chainsaw-dist'));
   assert.ok(runtime.searchEffects('清音').some((item) => item.id === 'studio-comp'));
   const rat = runtime.searchEffects('RAT')[0];
-  assert.equal(rat.fidelity?.runtime, 'pedalkernel');
+  assert.equal(rat.fidelity?.runtime, 'circuit');
   assert.equal(rat.fidelity?.verifiedScore, null);
 });
 

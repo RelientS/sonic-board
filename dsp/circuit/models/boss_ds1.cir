@@ -1,0 +1,122 @@
+* Boss DS-1 Distortion (DS-1A board, post-1994 / current production)
+*@name Boss DS-1 Distortion
+*@input Vin
+*@output out 1
+*@oversample 4
+*@opamp NJM2904 gbw=0.6e6 slew=0.4e6 aol=1e5 vlo=0.1 vhi=7.5 rout=75
+*@pot level RlvlA RlvlB 100k lin
+*@pot tone RtoneA RtoneB 20k lin
+*@pot dist RdistA RdistB 100k lin
+*@control Level level default=0.5
+*@control Tone tone default=0.5
+*@control Dist dist default=0.5
+*
+* Topology and values from the Boss service schematic "DS-1 BOARD ASSY
+* 7056263401" (DS-1A, 1994 onwards, reproduced at hobby-hour.com) and
+* cross-checked against ElectroSmash "Boss DS-1 Analysis" (DS-1A) and the
+* Aion FX Comet Distortion documentation. Designators follow Boss.
+* Differences to ElectroSmash: its "R5 100k" is Boss R6 (Q2 base to ground);
+* Boss R5 1M (switch bias) is added here; C10 returns to VREF as drawn by
+* Boss (ElectroSmash draws GND; identical at audio frequencies).
+*
+* Effect-on path only: FET switches Q6/Q7 (2SK30ATM, Ron ~200 ohm in series
+* with 100k/1M nodes) are shorts, Q8 bypass and the flip-flop are omitted.
+* Pots are all "B" (Japanese code = linear): VR1 DIST 100kB, VR3 TONE 20kB,
+* VR2 LEVEL 100kB. Clockwise moves every wiper toward lug 3:
+*   DIST  lug1 = IC out, lug3 = R13/C8   -> CW = more gain (1x .. 22x)
+*   TONE  lug1 = R16/C12 low-pass, lug3 = R15/R17 high-pass -> CW = brighter
+*   LEVEL lug1 = VREF, lug3 = tone wiper -> CW = louder
+*
+* IC: current units use a NJM2904L (SIP dual, LM358 class; 2006+; earlier
+* BA728N / M5223AL). NJM2904 data: GBW 0.6 MHz, SR ~0.4 V/us, output swing
+* 0 .. Vcc-1.5 V on a single 9 V supply. Class-B crossover distortion of
+* the 2904 output stage is not modelled.
+
+Vcc vcc 0 9
+
+* Reference: R24/R25 divider, C15 47u.
+R24 vcc vref 10k
+R25 vref 0 10k
+C15 vref 0 47u
+
+* Guitar pickup source impedance (DI samples act as pickup EMF).
+Vin src 0 0
+Rpu src pu 6.5k
+Lpu pu jack 2.3
+
+* Q1 input buffer (emitter follower, Zin ~ 470k)
+R1 jack n1 1k
+C1 n1 b1 47n
+R2 b1 vref 470k
+Q1 vcc b1 e1 Q2SC2240
+R3 e1 0 10k
+
+* Q2 transistor booster (shunt feedback, ~35 dB). Q6 (FET switch) shorted.
+C2 e1 n2 0.47u
+R4 n2 vref 100k
+R5 n2 vref 1meg
+C3 n2 b2 47n
+R6 b2 0 100k
+R7 b2 c2 470k
+C4 b2 c2 250p
+R8 vcc c2 10k
+Q2 c2 b2 e2 Q2SC2240
+R9 e2 0 22
+
+* IC1a unity buffer with R39/D8 input protection
+C5 c2 n5 68n
+R10 n5 vref 100k
+R39 n5 p3 47k
+D8 0 p3 D1N4148
+XU1A p3 u1a u1a NJM2904
+
+* IC1b non-inverting gain stage; DIST pot divides the output toward R13/C8.
+XU1B u1a n6 u1b NJM2904
+R11 n6 dw 100k
+C7 u1b dw 100p
+RdistA u1b dw 50k
+RdistB dw d3 50k
+R13 d3 d8 4.7k
+C8 d8 0 0.47u
+
+* Hard clipper: R14/C9 into antiparallel diodes and C10 to VREF.
+R14 u1b n14 2.2k
+C9 n14 clip 0.47u
+D4 clip vref D1N4148
+D5 vref clip D1N4148
+C10 clip vref 0.01u
+
+* Big-Muff-style tone stack (R16/C12 low-pass, C11/R15/R17 high-pass).
+R16 clip t_lo 6.8k
+C12 t_lo vref 0.1u
+C11 clip t_h1 0.022u
+R15 t_h1 t_hi 2.2k
+R17 t_hi vref 6.8k
+RtoneA t_lo t_w 10k
+RtoneB t_w t_hi 10k
+
+* Level pot, then Q3 output buffer (Q7 FET switch shorted).
+RlvlA vref l_w 50k
+RlvlB l_w t_w 50k
+R18 l_w o1 10k
+R19 o1 vref 1meg
+C13 o1 b3 0.047u
+R20 b3 vref 1meg
+Q3 vcc b3 e3 Q2SC2240
+R21 e3 0 10k
+R22 e3 o2 1k
+C14 o2 out 1u
+R23 out 0 100k
+* Amplifier input load
+Rload out 0 1meg
+
+* *@be: C7 sits across RdistA (1 ohm at Dist=0), C10 across the conducting
+* clip diodes and C4 across Q2's Miller node: all sub-microsecond poles.
+* Q2 bias with this model: Vc ~4.27 V (ElectroSmash text quotes ~5.8 V, which
+* would need hFE ~65; GR-grade hFE 200-400 gives 4.1-4.6 V).
+* 2SC2240GR: low-noise audio NPN, hFE(GR) 200-400. No RB/RC: internal
+* terminal nodes made the realtime Newton worse in the saturated booster.
+.model Q2SC2240 NPN(IS=20f BF=300 BR=5 VAF=100)
+* 1N4148 (current units; Boss lists 1S1588/1S2473). RS 0.57 ohm omitted.
+.model D1N4148 D(IS=2.52n N=1.752)
+.end

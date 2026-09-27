@@ -53,7 +53,7 @@ test('PedalKernel candidates disclose their evidence instead of claiming an unme
     'studio-comp', 'blue-drive', 'rodent-dist', 'wall-fuzz',
     'fuzz-face', 'analog-chorus', 'ocd-drive', 'klon-centaur',
     'sd1-drive', 'tube-screamer', 'phase90',
-  ];
+  ].filter((id) => !audioEngine.CIRCUIT_EFFECT_IDS.has(id));
   for (const id of ids) {
     assert.equal(profiles[id].targetScore, 8);
     assert.equal(profiles[id].verifiedScore, null);
@@ -173,4 +173,28 @@ test('wet monitoring compensates the measured effect and amp-chain level loss', 
   assert.equal(monitorMakeupGain?.('dry'), 1);
   assert.ok((monitorMakeupGain?.('wet') ?? 0) >= 2.5, 'wet monitoring needs roughly 9 dB of make-up gain');
   assert.ok((monitorMakeupGain?.('wet') ?? Infinity) <= 3, 'make-up gain should leave compressor headroom');
+});
+
+test('circuit-solved pedals cite their schematic and SPICE agreement without claiming a score', () => {
+  const profiles = audioEngine.EFFECT_FIDELITY_PROFILES;
+  assert.ok(audioEngine.CIRCUIT_EFFECT_IDS.size > 0);
+  for (const id of audioEngine.CIRCUIT_EFFECT_IDS) {
+    const profile = profiles[id];
+    assert.ok(profile, `${id} needs a fidelity profile`);
+    assert.equal(profile.runtime, 'circuit');
+    if (profile.runtime !== 'circuit') continue;
+    assert.equal(profile.verifiedScore, null);
+    assert.ok(profile.evidence.includes('traced-schematic'));
+    assert.ok(profile.evidence.includes('spice-reference'));
+    assert.match(profile.netlist, /^dsp\/circuit\/models\/.+\.cir$/);
+    assert.ok(profile.schematic.length > 10);
+    assert.ok(profile.spiceNrmsePercent > 0 && profile.spiceNrmsePercent < 2);
+  }
+});
+
+test('circuit models are loaded through their own worklet and wasm runtime', () => {
+  assert.match(engineSource, /prepareCircuitProcessor/);
+  assert.match(engineSource, /CIRCUIT_EFFECT_IDS\.has\(specId\)/);
+  assert.match(engineSource, /\/audio\/circuit\.wasm/);
+  assert.match(engineSource, /\/audio\/circuit-processor\.js/);
 });

@@ -3,7 +3,7 @@ export type EffectFidelityEngine =
   | 'PedalKernel realtime correction'
   | 'Web Audio BBD approximation';
 
-export type EffectFidelityProfile = {
+export type PedalKernelFidelityProfile = {
   engine: EffectFidelityEngine;
   upstreamCommit: string;
   upstreamModel: string;
@@ -15,12 +15,51 @@ export type EffectFidelityProfile = {
   note: string;
 };
 
+// Pedals solved from a traced schematic by the Sonic Board DK circuit engine.
+// `spiceNrmsePercent` is the worst normalized RMS error against ngspice over
+// the model's validation matrix (knob extremes x test signals); it measures
+// solver fidelity to the schematic, not closeness to a physical unit.
+export type CircuitFidelityProfile = {
+  engine: 'SPICE netlist + DK circuit solver';
+  runtime: 'circuit';
+  netlist: string;
+  schematic: string;
+  spiceNrmsePercent: number;
+  oversample: number;
+  targetScore: number;
+  verifiedScore: number | null;
+  evidence: Array<'traced-schematic' | 'spice-reference' | 'runtime-regression' | 'hardware-abx'>;
+  status: 'candidate';
+  note: string;
+};
+
+export type EffectFidelityProfile = PedalKernelFidelityProfile | CircuitFidelityProfile;
+
+const circuitProfile = (
+  netlist: string,
+  schematic: string,
+  spiceNrmsePercent: number,
+  oversample: number,
+): CircuitFidelityProfile => ({
+  engine: 'SPICE netlist + DK circuit solver',
+  runtime: 'circuit',
+  netlist,
+  schematic,
+  spiceNrmsePercent,
+  oversample,
+  targetScore: 8,
+  verifiedScore: null,
+  evidence: ['traced-schematic', 'spice-reference', 'runtime-regression'],
+  status: 'candidate',
+  note: '按原理图逐元件实时求解，并与 ngspice 同网表仿真对齐；尚未与真机录音做 ABX，因此不给还原分。',
+});
+
 const PEDALKERNEL_COMMIT = '0278b397c861b5ebef2e8e38d15ab281b8e669dc';
 
 const fidelityProfile = (
   upstreamModel: string,
   engine: EffectFidelityEngine = 'PedalKernel WDF + calibrated corrections',
-): EffectFidelityProfile => ({
+): PedalKernelFidelityProfile => ({
   engine,
   upstreamCommit: PEDALKERNEL_COMMIT,
   upstreamModel,
@@ -34,7 +73,7 @@ const fidelityProfile = (
     : '持续输出、有限值、输出校准和控制响应门禁已通过；仍需与真实硬件盲测后才能给出还原分。',
 });
 
-const bbdFallbackProfile = (upstreamModel: string): EffectFidelityProfile => ({
+const bbdFallbackProfile = (upstreamModel: string): PedalKernelFidelityProfile => ({
   engine: 'Web Audio BBD approximation',
   upstreamCommit: PEDALKERNEL_COMMIT,
   upstreamModel,
@@ -48,18 +87,50 @@ const bbdFallbackProfile = (upstreamModel: string): EffectFidelityProfile => ({
 
 export const EFFECT_FIDELITY_PROFILES: Record<string, EffectFidelityProfile> = {
   'studio-comp': fidelityProfile('examples/pedals/compressor/dyna_comp.pedal'),
-  'blue-drive': fidelityProfile('examples/pedals/overdrive/blues_driver.pedal'),
-  'rodent-dist': fidelityProfile('examples/pedals/distortion/proco_rat.pedal'),
-  'wall-fuzz': fidelityProfile('examples/pedals/fuzz/big_muff.pedal', 'PedalKernel realtime correction'),
+  'blue-drive': circuitProfile(
+    'dsp/circuit/models/boss_bd2.cir',
+    'Boss BD-2 MT board assy 70567645 service schematic; cross-checked with gaussmarkov and Aion FX Sapphire',
+    1.12,
+    2,
+  ),
+  'rodent-dist': circuitProfile(
+    'dsp/circuit/models/proco_rat2.cir',
+    'Beavis Audio ProCo RAT II schematic; cross-checked with ElectroSmash and tagboardeffects',
+    0.29,
+    4,
+  ),
+  'wall-fuzz': circuitProfile(
+    'dsp/circuit/models/rams_head_muff.cir',
+    "Kit Rae, Version 2 Big Muff Violet 1st Version (1973 #4), bigmuffpage.com",
+    0.52,
+    4,
+  ),
   'dm2-delay': bbdFallbackProfile('examples/pedals/delay/boss_dm2.pedal'),
   'analog-delay': bbdFallbackProfile('examples/pedals/delay/memory_man.pedal'),
   'fuzz-face': fidelityProfile('examples/pedals/fuzz/fuzz_face.pedal', 'PedalKernel realtime correction'),
   'analog-chorus': fidelityProfile('examples/pedals/modulation/boss_ce2.pedal'),
   'ocd-drive': fidelityProfile('examples/pedals/overdrive/fulltone_ocd.pedal'),
-  'klon-centaur': fidelityProfile('examples/pedals/overdrive/klon_centaur.pedal'),
+  'klon-centaur': circuitProfile(
+    'dsp/circuit/models/klon_centaur.cir',
+    'ElectroSmash Klon Centaur analysis schematic; cross-checked with Aion FX Refractor',
+    0.05,
+    2,
+  ),
   'sd1-drive': fidelityProfile('examples/pedals/overdrive/sd1.pedal'),
   'tube-screamer': fidelityProfile('examples/pedals/overdrive/tube_screamer.pedal'),
   'phase90': fidelityProfile('examples/pedals/phaser/phase90.pedal'),
+  'ds1-dist': circuitProfile(
+    'dsp/circuit/models/boss_ds1.cir',
+    'Boss DS-1 board assy service schematic (hobby-hour); cross-checked with ElectroSmash and Aion FX Comet',
+    0.56,
+    4,
+  ),
+  'opamp-muff': circuitProfile(
+    'dsp/circuit/models/opamp_big_muff.cir',
+    "1978 op-amp Big Muff (V5) per Aion FX Corvus docs and tagboardeffects; Kit Rae's op-amp history for the reissue",
+    0.67,
+    4,
+  ),
 };
 
 export function getEffectFidelity(effectId: string) {
