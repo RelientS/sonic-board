@@ -352,7 +352,13 @@ export type LiveAudioSession = {
   namCache: Map<string, { modelJson: string; node: AudioWorkletNode }>;
   status: Map<string, EffectStatus>;
   onStatus?: (status: ReadonlyMap<string, EffectStatus>) => void;
+  /** A live instrument input; while set it replaces the looping DI sample. */
+  liveInput?: LiveInput;
+  /** Removes the listeners that resume the context after an interruption. */
+  detachResume?: () => void;
 };
+
+type LiveInput = { stream: MediaStream; source: MediaStreamAudioSourceNode; output: GainNode };
 
 function disposeNamNode(node: AudioWorkletNode) {
   try { node.port.postMessage({ type: 'dispose' }); } catch { /* worklet already gone */ }
@@ -1745,7 +1751,8 @@ function buildLiveGraph(
     source.buffer = buffer;
     source.loop = true;
     source.loopEnd = buffer.duration;
-    source.connect(input);
+    if (session.liveInput) session.liveInput.output.connect(input);
+    else source.connect(input);
     const effected = connectBoardGraph(context, input, config, scheduled, namNodes, slots);
     const master = connectMaster(context, effected, config.output);
     level = master.level;
@@ -1786,6 +1793,7 @@ function disposeGraph(session: LiveAudioSession, graph: LiveGraph) {
   try { graph.source.stop(); } catch { /* already stopped */ }
   try { graph.source.disconnect(); } catch { /* already detached */ }
   try { graph.input.disconnect(); } catch { /* already detached */ }
+  try { session.liveInput?.output.disconnect(graph.input); } catch { /* was not connected */ }
   stopScheduled(graph.scheduled);
   graph.slots.forEach((slot) => {
     disposeSlotInstance(slot.upstream, slot.current);
@@ -1868,6 +1876,27 @@ export function stopLiveGraph(session: LiveAudioSession) {
   session.graph = null;
 }
 
+/**
+ * iOS suspends (or reports 'interrupted') an AudioContext on calls, Siri, or
+ * when the tab is backgrounded, and does not resume it by itself. Try again
+ * when the page is visible and on the next touch, which counts as a gesture.
+ */
+function keepContextRunning(context: AudioContext) {
+  const resume = () => {
+    if (document.visibilityState !== 'visible') return;
+    const state = context.state as string;
+    if (state === 'suspended' || state === 'interrupted') void context.resume().catch(() => { /* retried on the next gesture */ });
+  };
+  context.addEventListener('statechange', resume);
+  document.addEventListener('visibilitychange', resume);
+  window.addEventListener('pointerdown', resume, true);
+  return () => {
+    context.removeEventListener('statechange', resume);
+    document.removeEventListener('visibilitychange', resume);
+    window.removeEventListener('pointerdown', resume, true);
+  };
+}
+
 export async function createLiveSession(config: BoardAudioConfig) {
   const AudioContextClass = window.AudioContext ||
     (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
@@ -1886,6 +1915,7 @@ export async function createLiveSession(config: BoardAudioConfig) {
     namCache: new Map(),
     status: new Map(),
   };
+  session.detachResume = keepContextRunning(context);
   try {
     activateMobileAudio(context, window.navigator);
     await context.resume();
@@ -1898,6 +1928,7 @@ export async function createLiveSession(config: BoardAudioConfig) {
   } catch (error) {
     stopLiveGraph(session);
     session.namCache.forEach((entry) => disposeNamNode(entry.node));
+    session.detachResume?.();
     try { await context.close(); } catch { /* preserve the original creation failure */ }
     throw error;
   }
@@ -1944,9 +1975,66 @@ export async function refreshLiveSession(session: LiveAudioSession, config: Boar
   }
 }
 
+/**
+ * Routes a live instrument (audio interface or microphone) into the board in
+ * place of the DI sample, or back to the sample when `stream` is null. Only
+ * the first input channel is used: interfaces put the instrument jack on 1.
+ */
+export function setLiveInput(session: LiveAudioSession, stream: MediaStream | null) {
+  const context = session.context;
+  const graph = session.graph;
+  const previous = session.liveInput;
+  if (previous) {
+    if (graph) try { previous.output.disconnect(graph.input); } catch { /* not connected */ }
+    closeLiveInput(previous);
+    session.liveInput = undefined;
+  }
+  if (stream) {
+    const source = context.createMediaStreamSource(stream);
+    const splitter = context.createChannelSplitter(Math.max(1, source.channelCount));
+    const output = context.createGain();
+    source.connect(splitter);
+    splitter.connect(output, 0);
+    session.liveInput = { stream, source, output };
+  }
+  if (!graph) return;
+  const now = context.currentTime;
+  // Short dip so switching sources does not click.
+  graph.input.gain.cancelScheduledValues(now);
+  graph.input.gain.setValueAtTime(0, now);
+  graph.input.gain.linearRampToValueAtTime(1, now + SWAP_FADE_SECONDS);
+  if (session.liveInput) {
+    try { graph.source.disconnect(graph.input); } catch { /* not connected */ }
+    session.liveInput.output.connect(graph.input);
+  } else {
+    graph.source.connect(graph.input);
+  }
+}
+
+function closeLiveInput(input: LiveInput) {
+  try { input.source.disconnect(); } catch { /* already detached */ }
+  try { input.output.disconnect(); } catch { /* already detached */ }
+  input.stream.getTracks().forEach((track) => track.stop());
+}
+
+/** Asks for an instrument input with the browser's voice processing turned off. */
+export async function requestInstrumentStream(mediaDevices: MediaDevices = navigator.mediaDevices) {
+  if (!mediaDevices?.getUserMedia) throw new Error('当前浏览器不支持实时输入');
+  return mediaDevices.getUserMedia({
+    audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: { ideal: 2 } },
+    video: false,
+  });
+}
+
 export async function disposeLiveSession(session: LiveAudioSession | null) {
   if (!session) return;
   session.revision += 1;
+  session.detachResume?.();
+  session.detachResume = undefined;
+  if (session.liveInput) {
+    closeLiveInput(session.liveInput);
+    session.liveInput = undefined;
+  }
   stopLiveGraph(session);
   session.namCache.forEach((entry) => disposeNamNode(entry.node));
   session.namCache.clear();

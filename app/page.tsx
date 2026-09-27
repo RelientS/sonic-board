@@ -1,12 +1,14 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import {
   CIRCUIT_EFFECT_IDS,
   createLiveSession,
   disposeLiveSession,
   refreshLiveSession,
   renderBoardToWav,
+  requestInstrumentStream,
+  setLiveInput,
   type BoardAudioConfig,
   type EffectStatus,
   type LiveAudioSession,
@@ -64,6 +66,7 @@ import {
 } from './effects/catalog';
 import { getControlHelp, type ControlOwnerKind } from './effects/control-help';
 import { getPedalControlLabel } from './effects/control-labels';
+import { getEffectFidelity } from './effects/fidelity';
 import {
   captureUserPreset,
   instantiateUserPreset,
@@ -141,6 +144,10 @@ function removeInstanceValues(values: Values, instanceId: string) {
   return next;
 }
 
+function isCircuitModelled(effectId: string) {
+  return getEffectFidelity(effectId)?.runtime === 'circuit';
+}
+
 function getPlaybackProgress(session: LiveAudioSession | null) {
   if (!session || session.context.state === 'closed' || !Number.isFinite(session.duration) || session.duration <= 0 || !Number.isFinite(session.startedAt)) return null;
   const currentTime = session.context.currentTime;
@@ -151,18 +158,55 @@ function getPlaybackProgress(session: LiveAudioSession | null) {
   return (offset / session.duration) * 100;
 }
 
+/** Both snapshots start as the preset; B diverges only when the player edits it. */
 function makeSnapshots(board: InstantiatedPreset) {
-  const a = cloneValues(board.values);
-  const b = cloneValues(board.values);
-  board.chain.forEach((item) => {
-    const current = b[item.instanceId];
-    if ('mix' in current) current.mix = Math.min(100, current.mix + 9);
-    if ('sustain' in current) current.sustain = Math.min(100, current.sustain + 10);
-    if ('gain' in current) current.gain = Math.min(100, current.gain + 8);
-    if ('distortion' in current) current.distortion = Math.min(100, current.distortion + 8);
-    if ('motion' in current) current.motion = Math.min(100, current.motion + 12);
-  });
-  return { A: a, B: b };
+  return { A: cloneValues(board.values), B: cloneValues(board.values) };
+}
+
+/**
+ * Transport progress, animated from the audio clock with requestAnimationFrame
+ * and written straight to the DOM so playback does not re-render the page.
+ */
+function PlaybackWaveform({ playback, playing, loading }: { playback: LiveSessionController<BoardAudioConfig, LiveAudioSession>; playing: boolean; loading: boolean }) {
+  const host = useRef<HTMLDivElement | null>(null);
+  const bar = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    let shown = -1;
+    const write = (progress: number) => {
+      if (bar.current) bar.current.style.width = String(progress) + '%';
+      const rounded = Math.round(progress);
+      if (rounded === shown || !host.current) return;
+      shown = rounded;
+      host.current.setAttribute('aria-valuenow', String(rounded));
+      host.current.setAttribute('aria-valuetext', '试听进度 ' + String(rounded) + '%');
+    };
+    write(0);
+    if (!playing) return;
+    let frame = 0;
+    const tick = () => {
+      const progress = getPlaybackProgress(playback.current);
+      if (progress !== null) write(progress);
+      frame = window.requestAnimationFrame(tick);
+    };
+    tick();
+    return () => window.cancelAnimationFrame(frame);
+  }, [playback, playing]);
+
+  return (
+    <div ref={host} className={'waveform' + (loading ? ' is-loading' : '')} role="progressbar" aria-label="试听进度" aria-valuemin={0} aria-valuemax={100} aria-busy={loading}>
+      <i ref={bar} />{wave.map((height, index) => <b key={String(height) + '-' + String(index)} style={{ height: String(height) + '%' }} />)}
+      {loading && <span className="waveform-status">正在加载试听…</span>}
+    </div>
+  );
+}
+
+/** Drag distance (px) for the full knob sweep; Shift or a second finger drags 5x finer. */
+const KNOB_DRAG_RANGE_PX = 180;
+const KNOB_FINE_FACTOR = 5;
+
+function clampKnob(value: number) {
+  return Math.max(0, Math.min(100, Math.round(value)));
 }
 
 function KnobControl({ control, displayLabel, value, disabled, tutorialEnabled, ownerKind, modelId, ownerName, onChange, onHelp }: {
@@ -177,30 +221,116 @@ function KnobControl({ control, displayLabel, value, disabled, tutorialEnabled, 
   onChange: (value: number) => void;
   onHelp: (target: HelpTarget) => void;
 }) {
-  const style = { '--angle': String(-138 + value * 2.76) + 'deg' } as CSSProperties;
+  const input = useRef<HTMLInputElement | null>(null);
+  const hit = useRef<HTMLSpanElement | null>(null);
+  const drag = useRef<{ pointerId: number; x: number; y: number; start: number; fine: boolean } | null>(null);
+  const latest = useRef({ value, onChange });
+  useEffect(() => {
+    latest.current = { value, onChange };
+  });
+  const readout = formatControlValue(control, value);
+  const label = displayLabel ?? control.label;
+  const help = tutorialEnabled && (
+    <button
+      className="help-trigger"
+      type="button"
+      aria-label={`查看${ownerName}的${control.label}旋钮说明`}
+      onClick={(event) => { event.stopPropagation(); onHelp({ kind: ownerKind, modelId, ownerName, control }); }}
+    >?</button>
+  );
+
+  // Wheel needs a non-passive listener to stop the page from scrolling, and
+  // only acts while the knob has focus so scrolling past a pedal is safe.
+  useEffect(() => {
+    const element = input.current;
+    const target = hit.current;
+    if (!element || !target || control.options) return;
+    const onWheel = (event: WheelEvent) => {
+      if (document.activeElement !== element || element.disabled) return;
+      event.preventDefault();
+      const step = event.shiftKey ? 0.2 : 1;
+      const { value: current, onChange: change } = latest.current;
+      const next = clampKnob(current + (event.deltaY < 0 ? step : -step) * Math.max(1, Math.min(5, Math.abs(event.deltaY) / 40)));
+      if (next !== current) change(next);
+    };
+    // The input ignores pointer events, so wheel events land on the wrapper.
+    target.addEventListener('wheel', onWheel, { passive: false });
+    return () => target.removeEventListener('wheel', onWheel);
+  }, [control.options]);
+
+  if (control.options) {
+    const on = value >= 50;
+    return (
+      <div className={'knob-control is-switch' + (tutorialEnabled ? ' is-tutorial' : '')}>
+        <span className="knob-label-row"><span className="knob-label">{label}</span>{help}</span>
+        <button
+          type="button"
+          role="switch"
+          className="pedal-switch"
+          aria-checked={on}
+          aria-label={control.label}
+          disabled={disabled}
+          onClick={() => onChange(on ? 0 : 100)}
+        >
+          <span className="pedal-switch-lever" aria-hidden="true" />
+        </button>
+        <span className="knob-readout">{readout}</span>
+      </div>
+    );
+  }
+
+  const onPointerDown = (event: ReactPointerEvent<HTMLSpanElement>) => {
+    if (disabled || event.button !== 0) return;
+    event.preventDefault();
+    input.current?.focus({ preventScroll: true });
+    event.currentTarget.setPointerCapture(event.pointerId);
+    drag.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, start: value, fine: event.shiftKey };
+  };
+  const onPointerMove = (event: ReactPointerEvent<HTMLSpanElement>) => {
+    const state = drag.current;
+    if (!state || state.pointerId !== event.pointerId) return;
+    // Switching fine mode mid-drag re-anchors so the knob does not jump.
+    if (event.shiftKey !== state.fine) {
+      Object.assign(state, { x: event.clientX, y: event.clientY, start: value, fine: event.shiftKey });
+      return;
+    }
+    const travel = (state.y - event.clientY) + (event.clientX - state.x);
+    const scale = 100 / KNOB_DRAG_RANGE_PX / (state.fine ? KNOB_FINE_FACTOR : 1);
+    const next = clampKnob(state.start + travel * scale);
+    if (next !== value) onChange(next);
+  };
+  const endDrag = (event: ReactPointerEvent<HTMLSpanElement>) => {
+    if (drag.current?.pointerId === event.pointerId) drag.current = null;
+  };
+
   return (
     <div className={'knob-control' + (tutorialEnabled ? ' is-tutorial' : '')}>
-      <span className="knob-label-row"><span className="knob-label">{displayLabel ?? control.label}</span>{tutorialEnabled && (
-        <button
-          className="help-trigger"
-          type="button"
-          aria-label={`查看${ownerName}的${control.label}旋钮说明`}
-          onClick={(event) => { event.stopPropagation(); onHelp({ kind: ownerKind, modelId, ownerName, control }); }}
-        >?</button>
-      )}</span>
-      <label className="knob-hit">
-        <span className="knob" style={style} aria-hidden="true"><span /></span>
+      <span className="knob-label-row"><span className="knob-label">{label}</span>{help}</span>
+      <span
+        ref={hit}
+        className={'knob-hit' + (disabled ? ' is-disabled' : '')}
+        title="上下或左右拖动调节，Shift 微调，双击复位"
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        onDoubleClick={() => { if (!disabled) onChange(control.defaultValue); }}
+      >
+        <span className="knob" style={{ '--angle': String(-138 + value * 2.76) + 'deg' } as CSSProperties} aria-hidden="true"><span /></span>
         <input
+          ref={input}
           type="range"
           min="0"
           max="100"
+          step="1"
           value={value}
           disabled={disabled}
-          aria-label={control.label + '，' + formatControlValue(control, value)}
+          aria-label={control.label}
+          aria-valuetext={readout}
           onChange={(event) => onChange(Number(event.target.value))}
         />
-      </label>
-      <span className="knob-readout">{formatControlValue(control, value)}</span>
+      </span>
+      <span className="knob-readout">{readout}</span>
     </div>
   );
 }
@@ -339,6 +469,8 @@ function DemoPedal({ item, index, values, selected, bypassed, namLoaded, engineS
   const manyControls = spec.controls.length > 4;
   const isWide = spec.wide || manyControls;
   const columns = spec.controls.length >= 7 ? 4 : spec.controls.length === 4 ? 2 : 3;
+  // Two knob rows push the name plate down (a 2x2 layout included).
+  const twoRows = Math.ceil(spec.controls.length / columns) > 1;
   const style = {
     '--finish': spec.finish,
     '--ink': spec.ink,
@@ -364,7 +496,7 @@ function DemoPedal({ item, index, values, selected, bypassed, namLoaded, engineS
       onDrop={(event) => { event.preventDefault(); onDrop(event.dataTransfer.getData('text/plain')); }}
     >
       <span className="order-badge">{index + 1}</span>
-      <div className={'pedal-body' + (manyControls ? ' has-many' : '')} style={style}>
+      <div className={'pedal-body' + (twoRows ? ' has-many' : '')} style={style}>
         <i className="screw tl" /><i className="screw tr" /><i className="screw bl" /><i className="screw br" />
         <span className="jack jack-left" /><span className="jack jack-right" />
         <div className="pedal-maker">{spec.maker}</div>
@@ -415,6 +547,9 @@ export default function Home() {
   const [bypassed, setBypassed] = useState<Set<string>>(new Set(initialBoard.bypassed));
   const [libraryMode, setLibraryMode] = useState<LibraryMode>('effects');
   const [category, setCategory] = useState<'All' | EffectCategory>('All');
+  const [circuitOnly, setCircuitOnly] = useState(false);
+  const [liveInputOn, setLiveInputOn] = useState(false);
+  const [liveInputBusy, setLiveInputBusy] = useState(false);
   const [styleFilter, setStyleFilter] = useState<StyleFilter>('All');
   const [search, setSearch] = useState('');
   const [presetSearch, setPresetSearch] = useState('');
@@ -428,8 +563,9 @@ export default function Home() {
   const [presetName, setPresetName] = useState('我的音色');
   const [userPresets, setUserPresets] = useState<UserPreset[]>([]);
   const [playing, setPlaying] = useState(false);
+  // Stopping playback closes the session, and with it the instrument stream.
+  const liveInputActive = liveInputOn && playing;
   const [playbackLoading, setPlaybackLoading] = useState(false);
-  const [progress, setProgress] = useState(0);
   const [render, setRender] = useState<'idle' | 'busy' | 'ready'>('idle');
   const [saveState, setSaveState] = useState<'idle' | 'saved'>('idle');
   const [tutorialEnabled, setTutorialEnabled] = useState(false);
@@ -471,9 +607,10 @@ export default function Home() {
       const categoryMatches = category === 'All' || spec.category === category;
       const styleMatches = styleFilter === 'All' || spec.styleTags?.includes(styleFilter);
       const queryMatches = !query || getEffectSearchText(spec).toLowerCase().includes(query);
-      return categoryMatches && styleMatches && queryMatches;
+      const engineMatches = !circuitOnly || isCircuitModelled(spec.id);
+      return categoryMatches && styleMatches && queryMatches && engineMatches;
     });
-  }, [category, search, styleFilter]);
+  }, [category, circuitOnly, search, styleFilter]);
 
   const factoryPresetLibrary = useMemo(() => {
     const query = presetSearch.trim().toLowerCase();
@@ -546,22 +683,19 @@ export default function Home() {
 
   useEffect(() => {
     if (!playing) return;
-    const updateProgress = () => {
+    const watchSession = () => {
       const session = playback.current;
       if (session?.context.state === 'closed') {
         setPlaying(false);
-        setProgress(0);
         setAudioError('试听已停止，请重试。');
         void playback.stop().catch(() => {
           // The controller invalidates the session before disposal begins.
         });
         return;
       }
-      const nextProgress = getPlaybackProgress(session);
-      if (nextProgress !== null) setProgress(nextProgress);
     };
-    updateProgress();
-    const timer = window.setInterval(updateProgress, 80);
+    watchSession();
+    const timer = window.setInterval(watchSession, 500);
     return () => window.clearInterval(timer);
   }, [playback, playing]);
 
@@ -589,7 +723,6 @@ export default function Home() {
         }
         if (refreshSerial !== playbackRefreshSerial.current || playback.current !== null || playback.requested) return;
         setPlaying(false);
-        setProgress(0);
         setAudioError('试听更新失败，请重试。');
       });
     }, delay);
@@ -1015,6 +1148,13 @@ export default function Home() {
     setRender('idle');
   }
 
+  /** Copies the active snapshot over the other one, so B can start as a variation of A. */
+  function copySnapshotToOther() {
+    const other = snapshot === 'A' ? 'B' : 'A';
+    markBoardChanged();
+    setSnapshots((current) => ({ ...current, [other]: cloneValues(current[snapshot]) }));
+  }
+
   function setMonitorMode(next: 'dry' | 'wet') {
     if (mode === next) return;
     markBoardChanged();
@@ -1037,12 +1177,40 @@ export default function Home() {
     setRender('idle');
   }
 
+  async function toggleLiveInput() {
+    if (liveInputBusy) return;
+    if (liveInputActive) {
+      const session = playback.current;
+      if (session) setLiveInput(session, null);
+      setLiveInputOn(false);
+      return;
+    }
+    setLiveInputBusy(true);
+    try {
+      // Start the context inside the click (iOS needs the gesture), then ask for the input.
+      if (!playback.requested) await togglePlayback();
+      const stream = await requestInstrumentStream().catch(() => null);
+      if (!stream) {
+        setAudioError('无法打开实时输入：请允许浏览器使用声卡或麦克风。');
+        return;
+      }
+      const session = playback.current;
+      if (!session || !playback.requested) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      setLiveInput(session, stream);
+      setLiveInputOn(true);
+    } finally {
+      setLiveInputBusy(false);
+    }
+  }
+
   async function togglePlayback() {
     if (playbackLoading || playbackLoadingRef.current) return;
     setAudioError('');
     if (playback.requested) {
       setPlaying(false);
-      setProgress(0);
       try {
         await playback.stop();
       } catch {
@@ -1060,7 +1228,6 @@ export default function Home() {
       const latestConfig = latestAudioConfig.current;
       if (latestConfig !== audioConfig) await refreshLiveSession(session, latestConfig);
       if (playback.current !== session || !playback.requested) return;
-      setProgress(0);
       setPlaying(true);
     } catch {
       try {
@@ -1191,13 +1358,13 @@ export default function Home() {
               <div className="library-title"><div><span className="eyebrow">效果器库</span><h1>经典结构</h1></div><b>{library.length}</b></div>
               <p className="classic-note">经典名称仅用于说明参考对象；模型通过自动门禁，待真机验证。<a href="https://github.com/RelientS/sonic-board" target="_blank" rel="noreferrer">源码与验证说明</a></p>
               <label className="search"><span className="sr-only">搜索效果器</span><input placeholder="搜索名称、类型、风格或用途" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
-              <div className="filters" aria-label="筛选效果器类型">{(['All', 'Dynamics', 'Tone', 'Drive', 'Mod', 'Delay', 'Space'] as const).map((entry) => <button key={entry} type="button" className={category === entry ? 'active' : ''} aria-pressed={category === entry} onClick={() => setCategory(entry)}>{categoryNames[entry]}</button>)}</div>
+              <div className="filters" aria-label="筛选效果器类型">{(['All', 'Dynamics', 'Tone', 'Drive', 'Mod', 'Delay', 'Space'] as const).map((entry) => <button key={entry} type="button" className={category === entry ? 'active' : ''} aria-pressed={category === entry} onClick={() => setCategory(entry)}>{categoryNames[entry]}</button>)}<button type="button" className={'circuit-filter' + (circuitOnly ? ' active' : '')} aria-pressed={circuitOnly} title="只看按原厂电路图逐元件仿真的效果器" onClick={() => setCircuitOnly((current) => !current)}>电路级</button></div>
               <StyleFilters value={styleFilter} onChange={setStyleFilter} />
               {library.length === 0 ? <p className="library-empty">没有匹配这个搜索、类型或风格的效果器。</p> : (
                 <div className="library-list">{library.map((spec) => (
                   <article key={spec.id} className={'library-item' + (spec.nam ? ' has-nam' : '')} draggable onDragStart={(event) => event.dataTransfer.setData('text/plain', 'add:' + spec.id)}>
                     <MiniPedal spec={spec} />
-                    <div><span>{categoryNames[spec.category]} · {spec.family}</span><strong>{spec.name}</strong><small>{spec.description}</small></div>
+                    <div><span>{categoryNames[spec.category]} · {spec.family}</span><strong>{spec.name}{isCircuitModelled(spec.id) && <em className="circuit-badge" title="按原厂电路图逐元件仿真（SPICE 校验）">CIRCUIT</em>}</strong><small>{spec.description}</small></div>
                     <button type="button" aria-label={'添加' + spec.name} onClick={() => addPedal(spec.id)}>添加</button>
                     {spec.nam && (() => {
                       const localModel = namModels[spec.nam.slotId];
@@ -1351,12 +1518,10 @@ export default function Home() {
       <footer className="transport">
         <button className="source-trigger" type="button" aria-label="选择清音输入" onClick={() => setSourcePickerOpen(true)}><span>清音输入</span><strong>{formatSourceConfig(source)}</strong><small>{getChordProgression(source.progression).name}</small></button>
         <button className={'play' + (playing ? ' active' : '') + (playbackLoading ? ' is-loading' : '')} type="button" aria-label={playbackLoading ? '正在加载试听' : playing ? '停止试听' : '开始试听'} aria-busy={playbackLoading} disabled={playbackLoading} onClick={() => void togglePlayback()}>{playbackLoading ? '…' : playing ? '■' : '▶'}</button>
-        <div className={'waveform' + (playbackLoading ? ' is-loading' : '')} role="progressbar" aria-label="试听进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress)} aria-valuetext={playbackLoading ? '正在加载试听' : '试听进度 ' + Math.round(progress) + '%'}>
-          <i style={{ width: String(progress) + '%' }} />{wave.map((height, index) => <b key={String(height) + '-' + String(index)} style={{ height: String(height) + '%' }} />)}
-          {playbackLoading && <span className="waveform-status">正在加载试听…</span>}
-        </div>
+        <PlaybackWaveform playback={playback} playing={playing} loading={playbackLoading} />
+        <button type="button" className={'live-input' + (liveInputActive ? ' active' : '')} aria-pressed={liveInputActive} disabled={liveInputBusy || playbackLoading} title="用声卡或麦克风输入真实吉他（请戴耳机，避免啸叫）" onClick={() => void toggleLiveInput()}>{liveInputActive ? '● 实时输入' : '实时输入'}</button>
         <div className="segments" aria-label="干声或效果声">{(['dry', 'wet'] as const).map((entry) => <button key={entry} type="button" className={mode === entry ? 'active' : ''} aria-pressed={mode === entry} onClick={() => setMonitorMode(entry)}>{entry === 'dry' ? '干声' : '效果'}</button>)}</div>
-        <div className="segments ab" aria-label="参数快照 A 或 B">{(['A', 'B'] as const).map((entry) => <button key={entry} type="button" className={snapshot === entry ? 'active' : ''} aria-pressed={snapshot === entry} onClick={() => selectSnapshot(entry)}>快照 {entry}</button>)}</div>
+        <div className="segments ab" aria-label="参数快照 A 或 B">{(['A', 'B'] as const).map((entry) => <button key={entry} type="button" className={snapshot === entry ? 'active' : ''} aria-pressed={snapshot === entry} onClick={() => selectSnapshot(entry)}>快照 {entry}</button>)}<button type="button" className="ab-copy" title={'用快照 ' + snapshot + ' 覆盖快照 ' + (snapshot === 'A' ? 'B' : 'A')} onClick={copySnapshotToOther}>{snapshot}→{snapshot === 'A' ? 'B' : 'A'}</button></div>
         <label className="output"><span>输出音量</span><input type="range" min="0" max="100" value={output} aria-label="输出音量" onChange={(event) => updateOutput(Number(event.target.value))} /></label>
         <button type="button" className="render" disabled={render === 'busy'} onClick={() => void exportWav()}>{render === 'busy' ? '正在导出…' : render === 'ready' ? '已下载' : '导出 WAV'}</button>
         {audioError && <span className="audio-error" role="alert">{audioError}</span>}

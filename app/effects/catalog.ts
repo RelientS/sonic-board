@@ -33,6 +33,8 @@ export type ControlSpec = {
   unit: string;
   decimals?: number;
   curve?: ControlCurve;
+  /** A two-position switch: labels for the off (value < 50) and on positions. */
+  options?: readonly [string, string];
 };
 
 export type EffectSpec = {
@@ -105,6 +107,8 @@ const mix = (defaultValue = 40) => c('mix', '混合', defaultValue);
 const rate = (defaultValue = 25) => c('rate', '速率', defaultValue, 0.05, 10, 'Hz', 2, 'exponential');
 // Circuit-modelled pedals show the real knob scale (0-10) because the value
 // is the pot rotation handed to the schematic, not a derived parameter.
+const toggle = (id: string, label: string, on: boolean, options: readonly [string, string]): ControlSpec =>
+  ({ ...c(id, label, on ? 100 : 0, 0, 1, '', 0), options });
 const knob = (id: string, label: string, defaultValue: number) => c(id, label, defaultValue, 0, 10, '', 1);
 const tone = (defaultValue = 50) => c('tone', '音色', defaultValue, 800, 12_000, 'Hz', 0, 'exponential');
 
@@ -161,7 +165,7 @@ const EFFECT_SPECS_BASE: EffectSpec[] = [
   {
     id: 'opamp-muff', name: 'Electro-Harmonix Op-Amp Big Muff', maker: 'ELECTRO-HARMONIX', category: 'Drive', family: 'Op-Amp Big Muff 电路级仿真', wide: true,
     description: '按 1978 运放版原理图求解：4558 与 741 两级、三串二极管反馈削波和 Tone 旁路开关，比晶体管版更硬更亮。', finish: '#e9793a', ink: '#27231f', accent: '#d8d4c9',
-    controls: [knob('volume', '音量', 58), knob('tone', '音色', 50), knob('sustain', '延音', 65), c('tonebypass', '旁路', 0)],
+    controls: [knob('volume', '音量', 58), knob('tone', '音色', 50), knob('sustain', '延音', 65), toggle('tonebypass', '旁路', false, ['TONE', 'BYPASS'])],
   },
   {
     id: 'fuzz-face', name: 'Dallas-Arbiter Fuzz Face', maker: 'DALLAS-ARBITER', category: 'Drive', family: 'Fuzz Face 锗管法兹',
@@ -171,7 +175,7 @@ const EFFECT_SPECS_BASE: EffectSpec[] = [
   {
     id: 'ocd-drive', name: 'Fulltone OCD', maker: 'FULLTONE', category: 'Drive', family: 'OCD MOSFET 过载',
     description: 'MOSFET 硬削波配宽频动态，适合从轻推到颗粒失真。', finish: '#e8e5db', ink: '#202124', accent: '#d13b32',
-    controls: [knob('drive', '驱动', 50), knob('tone', '音色', 50), knob('volume', '音量', 62), c('hp', 'HP/LP', 100)],
+    controls: [knob('drive', '驱动', 50), knob('tone', '音色', 50), knob('volume', '音量', 62), toggle('hp', 'HP/LP', true, ['LP', 'HP'])],
   },
   {
     id: 'klon-centaur', name: 'Klon Centaur', maker: 'KLON', category: 'Drive', family: 'Centaur 电路级仿真',
@@ -549,6 +553,7 @@ export function mapControlValue(control: ControlSpec, normalizedValue: number) {
 }
 
 export function formatControlValue(control: ControlSpec, normalizedValue: number) {
+  if (control.options) return control.options[normalizedValue >= 50 ? 1 : 0];
   const value = mapControlValue(control, normalizedValue);
   const prefix = control.unit === 'dB' && value > 0 ? '+' : '';
   return `${prefix}${value} ${control.unit}`.trim();

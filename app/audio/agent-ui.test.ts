@@ -36,7 +36,8 @@ test('pedals, playback, and presets expose keyboard and loading state', () => {
   assert.match(page, /正在加载试听，请稍候；重复点击不会中断加载/);
   assert.match(page, /aria-busy=\{playbackLoading\}/);
   assert.match(page, /role="progressbar"/);
-  assert.match(page, /aria-valuenow=\{Math\.round\(progress\)\}/);
+  assert.match(page, /setAttribute\('aria-valuenow', String\(rounded\)\)/);
+  assert.match(page, /<PlaybackWaveform playback=\{playback\} playing=\{playing\} loading=\{playbackLoading\} \/>/);
   assert.match(page, /aria-label=\{'载入 ' \+ preset\.name\}/);
   assert.match(page, /aria-current=\{isCurrent \? 'true' : undefined\}/);
   assert.doesNotMatch(page, /className="waveform" aria-label=\{'试听进度/);
@@ -75,14 +76,17 @@ test('playback progress follows the active session clock and refresh failures re
   assert.match(page, /session\.startedAt/);
   assert.match(page, /session\.duration/);
   assert.match(page, /const offset = \(\(elapsed % session\.duration\) \+ session\.duration\) % session\.duration/);
-  assert.match(page, /const updateProgress = \(\) => \{/);
-  assert.match(page, /const nextProgress = getPlaybackProgress\(session\)/);
+  assert.match(page, /const watchSession = \(\) => \{/);
+  assert.match(page, /const progress = getPlaybackProgress\(playback\.current\)/);
+  // Progress is animated outside React state so playback does not re-render the page.
+  assert.doesNotMatch(page, /setProgress/);
+  assert.match(page, /window\.requestAnimationFrame\(tick\)/);
   assert.match(page, /if \(session\?\.context\.state === 'closed'\)/);
   assert.match(page, /void playback\.stop\(\)\.catch\(\(\) => \{/);
   assert.doesNotMatch(page, /value \+ 1\.35/);
   assert.match(page, /refreshLiveSession\(session, audioConfig\)\.catch\(async \(\) => \{/);
   assert.match(page, /await playback\.stop\(\)/);
-  assert.match(page, /setPlaying\(false\);\n\s*setProgress\(0\);\n\s*setAudioError\('试听更新失败，请重试。'\)/);
+  assert.match(page, /setPlaying\(false\);\n\s*setAudioError\('试听更新失败，请重试。'\)/);
   assert.match(page, /当前浏览器无法启动试听，请检查声音权限/);
   assert.match(page, /setAudioError\('试听已停止，请重试。'\)/);
   assert.match(page, /playbackRefreshSerial/);
