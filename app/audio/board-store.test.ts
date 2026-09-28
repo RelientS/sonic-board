@@ -3,10 +3,14 @@ import test from 'node:test';
 
 import { getAmpSpec } from '../amps/catalog.ts';
 import { BoardHistory } from '../board-history.ts';
-import { FACTORY_PRESETS, instantiatePreset } from '../effects/catalog.ts';
+import { FACTORY_PRESETS, instantiatePreset, makeDefaultValues } from '../effects/catalog.ts';
+import { captureUserPreset, instantiateUserPreset, parseUserPresets } from '../effects/user-presets.ts';
 import {
   boardFromPreset,
   boardReducer,
+  captureLayout,
+  patchBroken,
+  spotForCableInsert,
   laneItems,
   MAX_PEDALS,
   MIXER_NODE,
@@ -16,7 +20,7 @@ import {
   type BoardAction,
   type BoardUiState,
 } from '../studio/board-store.ts';
-import { layoutParallel, layoutSerial, NODE } from '../studio/board-layout.ts';
+import { connect, deriveChain, disconnect, heal } from '../studio/patch-graph.ts';
 
 function serialBoard() {
   const preset = FACTORY_PRESETS.find((entry) => entry.routing.mode === 'serial' && entry.chain.length >= 3) ?? FACTORY_PRESETS[0];
@@ -146,14 +150,114 @@ test('node order walks pedals in signal order, then the mixer and the rig', () =
   assert.deepEqual(order.slice(-2), [MIXER_NODE, RIG_NODE]);
 });
 
-test('the board fits the stage: long chains snake onto more tiers instead of scrolling', () => {
-  const short = layoutSerial([NODE.pedal, NODE.pedal, NODE.pedal], 1400, 600);
-  assert.equal(short.mode === 'serial' && short.rows.length, 1);
-  assert.ok(short.scale * short.width <= 1400 + 0.5);
-  const long = layoutSerial(Array.from({ length: 12 }, () => NODE.pedal), 1200, 700);
-  assert.ok(long.mode === 'serial' && long.rows.length > 1, 'twelve pedals need a second tier');
-  assert.ok(long.scale * long.width <= 1200 + 0.5 && long.scale * long.height <= 700 + 0.5);
-  if (long.mode === 'serial') assert.deepEqual(long.rows.flat(), Array.from({ length: 12 }, (_, i) => i));
-  const parallel = layoutParallel([NODE.pedal, NODE.pedal], [NODE.pedal], 1200, 700);
-  assert.ok(parallel.scale * parallel.width <= 1200 + 0.5);
+
+test('every pedal gets a spot on the board and the preset chain gets tidy cables', () => {
+  const state = serialBoard();
+  for (const item of state.chain) assert.ok(state.patch.positions[item.instanceId], item.instanceId);
+  assert.equal(state.parked.length, 0);
+  assert.equal(patchBroken(state), false);
+  assert.deepEqual(deriveChain(state.chain, state.patch.cables, 'serial').chain.map((item) => item.instanceId), ids(state));
+});
+
+test('re-cabling changes the chain; unplugged pedals are parked and leave the audio chain', () => {
+  const state = serialBoard();
+  const [first, second, third] = ids(state);
+  // Pull the cable out of the second pedal's input: only the first stays on the path.
+  const unplugged = boardReducer(state, { type: 'patch', cables: disconnect(state.patch.cables, { node: second, port: 'in' }) });
+  assert.deepEqual(ids(unplugged), [first]);
+  assert.ok(unplugged.parked.some((item) => item.instanceId === second));
+  assert.equal(patchBroken(unplugged), true);
+  // The third's input still holds the cable from the second: that jack is occupied.
+  const allNodes = new Set([...ids(unplugged), ...unplugged.parked.map((item) => item.instanceId), 'input', 'output']);
+  assert.deepEqual(connect(unplugged.patch.cables, { node: first, port: 'out' }, { node: third, port: 'in' }, { nodes: allNodes, mode: 'serial' }), { ok: false, reason: 'occupied' });
+  // Pull that plug too, then cable the first straight into the third: the second is skipped.
+  const connected = connect(disconnect(unplugged.patch.cables, { node: third, port: 'in' }), { node: first, port: 'out' }, { node: third, port: 'in' }, { nodes: new Set([...ids(unplugged), ...unplugged.parked.map((item) => item.instanceId), 'input', 'output']), mode: 'serial' });
+  assert.ok(connected.ok);
+  const skipped = boardReducer(unplugged, { type: 'patch', cables: connected.ok ? connected.cables : [] });
+  assert.equal(ids(skipped)[1], third);
+  assert.ok(!ids(skipped).includes(second));
+  assert.equal(undoKeyFor({ type: 'patch', cables: [] }), 'discrete');
+  // A parked pedal keeps its values and can be cabled back onto the end.
+  assert.ok(skipped.snapshots.A[second]);
+  const back = boardReducer(skipped, { type: 'connectParked', instanceId: second, lane: 'A' });
+  assert.equal(ids(back).at(-1), second);
+  assert.equal(back.parked.length, 0);
+});
+
+test('placing a pedal is one undo step per drag and keyboard nudges coalesce', () => {
+  const state = serialBoard();
+  const id = ids(state)[0];
+  const start = state.patch.positions[id];
+  const { state: moved, history } = runWithHistory(state, [
+    { type: 'place', id, x: start.x, y: start.y + 5 },
+    { type: 'place', id, x: start.x, y: start.y + 10 },
+  ], (i) => i * 100);
+  assert.deepEqual(moved.patch.positions[id], { x: start.x, y: start.y + 10 });
+  const undone = history.undo(moved)!;
+  assert.deepEqual(undone.patch.positions[id], start);
+  assert.equal(history.canUndo, false);
+});
+
+test('inserting on a cable splices the pedal in at the given spot; removing heals the cable', () => {
+  const state = serialBoard();
+  const [first, second] = ids(state);
+  const cable = state.patch.cables.find((entry) => entry.from.node === first && entry.to.node === second)!;
+  const at = spotForCableInsert(state, cable, 'rodent-dist')!;
+  const inserted = boardReducer(state, { type: 'insertOnCable', specId: 'rodent-dist', instanceId: 'rat-x', cable, at });
+  assert.deepEqual(ids(inserted).slice(0, 3), [first, 'rat-x', second]);
+  assert.deepEqual(inserted.patch.positions['rat-x'], at);
+  assert.equal(inserted.selected, 'rat-x');
+  const removed = boardReducer(inserted, { type: 'remove', instanceId: 'rat-x' });
+  assert.deepEqual(ids(removed), ids(state));
+  assert.equal(patchBroken(removed), false);
+  assert.equal(removed.patch.positions['rat-x'], undefined);
+});
+
+test('parallel mode adds the splitter and mixer; tidy re-lays the board as one step', () => {
+  const state = serialBoard();
+  const parallel = boardReducer(state, { type: 'setRouting', routing: { mode: 'parallel' } });
+  assert.ok(parallel.patch.positions.splitter && parallel.patch.positions.mixer);
+  assert.equal(patchBroken(parallel), false);
+  assert.deepEqual(ids(parallel), ids(state));
+  const lane = boardReducer(parallel, { type: 'move', instanceId: ids(parallel)[0], lane: 'B', slot: 0 });
+  assert.equal(laneItems(lane.chain, 'parallel', 'B').length, 1);
+  const tidied = boardReducer(lane, { type: 'tidy' });
+  assert.notEqual(tidied, lane);
+  assert.equal(undoKeyFor({ type: 'tidy' }), 'discrete');
+  const back = boardReducer(tidied, { type: 'setRouting', routing: { mode: 'serial' } });
+  assert.equal(back.patch.positions.splitter, undefined);
+  assert.equal(patchBroken(back), false);
+});
+
+test('agent results keep parked pedals and their values; new pedals are placed', () => {
+  const state = serialBoard();
+  const parkedId = ids(state).at(-1)!;
+  const parked = boardReducer(state, { type: 'patch', cables: heal(state.patch.cables, parkedId) });
+  assert.ok(parked.parked.some((item) => item.instanceId === parkedId));
+  const agentChain = [...parked.chain.map((item) => ({ ...item, lane: item.lane ?? 'A' as const })), { instanceId: 'agent-new', specId: 'rodent-dist', lane: 'A' as const }];
+  const values: Record<string, Record<string, number>> = { ...parked.snapshots.A, 'agent-new': makeDefaultValues('rodent-dist') };
+  delete values[parkedId];
+  const next = boardReducer(parked, {
+    type: 'applyAgent',
+    replaceSnapshots: false,
+    board: { name: 'x', selectedInstanceId: '', chain: agentChain, values, bypassed: [], source: parked.source, routing: parked.routing, amp: parked.amp, output: parked.output, monitorMode: 'wet' },
+  });
+  assert.ok(next.parked.some((item) => item.instanceId === parkedId));
+  assert.ok(next.snapshots.A[parkedId]);
+  assert.ok(next.patch.positions['agent-new']);
+  assert.equal(ids(next).at(-1), 'agent-new');
+});
+
+test('user presets keep the layout and parked pedals across save and load', () => {
+  const state = serialBoard();
+  const parkedId = ids(state)[1];
+  const edited = boardReducer(state, { type: 'patch', cables: heal(state.patch.cables, parkedId) });
+  const moved = boardReducer(edited, { type: 'place', id: ids(edited)[0], x: 300, y: 150 });
+  const captured = captureUserPreset({ name: 't', chain: moved.chain, parked: moved.parked, layout: captureLayout(moved), values: moved.snapshots.A, bypassed: moved.bypassed, source: moved.source, output: moved.output, routing: moved.routing, amp: moved.amp });
+  const [parsed] = parseUserPresets(JSON.stringify([captured]));
+  const loaded = boardFromPreset(instantiateUserPreset(parsed), parsed.name);
+  assert.equal(loaded.chain.length, moved.chain.length);
+  assert.equal(loaded.parked.length, 1);
+  assert.equal(loaded.parked[0].specId, moved.parked[0].specId);
+  assert.deepEqual(loaded.patch.positions[loaded.chain[0].instanceId], { x: 300, y: 150 });
 });

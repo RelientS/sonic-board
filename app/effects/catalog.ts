@@ -80,9 +80,20 @@ export type FactoryPreset = {
   chain: PresetChainItem[];
 };
 
+/**
+ * Where pedals sit on the board and how they are cabled (instance ids after
+ * instantiation). Pedals in `parked` are on the board but off the signal path.
+ */
+export type PresetLayout = {
+  positions: Record<string, { x: number; y: number }>;
+  cables: Array<{ from: { node: string; port: string }; to: { node: string; port: string } }>;
+  parked: Array<{ instanceId: string; specId: string }>;
+};
+
 export type InstantiatedPreset = {
   selectedInstanceId?: string;
   chain: Array<{ instanceId: string; specId: string; lane?: SignalLane }>;
+  layout?: PresetLayout;
   values: Record<string, Record<string, number>>;
   bypassed: string[];
   source: SourceConfig;

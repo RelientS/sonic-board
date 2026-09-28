@@ -8,8 +8,26 @@ import type { AudioChainItem, RoutingConfig, SignalLane } from '../audio/audio-c
 import type { SourceConfig } from '../audio/source-catalog.ts';
 import type { ToneAgentBoardState } from '../agent/tone-agent-runtime.ts';
 import { getAmpSpec, type AmpCabConfig } from '../amps/catalog.ts';
-import { makeDefaultValues, type InstantiatedPreset } from '../effects/catalog.ts';
+import { makeDefaultValues, type InstantiatedPreset, type PresetLayout } from '../effects/catalog.ts';
+import { autoLayout, boardSize, footprintOf, jackPoint, nearestFreeSpot, plateRect, UTILITY_SIZE, type Rect } from './board-geometry.ts';
+import {
+  deriveChain,
+  heal,
+  MIXER_NODE,
+  portsOf,
+  pruneCables,
+  repatch,
+  splice,
+  SPLITTER_NODE,
+  INPUT_NODE,
+  OUTPUT_NODE,
+  type Cable,
+  type PatchDoc,
+  type Point,
+} from './patch-graph.ts';
 import { withCab, withCombo, withHead } from './rig-model.ts';
+
+export { MIXER_NODE } from './patch-graph.ts';
 
 export type ChainItem = AudioChainItem;
 export type Values = Record<string, Record<string, number>>;
@@ -17,7 +35,12 @@ export type SnapshotId = 'A' | 'B';
 export type MonitorMode = 'dry' | 'wet';
 
 export type BoardUiState = {
+  /** Pedals on the signal path, in order: derived from the patch cables. */
   chain: ChainItem[];
+  /** Pedals on the board but not cabled into the signal path (silent). */
+  parked: ChainItem[];
+  /** Where every pedal and utility box sits (mm) and the patch cables. */
+  patch: PatchDoc;
   snapshots: Record<SnapshotId, Values>;
   snapshot: SnapshotId;
   /** The focused node: a pedal instance id, MIXER_NODE or RIG_NODE. */
@@ -32,7 +55,6 @@ export type BoardUiState = {
 };
 
 export const MAX_PEDALS = 16;
-export const MIXER_NODE = 'mixer';
 export const RIG_NODE = 'rig';
 export const EDITED_NAME = '已修改';
 
@@ -58,15 +80,34 @@ export type BoardAction =
   | { type: 'applyPreset'; board: InstantiatedPreset; name: string }
   | { type: 'applyAgent'; board: ToneAgentBoardState; replaceSnapshots: boolean }
   | { type: 'rename'; name: string }
-  | { type: 'restore'; state: BoardUiState };
+  | { type: 'restore'; state: BoardUiState }
+  /** Free placement on the board (mm, top-left). */
+  | { type: 'place'; id: string; x: number; y: number }
+  /** A new set of patch cables (the signal chain follows them). */
+  | { type: 'patch'; cables: Cable[] }
+  /** Adds a pedal into an existing cable, at `at` if given. */
+  | { type: 'insertOnCable'; specId: string; instanceId: string; cable: Cable; at?: Point }
+  /** Cables a parked pedal onto the end of the chain (or of a lane). */
+  | { type: 'connectParked'; instanceId: string; lane: SignalLane }
+  /** Re-lays the board out in signal order with tidy cables. */
+  | { type: 'tidy' };
 
 export function cloneValues(values: Values) {
   return Object.fromEntries(Object.entries(values).map(([id, controls]) => [id, { ...controls }]));
 }
 
+export function clonePatch(patch: PatchDoc): PatchDoc {
+  return {
+    positions: Object.fromEntries(Object.entries(patch.positions).map(([id, point]) => [id, { ...point }])),
+    cables: patch.cables.map((cable) => ({ from: { ...cable.from }, to: { ...cable.to } })),
+  };
+}
+
 export function cloneBoardUiState(state: BoardUiState): BoardUiState {
   return {
     chain: state.chain.map((item) => ({ ...item })),
+    parked: state.parked.map((item) => ({ ...item })),
+    patch: clonePatch(state.patch),
     snapshots: { A: cloneValues(state.snapshots.A), B: cloneValues(state.snapshots.B) },
     snapshot: state.snapshot,
     selected: state.selected,
@@ -86,8 +127,14 @@ export function makeSnapshots(board: InstantiatedPreset) {
 }
 
 export function boardFromPreset(board: InstantiatedPreset, name: string, mode: MonitorMode = 'wet'): BoardUiState {
+  const chain = board.chain.map((item) => ({ ...item }));
+  const parked = (board.layout?.parked ?? []).map((item) => ({ instanceId: item.instanceId, specId: item.specId }));
+  const patch = patchFromLayout(board.layout, chain, board.routing.mode, parked);
+  const settled = settleFromCables({ chain, parked, patch, routing: board.routing }, patch.cables);
   return {
-    chain: board.chain.map((item) => ({ ...item })),
+    chain: settled.chain,
+    parked: settled.parked,
+    patch: settled.patch,
     snapshots: makeSnapshots(board),
     snapshot: 'A',
     selected: board.selectedInstanceId && board.chain.some((item) => item.instanceId === board.selectedInstanceId)
@@ -101,6 +148,141 @@ export function boardFromPreset(board: InstantiatedPreset, name: string, mode: M
     mode,
     activePresetName: name,
   };
+}
+
+type Topology = Pick<BoardUiState, 'chain' | 'parked' | 'patch' | 'routing'>;
+
+function nodeSet(pedals: ChainItem[], mode: RoutingConfig['mode']) {
+  const nodes = new Set([INPUT_NODE, OUTPUT_NODE, ...pedals.map((item) => item.instanceId)]);
+  if (mode === 'parallel') {
+    nodes.add(SPLITTER_NODE);
+    nodes.add(MIXER_NODE);
+  }
+  return nodes;
+}
+
+/** Rects of every placed pedal and utility box (mm). */
+export function occupiedRects(positions: Record<string, Point>, pedals: ChainItem[], except?: string): Array<Rect & { id: string }> {
+  const rects: Array<Rect & { id: string }> = [];
+  for (const item of pedals) {
+    const point = positions[item.instanceId];
+    if (point && item.instanceId !== except) rects.push({ id: item.instanceId, ...point, ...footprintOf(item.specId) });
+  }
+  for (const box of [SPLITTER_NODE, MIXER_NODE]) {
+    const point = positions[box];
+    if (point && box !== except) rects.push({ id: box, ...point, ...UTILITY_SIZE });
+  }
+  return rects;
+}
+
+/**
+ * Gives every pedal (and, in parallel mode, the splitter and mixer) a spot on
+ * the board: a new pedal lands just right of its predecessor in the chain,
+ * or the nearest free spot to it; a board with nothing placed is laid out.
+ */
+function ensurePositions(positions: Record<string, Point>, chain: ChainItem[], parked: ChainItem[], mode: RoutingConfig['mode']) {
+  const pedals = [...chain, ...parked];
+  const next: Record<string, Point> = {};
+  for (const item of pedals) if (positions[item.instanceId]) next[item.instanceId] = { ...positions[item.instanceId] };
+  if (mode === 'parallel') {
+    for (const box of [SPLITTER_NODE, MIXER_NODE]) if (positions[box]) next[box] = { ...positions[box] };
+  }
+  const missing = pedals.filter((item) => !next[item.instanceId]);
+  const boxesMissing = mode === 'parallel' ? [SPLITTER_NODE, MIXER_NODE].filter((box) => !next[box]) : [];
+  if (!missing.length && !boxesMissing.length) return next;
+  if (missing.length === pedals.length) return autoLayout(chain, mode, parked);
+  const auto = autoLayout(chain, mode, parked);
+  for (const box of boxesMissing) {
+    next[box] = nearestFreeSpot(auto[box], UTILITY_SIZE, occupiedRects(next, pedals)) ?? auto[box];
+  }
+  for (const item of missing) {
+    const at = pedals.indexOf(item);
+    const previous = pedals.slice(0, at).reverse().find((entry) => next[entry.instanceId]);
+    const size = footprintOf(item.specId);
+    const wanted = previous
+      ? { x: next[previous.instanceId].x + footprintOf(previous.specId).w + 16, y: next[previous.instanceId].y }
+      : auto[item.instanceId] ?? { x: 50, y: 20 };
+    const rects = occupiedRects(next, pedals);
+    const spot = nearestFreeSpot(wanted, size, rects);
+    next[item.instanceId] = spot ?? { x: 50, y: Math.max(20, ...rects.map((rect) => rect.y + rect.h + 26)) };
+  }
+  return next;
+}
+
+const SOURCE_PORTS = new Set(['out', 'outA', 'outB']);
+const SINK_PORTS = new Set(['in', 'inA', 'inB']);
+
+/** Cables from a stored layout, keeping only well-formed ones. */
+function validCables(raw: PresetLayout['cables'] | undefined): Cable[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((cable) => cable && typeof cable.from?.node === 'string' && typeof cable.to?.node === 'string'
+    && SOURCE_PORTS.has(cable.from.port) && SINK_PORTS.has(cable.to.port)
+    && portsOf(cable.from.node).includes(cable.from.port as Cable['from']['port'])
+    && portsOf(cable.to.node).includes(cable.to.port as Cable['to']['port'])) as Cable[];
+}
+
+function patchFromLayout(layout: PresetLayout | undefined, chain: ChainItem[], mode: RoutingConfig['mode'], parked: ChainItem[]): PatchDoc {
+  if (!layout) return { positions: autoLayout(chain, mode, parked), cables: repatch([], chain, mode, []) };
+  const positions: Record<string, Point> = {};
+  for (const [id, point] of Object.entries(layout.positions ?? {})) {
+    if (point && Number.isFinite(point.x) && Number.isFinite(point.y)) positions[id] = { x: point.x, y: point.y };
+  }
+  const cables = validCables(layout.cables);
+  return { positions, cables: cables.length ? cables : repatch([], chain, mode, []) };
+}
+
+/** Cables are authoritative: the chain and the parked pedals follow them. */
+function settleFromCables(topology: Topology, cables: Cable[]) {
+  const pedals = [...topology.chain, ...topology.parked];
+  const mode = topology.routing.mode;
+  const kept = pruneCables(cables, nodeSet(pedals, mode));
+  const derived = deriveChain(pedals, kept, mode);
+  const byId = new Map(pedals.map((item) => [item.instanceId, item]));
+  const parked = derived.parked.map((id) => ({ instanceId: id, specId: byId.get(id)!.specId }));
+  const positions = ensurePositions(topology.patch.positions, derived.chain, parked, mode);
+  return { chain: derived.chain, parked, patch: { positions, cables: kept } };
+}
+
+/** The chain order is authoritative: it gets tidy cables, parked pedals keep theirs. */
+function settleFromOrder(topology: Topology, chain: ChainItem[], parked: ChainItem[]) {
+  const mode = topology.routing.mode;
+  const ordered = chain.map((item) => ({ ...item, lane: mode === 'parallel' ? laneOf(item) : 'A' as const }));
+  const cables = repatch(topology.patch.cables, ordered, mode, parked.map((item) => item.instanceId));
+  return settleFromCables({ ...topology, chain: ordered, parked }, cables);
+}
+
+/** Signal-space rect of any board node, plates included. */
+export function boardNodeRect(state: Pick<BoardUiState, 'chain' | 'parked' | 'patch'>, id: string): Rect | null {
+  const pedals = [...state.chain, ...state.parked];
+  if (id === INPUT_NODE || id === OUTPUT_NODE) return plateRect(id, boardSize(occupiedRects(state.patch.positions, pedals)));
+  const point = state.patch.positions[id];
+  if (!point) return null;
+  if (id === SPLITTER_NODE || id === MIXER_NODE) return { ...point, ...UTILITY_SIZE };
+  const item = pedals.find((entry) => entry.instanceId === id);
+  return item ? { ...point, ...footprintOf(item.specId) } : null;
+}
+
+/** A free spot for a new pedal spliced into `cable`: centred on the cable, jacks level with it. */
+export function spotForCableInsert(state: Pick<BoardUiState, 'chain' | 'parked' | 'patch'>, cable: Cable, specId: string): Point | null {
+  const fromRect = boardNodeRect(state, cable.from.node);
+  const toRect = boardNodeRect(state, cable.to.node);
+  if (!fromRect || !toRect) return null;
+  const a = jackPoint(fromRect, cable.from.node, cable.from.port);
+  const b = jackPoint(toRect, cable.to.node, cable.to.port);
+  const size = footprintOf(specId);
+  const wanted = { x: (a.x + b.x) / 2 - size.w / 2, y: (a.y + b.y) / 2 - 24 };
+  return nearestFreeSpot(wanted, size, occupiedRects(state.patch.positions, [...state.chain, ...state.parked]));
+}
+
+/** Whether the path from INPUT reaches OUTPUT (the board shows a warning if not). */
+export function patchBroken(state: Pick<BoardUiState, 'chain' | 'parked' | 'patch' | 'routing'>) {
+  return deriveChain([...state.chain, ...state.parked], state.patch.cables, state.routing.mode).broken;
+}
+
+/** Serialisable layout for presets. */
+export function captureLayout(state: Pick<BoardUiState, 'parked' | 'patch'>): PresetLayout {
+  const patch = clonePatch(state.patch);
+  return { positions: patch.positions, cables: patch.cables, parked: state.parked.map((item) => ({ instanceId: item.instanceId, specId: item.specId })) };
 }
 
 export function laneOf(item: ChainItem): SignalLane {
@@ -133,6 +315,14 @@ function insertAt(chain: ChainItem[], item: ChainItem, mode: RoutingConfig['mode
   return [...chain.slice(0, at), item, ...chain.slice(at)];
 }
 
+function pedalCount(state: Pick<BoardUiState, 'chain' | 'parked'>) {
+  return state.chain.length + state.parked.length;
+}
+
+function hasPedal(state: Pick<BoardUiState, 'chain' | 'parked'>, instanceId: string) {
+  return state.chain.some((item) => item.instanceId === instanceId) || state.parked.some((item) => item.instanceId === instanceId);
+}
+
 function withoutInstance(values: Values, instanceId: string) {
   const next = { ...values };
   delete next[instanceId];
@@ -146,12 +336,12 @@ function edited(state: BoardUiState, patch: Partial<BoardUiState>): BoardUiState
 export function boardReducer(state: BoardUiState, action: BoardAction): BoardUiState {
   switch (action.type) {
     case 'add': {
-      if (state.chain.length >= MAX_PEDALS || state.chain.some((item) => item.instanceId === action.instanceId)) return state;
+      if (pedalCount(state) >= MAX_PEDALS || hasPedal(state, action.instanceId)) return state;
       const lane = state.routing.mode === 'parallel' ? action.lane : 'A';
       const item: ChainItem = { instanceId: action.instanceId, specId: action.specId, lane };
       const defaults = makeDefaultValues(action.specId);
       return edited(state, {
-        chain: insertAt(state.chain, item, state.routing.mode, lane, action.index),
+        ...settleFromOrder(state, insertAt(state.chain, item, state.routing.mode, lane, action.index), state.parked),
         snapshots: {
           A: { ...state.snapshots.A, [action.instanceId]: { ...defaults } },
           B: { ...state.snapshots.B, [action.instanceId]: { ...defaults } },
@@ -170,7 +360,7 @@ export function boardReducer(state: BoardUiState, action: BoardAction): BoardUiS
       if (sameRow && (action.slot === from || action.slot === from + 1)) return state;
       const index = sameRow && action.slot > from ? action.slot - 1 : action.slot;
       const rest = state.chain.filter((item) => item !== moving);
-      return edited(state, { chain: insertAt(rest, { ...moving, lane }, mode, lane, index) });
+      return edited(state, settleFromOrder(state, insertAt(rest, { ...moving, lane }, mode, lane, index), state.parked));
     }
     case 'nudge': {
       const moving = state.chain.find((item) => item.instanceId === action.instanceId);
@@ -182,22 +372,25 @@ export function boardReducer(state: BoardUiState, action: BoardAction): BoardUiS
       return boardReducer(state, { type: 'move', instanceId: action.instanceId, lane: laneOf(moving), slot: action.direction > 0 ? to + 1 : to });
     }
     case 'remove': {
-      if (!state.chain.some((item) => item.instanceId === action.instanceId)) return state;
+      if (!hasPedal(state, action.instanceId)) return state;
       const order = nodeOrder(state);
       const at = order.indexOf(action.instanceId);
       const chain = state.chain.filter((item) => item.instanceId !== action.instanceId);
+      const parked = state.parked.filter((item) => item.instanceId !== action.instanceId);
       const neighbour = [order[at - 1], order[at + 1]].find((id) => id && chain.some((item) => item.instanceId === id));
       const bypassed = new Set(state.bypassed);
       bypassed.delete(action.instanceId);
+      // Pulling a pedal out joins the cable that went into it to the one that came out.
+      const settled = settleFromCables({ ...state, chain, parked }, heal(state.patch.cables, action.instanceId));
       return edited(state, {
-        chain,
+        ...settled,
         snapshots: { A: withoutInstance(state.snapshots.A, action.instanceId), B: withoutInstance(state.snapshots.B, action.instanceId) },
         bypassed,
         selected: state.selected === action.instanceId ? neighbour ?? RIG_NODE : state.selected,
       });
     }
     case 'bypass': {
-      if (!state.chain.some((item) => item.instanceId === action.instanceId)) return state;
+      if (!hasPedal(state, action.instanceId)) return state;
       const bypassed = new Set(state.bypassed);
       if (bypassed.has(action.instanceId)) bypassed.delete(action.instanceId);
       else bypassed.add(action.instanceId);
@@ -230,7 +423,43 @@ export function boardReducer(state: BoardUiState, action: BoardAction): BoardUiS
     case 'setRouting': {
       const routing = { ...state.routing, ...action.routing };
       if (routing.mode === state.routing.mode && routing.blend === state.routing.blend && routing.spread === state.routing.spread) return state;
-      return edited(state, { routing });
+      if (routing.mode === state.routing.mode) return edited(state, { routing });
+      // Switching modes adds or removes the splitter and mixer and re-cables the chain.
+      return edited(state, { routing, ...settleFromOrder({ ...state, routing }, state.chain, state.parked) });
+    }
+    case 'place': {
+      const current = state.patch.positions[action.id];
+      if (!current || (current.x === action.x && current.y === action.y)) return state;
+      return edited(state, { patch: { ...state.patch, positions: { ...state.patch.positions, [action.id]: { x: action.x, y: action.y } } } });
+    }
+    case 'patch':
+      return edited(state, settleFromCables(state, action.cables));
+    case 'insertOnCable': {
+      if (pedalCount(state) >= MAX_PEDALS || hasPedal(state, action.instanceId)) return state;
+      const cables = splice(state.patch.cables, action.cable, action.instanceId);
+      if (!cables) return state;
+      const item: ChainItem = { instanceId: action.instanceId, specId: action.specId, lane: 'A' };
+      const positions = action.at ? { ...state.patch.positions, [action.instanceId]: { ...action.at } } : state.patch.positions;
+      const defaults = makeDefaultValues(action.specId);
+      return edited(state, {
+        ...settleFromCables({ ...state, parked: [...state.parked, item], patch: { positions, cables: state.patch.cables } }, cables),
+        snapshots: {
+          A: { ...state.snapshots.A, [action.instanceId]: { ...defaults } },
+          B: { ...state.snapshots.B, [action.instanceId]: { ...defaults } },
+        },
+        selected: action.instanceId,
+      });
+    }
+    case 'connectParked': {
+      const item = state.parked.find((entry) => entry.instanceId === action.instanceId);
+      if (!item) return state;
+      const lane = state.routing.mode === 'parallel' ? action.lane : 'A';
+      const chain = insertAt(state.chain, { ...item, lane }, state.routing.mode, lane, Number.MAX_SAFE_INTEGER);
+      return edited(state, settleFromOrder(state, chain, state.parked.filter((entry) => entry !== item)));
+    }
+    case 'tidy': {
+      const cables = repatch(state.patch.cables, state.chain, state.routing.mode, state.parked.map((item) => item.instanceId));
+      return edited(state, { patch: { positions: autoLayout(state.chain, state.routing.mode, state.parked), cables } });
     }
     case 'setSource':
       return edited(state, { source: action.source });
@@ -282,8 +511,18 @@ function applyAgentBoard(state: BoardUiState, board: ToneAgentBoardState, replac
       ? { A: nextValues, B: preservedInactive }
       : { A: preservedInactive, B: nextValues };
   }
+  // Parked pedals are not part of what the agent saw: they stay where they are.
+  const agentIds = new Set(board.chain.map((item) => item.instanceId));
+  const parked = state.parked.filter((item) => !agentIds.has(item.instanceId));
+  for (const item of parked) {
+    for (const id of ['A', 'B'] as const) {
+      const previous = state.snapshots[id][item.instanceId] ?? state.snapshots[state.snapshot][item.instanceId];
+      if (previous) snapshots[id] = { ...snapshots[id], [item.instanceId]: { ...previous } };
+    }
+  }
+  const settled = settleFromOrder({ ...state, routing: { ...board.routing } }, board.chain.map((item) => ({ ...item })), parked);
   return {
-    chain: board.chain.map((item) => ({ ...item })),
+    ...settled,
     snapshots,
     snapshot: replaceSnapshots ? 'A' : state.snapshot,
     selected: board.chain[0]?.instanceId ?? RIG_NODE,
@@ -311,7 +550,13 @@ export function undoKeyFor(action: BoardAction): string | 'discrete' | null {
       return `amp:${action.section}:${action.controlId}`;
     case 'setRouting':
       return action.routing.mode === undefined ? `routing:${Object.keys(action.routing).sort().join(',')}` : 'discrete';
+    case 'place':
+      return `place:${action.id}`;
     case 'add':
+    case 'patch':
+    case 'insertOnCable':
+    case 'connectParked':
+    case 'tidy':
     case 'move':
     case 'nudge':
     case 'remove':
