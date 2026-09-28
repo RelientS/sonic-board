@@ -5,7 +5,7 @@
  * undo is recorded in exactly one place (see useBoard).
  */
 import type { AudioChainItem, RoutingConfig, SignalLane } from '../audio/audio-core.ts';
-import type { SourceConfig } from '../audio/source-catalog.ts';
+import { normalizeInputSettings, type InputSettings, type SourceConfig } from '../audio/source-catalog.ts';
 import type { ToneAgentBoardState } from '../agent/tone-agent-runtime.ts';
 import { getAmpSpec, type AmpCabConfig } from '../amps/catalog.ts';
 import { makeDefaultValues, type InstantiatedPreset } from '../effects/catalog.ts';
@@ -24,6 +24,8 @@ export type BoardUiState = {
   selected: string;
   bypassed: Set<string>;
   source: SourceConfig;
+  /** Take, loop region and input trim (the take audio itself stays in the browser's take store). */
+  input: InputSettings;
   routing: RoutingConfig;
   amp: AmpCabConfig;
   output: number;
@@ -34,6 +36,8 @@ export type BoardUiState = {
 export const MAX_PEDALS = 16;
 export const MIXER_NODE = 'mixer';
 export const RIG_NODE = 'rig';
+/** The guitar input at the head of the chain (focusing it opens the input deck). */
+export const INPUT_NODE = 'input';
 export const EDITED_NAME = '已修改';
 
 export type BoardAction =
@@ -50,6 +54,7 @@ export type BoardAction =
   | { type: 'toggleAmpBypass' }
   | { type: 'setRouting'; routing: Partial<RoutingConfig> }
   | { type: 'setSource'; source: SourceConfig }
+  | { type: 'setInput'; input: Partial<InputSettings> }
   | { type: 'setOutput'; output: number }
   | { type: 'setMode'; mode: MonitorMode }
   | { type: 'selectSnapshot'; snapshot: SnapshotId }
@@ -72,12 +77,17 @@ export function cloneBoardUiState(state: BoardUiState): BoardUiState {
     selected: state.selected,
     bypassed: new Set(state.bypassed),
     source: { ...state.source },
+    input: cloneInput(state.input),
     routing: { ...state.routing },
     amp: { ...state.amp, ampValues: { ...state.amp.ampValues }, cabValues: { ...state.amp.cabValues } },
     output: state.output,
     mode: state.mode,
     activePresetName: state.activePresetName,
   };
+}
+
+function cloneInput(input: InputSettings): InputSettings {
+  return { ...input, loop: input.loop ? { ...input.loop } : null };
 }
 
 /** Both snapshots start as the preset; B diverges only when the player edits it. */
@@ -95,6 +105,7 @@ export function boardFromPreset(board: InstantiatedPreset, name: string, mode: M
       : board.chain[0]?.instanceId ?? RIG_NODE,
     bypassed: new Set(board.bypassed),
     source: { ...board.source },
+    input: normalizeInputSettings(board.input),
     routing: { ...board.routing },
     amp: { ...board.amp, ampValues: { ...board.amp.ampValues }, cabValues: { ...board.amp.cabValues } },
     output: board.output,
@@ -233,7 +244,14 @@ export function boardReducer(state: BoardUiState, action: BoardAction): BoardUiS
       return edited(state, { routing });
     }
     case 'setSource':
-      return edited(state, { source: action.source });
+      // Picking an example phrase also stops playing a take.
+      return edited(state, { source: action.source, input: { ...state.input, takeId: null, loop: state.input.takeId ? null : state.input.loop } });
+    case 'setInput': {
+      const input = normalizeInputSettings({ ...state.input, ...action.input });
+      const same = input.takeId === state.input.takeId && input.trimDb === state.input.trimDb &&
+        input.loop?.start === state.input.loop?.start && input.loop?.end === state.input.loop?.end;
+      return same ? state : edited(state, { input });
+    }
     case 'setOutput':
       return state.output === action.output ? state : edited(state, { output: action.output });
     case 'setMode':
@@ -289,6 +307,8 @@ function applyAgentBoard(state: BoardUiState, board: ToneAgentBoardState, replac
     selected: board.chain[0]?.instanceId ?? RIG_NODE,
     bypassed: new Set(board.bypassed),
     source: { ...board.source },
+    // The agent does not see takes: the input (take, loop, trim) stays as it was.
+    input: cloneInput(state.input),
     routing: { ...board.routing },
     amp: { ...board.amp, ampValues: { ...board.amp.ampValues }, cabValues: { ...board.amp.cabValues } },
     output: board.output,
@@ -309,6 +329,9 @@ export function undoKeyFor(action: BoardAction): string | 'discrete' | null {
       return `value:${action.instanceId}:${action.controlId}`;
     case 'setAmpValue':
       return `amp:${action.section}:${action.controlId}`;
+    // A trim drag or a loop-handle drag is one step; choosing a take is its own.
+    case 'setInput':
+      return 'takeId' in action.input ? 'discrete' : `input:${Object.keys(action.input).sort().join(',')}`;
     case 'setRouting':
       return action.routing.mode === undefined ? `routing:${Object.keys(action.routing).sort().join(',')}` : 'discrete';
     case 'add':

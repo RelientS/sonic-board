@@ -8,7 +8,7 @@ import { CAB_SPECS, getAmpSpec, getCabSpec, type AmpSpec } from '../amps/catalog
 import { getEffectSpec, type ControlSpec, type EffectSpec } from '../effects/catalog.ts';
 import { getPedalControlLabel } from '../effects/control-labels.ts';
 import { engineChip } from './Board.tsx';
-import { laneItems, laneOf, MIXER_NODE, nodeOrder, RIG_NODE, type BoardUiState, type Values } from './board-store.ts';
+import { INPUT_NODE, laneItems, laneOf, MIXER_NODE, nodeOrder, RIG_NODE, type BoardUiState, type Values } from './board-store.ts';
 import { KnobControl, type HelpTarget } from './Knob.tsx';
 import { RigDeck } from './Rig.tsx';
 import type { RigMode } from './rig-model.ts';
@@ -28,6 +28,10 @@ export type FocusDeckProps = {
   engineStatus: (instanceId: string) => EffectStatus | undefined;
   namLoaded: (spec: EffectSpec) => boolean;
   namSection: (spec: EffectSpec) => ReactNode;
+  /** The input node's deck (source, takes, live input, trim). */
+  inputSection?: ReactNode;
+  /** Short description of the current source, for the input deck's header. */
+  inputSubtitle?: string;
   onClose: () => void;
   onStep: (direction: -1 | 1) => void;
   onNudge: (instanceId: string, direction: -1 | 1) => void;
@@ -64,7 +68,12 @@ export const FocusDeck = forwardRef<HTMLHeadingElement, FocusDeckProps>(function
   let actions: ReactNode = null;
   let body: ReactNode;
 
-  if (pedal) {
+  if (state.selected === INPUT_NODE && props.inputSection) {
+    art = <span className="deck-icon input-icon" aria-hidden="true" />;
+    title = '输入';
+    subtitle = props.inputSubtitle ?? '吉他从哪里来';
+    body = props.inputSection;
+  } else if (pedal) {
     const spec = getEffectSpec(pedal.specId);
     const bypassed = state.bypassed.has(pedal.instanceId);
     const row = laneItems(state.chain, state.routing.mode, laneOf(pedal));
@@ -179,7 +188,7 @@ export const FocusDeck = forwardRef<HTMLHeadingElement, FocusDeckProps>(function
   }
 
   return (
-    <section id="focus-deck" className={'focus-deck' + (state.selected === RIG_NODE ? ' is-rig' : '')} aria-labelledby="focus-deck-title">
+    <section id="focus-deck" className={'focus-deck' + (state.selected === RIG_NODE ? ' is-rig' : '') + (state.selected === INPUT_NODE ? ' is-input' : '')} aria-labelledby="focus-deck-title">
       <header className="deck-header">
         <div className="deck-title">
           {art}
@@ -190,8 +199,8 @@ export const FocusDeck = forwardRef<HTMLHeadingElement, FocusDeckProps>(function
         </div>
         {actions}
         <div className="deck-nav">
-          <button type="button" aria-label="上一个" title="上一个（←）" disabled={position <= 0} onClick={() => onStep(-1)}>‹</button>
-          <span aria-live="polite">{position + 1} / {order.length}</span>
+          <button type="button" aria-label="上一个" title="上一个（←）" disabled={position < 0} onClick={() => onStep(-1)}>‹</button>
+          <span aria-live="polite">{position < 0 ? '输入' : `${position + 1} / ${order.length}`}</span>
           <button type="button" aria-label="下一个" title="下一个（→）" disabled={position >= order.length - 1} onClick={() => onStep(1)}>›</button>
           <button type="button" className="deck-close" aria-label="收起面板" title="收起（Esc）" onClick={onClose}>收起</button>
         </div>

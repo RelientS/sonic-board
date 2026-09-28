@@ -21,7 +21,6 @@ import {
   type NamModelRecord,
   type NamModelRepository,
 } from '../audio/nam-model';
-import { formatSourceConfig, type SourceConfig } from '../audio/source-catalog';
 import { ToneAgentDock, type ToneAgentTurn } from '../agent/ToneAgentDock';
 import {
   applyToneAgentActions,
@@ -37,6 +36,7 @@ import { Board } from './Board';
 import {
   boardFromPreset,
   cloneBoardUiState,
+  INPUT_NODE,
   laneItems,
   laneOf,
   MAX_PEDALS,
@@ -54,7 +54,9 @@ import { rigModeOf, type RigMode } from './rig-model';
 import { keyTargetOf, shortcutFor, type Shortcut } from './shortcuts';
 import { focusNodeElement } from './studio-shared';
 import { Topbar } from './Topbar';
-import { SourcePickerDialog, Transport } from './Transport';
+import { InputDeck } from './InputDeck';
+import { Transport } from './Transport';
+import { useInputSource } from './useInputSource';
 import { useBoard } from './useBoard';
 import './studio.css';
 
@@ -96,7 +98,6 @@ export default function Studio() {
   const [pickerTarget, setPickerTarget] = useState<PickerTarget | null>(null);
   const [presetOpen, setPresetOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const [sourcePickerOpen, setSourcePickerOpen] = useState(false);
   // The rig's combo/head view is null until the player switches it, so it
   // follows the current amp's own format by default.
   const [rigView, setRigView] = useState<RigMode | null>(null);
@@ -138,6 +139,17 @@ export default function Studio() {
   const dryKeyHeld = useRef(false);
   const ampSpec = getAmpSpec(amp.ampId);
 
+  const inputSource = useInputSource({
+    state,
+    dispatch,
+    playback,
+    playing,
+    liveInputActive,
+    stopLiveInput,
+    onError: setAudioError,
+  });
+  const inputConfig = inputSource.configInput;
+
   const audioConfig = useMemo<BoardAudioConfig>(() => ({
     chain,
     values,
@@ -149,7 +161,8 @@ export default function Studio() {
     amp,
     namModels,
     ampModel: ampModel?.id === amp.ampId ? ampModel : undefined,
-  }), [chain, values, bypassed, source, mode, output, routing, amp, namModels, ampModel]);
+    input: inputConfig,
+  }), [chain, values, bypassed, source, mode, output, routing, amp, namModels, ampModel, inputConfig]);
 
   const refreshNamAmps = useCallback(() => {
     void fetch('/api/amp-models', { credentials: 'same-origin' })
@@ -520,6 +533,11 @@ export default function Studio() {
   function stepFocus(direction: -1 | 1) {
     const order = nodeOrder(board.latest.current);
     const at = order.indexOf(board.latest.current.selected);
+    // Stepping back from the first node reaches the guitar input.
+    if (direction < 0 && at <= 0) {
+      if (at === 0) focusNode(INPUT_NODE);
+      return;
+    }
     const next = order[Math.max(0, Math.min(order.length - 1, (at < 0 ? 0 : at) + direction))];
     if (next) focusNode(next);
   }
@@ -566,8 +584,8 @@ export default function Studio() {
     dispatch({ type: 'bypass', instanceId });
   }
 
-  function updateSource(next: SourceConfig) {
-    dispatch({ type: 'setSource', source: next });
+  function openInput() {
+    openNode(INPUT_NODE);
   }
 
   function selectSnapshot(next: SnapshotId) {
@@ -645,6 +663,12 @@ export default function Studio() {
 
   // ----- Playback, live input, presets, export ---------------------------
 
+  function stopLiveInput() {
+    const session = playback.current;
+    if (session) setLiveInput(session, null);
+    setLiveInputOn(false);
+  }
+
   async function toggleLiveInput() {
     if (liveInputBusy) return;
     if (liveInputActive) {
@@ -717,7 +741,7 @@ export default function Studio() {
       return;
     }
     try {
-      const captured = captureUserPreset({ name, chain, values, bypassed, source, output, routing, amp });
+      const captured = captureUserPreset({ name, chain, values, bypassed, source, input: state.input, output, routing, amp });
       const next = [captured, ...userPresets].slice(0, 24);
       window.localStorage.setItem('sonic-board-user-presets', JSON.stringify(next));
       setUserPresets(next);
@@ -757,7 +781,7 @@ export default function Studio() {
     }
   }
 
-  const sourceLabel = liveInputActive ? '实时输入（声卡 / 麦克风）' : formatSourceConfig(source);
+  const sourceLabel = liveInputActive ? '实时输入（声卡 / 麦克风）' : inputSource.sourceName;
   const nodeProps = {
     state,
     values,
@@ -770,7 +794,7 @@ export default function Studio() {
     onBypass: toggleBypass,
     onInsert: requestInsert,
     onMove: (instanceId: string, lane: SignalLane, slot: number) => { dispatch({ type: 'move', instanceId, lane, slot }); },
-    onOpenInput: () => setSourcePickerOpen(true),
+    onOpenInput: openInput,
   };
   const statusText = playbackLoading ? '正在加载试听，请稍候；重复点击不会中断加载。' : render === 'ready' ? 'WAV 音频已下载' : saveState === 'saved' ? '音色已保存在当前浏览器' : '';
 
@@ -825,14 +849,28 @@ export default function Studio() {
         onAmpValue={(section, controlId, value) => { dispatch({ type: 'setAmpValue', section, controlId, value }); }}
         onToggleAmpBypass={() => { dispatch({ type: 'toggleAmpBypass' }); }}
         onHelp={openControlHelp}
+        inputSubtitle={inputSource.sourceName}
+        inputSection={(
+          <InputDeck
+            {...inputSource.deck}
+            liveInputActive={liveInputActive}
+            liveInputBusy={liveInputBusy || playbackLoading}
+            tutorialEnabled={tutorialEnabled}
+            onToggleLive={() => void toggleLiveInput()}
+            onHelp={openControlHelp}
+          />
+        )}
       />
 
       <Transport
         playback={playback}
         playing={playing}
         playbackLoading={playbackLoading}
-        source={source}
+        sourceName={inputSource.sourceName}
         liveInputActive={liveInputActive}
+        peaks={liveInputActive ? null : inputSource.peaks}
+        loop={inputSource.loop}
+        onLoop={inputSource.setLoop}
         mode={mode}
         dryHeld={mode === 'dry'}
         snapshot={snapshot}
@@ -841,7 +879,7 @@ export default function Studio() {
         audioError={audioError}
         statusText={statusText}
         onTogglePlayback={() => void togglePlayback()}
-        onOpenInput={() => setSourcePickerOpen(true)}
+        onOpenInput={openInput}
         onHoldDry={holdDry}
         onSnapshot={selectSnapshot}
         onCopySnapshot={() => { dispatch({ type: 'copySnapshot' }); }}
@@ -868,15 +906,6 @@ export default function Studio() {
         onDelete={deleteUserPreset}
         onReset={resetBoard}
         onClose={() => setPresetOpen(false)}
-      />
-      <SourcePickerDialog
-        open={sourcePickerOpen}
-        source={source}
-        liveInputActive={liveInputActive}
-        liveInputBusy={liveInputBusy || playbackLoading}
-        onChange={updateSource}
-        onLiveInput={() => void toggleLiveInput()}
-        onClose={() => setSourcePickerOpen(false)}
       />
       <ControlHelpDialog target={helpTarget} onClose={closeControlHelp} />
       <ToneAgentDock
