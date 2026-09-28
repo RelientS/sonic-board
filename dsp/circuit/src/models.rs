@@ -41,4 +41,38 @@ mod tests {
             assert_eq!(pedal.stats().2, 0, "{} Newton failures", m.id);
         }
     }
+
+    /// Every knob at its extremes with a hot input: the solver must converge
+    /// (no held samples) and keep the output audible. The BD-2 with Level and
+    /// Gain at max used to stall with its output op-amp against the rail,
+    /// freezing the output (heard as silence).
+    #[test]
+    fn extreme_knobs_converge_and_stay_audible() {
+        for m in MODELS {
+            for knob in [0.0, 1.0] {
+                let mut pedal = Pedal::new(m.source, 48_000.0).unwrap();
+                pedal.set_realtime(false);
+                for c in 0..pedal.control_count() {
+                    pedal.set_control(c, knob);
+                }
+                let mut energy = 0.0f64;
+                let mut n = 0usize;
+                for _ in 0..(48_000 / 4 / 128) {
+                    let mut block = [0f32; 128];
+                    for s in block.iter_mut() {
+                        let t = n as f64 / 48_000.0;
+                        *s = (0.8 * ((2.0 * std::f64::consts::PI * 110.0 * t).sin() + 0.6 * (2.0 * std::f64::consts::PI * 165.0 * t).sin())) as f32;
+                        n += 1;
+                    }
+                    pedal.process(&mut block);
+                    energy += block.iter().map(|x| (*x as f64).powi(2)).sum::<f64>();
+                }
+                assert_eq!(pedal.stats().2, 0, "{} knobs {knob}: Newton failures", m.id);
+                if knob == 1.0 {
+                    let db = 10.0 * (energy / n as f64 + 1e-20).log10();
+                    assert!(db > -40.0, "{} knobs at max is near silent ({db:.1} dBFS)", m.id);
+                }
+            }
+        }
+    }
 }

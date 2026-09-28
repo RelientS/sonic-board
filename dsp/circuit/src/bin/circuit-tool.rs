@@ -575,6 +575,8 @@ fn make_pedal(args: &Args, source: &str, net: Netlist, rate: f64) -> Pedal {
     let switches = switches_arg(args, &net);
     let os = args.flags.get("os").and_then(|v| v.parse().ok());
     let mut pedal = Pedal::with_netlist(net, &be_elements(source), rate, os).unwrap();
+    // Offline analysis wants exact results, not the real-time work cap.
+    pedal.set_realtime(false);
     for (i, c) in controls.iter().enumerate() {
         pedal.set_control(i, *c);
     }

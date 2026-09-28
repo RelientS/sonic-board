@@ -141,6 +141,7 @@ fn make_signal(guitar_dir: &str) -> Vec<f64> {
 
 fn render(source: &str, net: &Netlist, input: &[f64], gain: f64, controls: &[f64], os: Option<usize>) -> Vec<f64> {
     let mut pedal = Pedal::with_netlist(net.clone(), &be_elements(source), RATE as f64, os).unwrap();
+    pedal.set_realtime(false);
     for (i, c) in controls.iter().enumerate() {
         pedal.set_control(i, *c);
     }

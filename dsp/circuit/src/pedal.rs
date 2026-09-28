@@ -31,6 +31,9 @@ pub struct Pedal {
     dc_y: f64,
     dc_r: f64,
     buf: Vec<f64>,
+    /// Real-time processing (default): each block gets a bounded solver
+    /// budget. Offline rendering turns it off for exact results.
+    realtime: bool,
 }
 
 fn overrides(net: &Netlist, controls: &[f64], switches: &[f64]) -> HashMap<String, f64> {
@@ -119,6 +122,7 @@ impl Pedal {
             dc_y: 0.0,
             dc_r: (-2.0 * std::f64::consts::PI * 8.0 / sample_rate).exp(),
             buf: vec![0.0; factor],
+            realtime: true,
             netlist,
         };
         pedal.settle();
@@ -218,8 +222,19 @@ impl Pedal {
         out
     }
 
+    /// Real-time (bounded work per block, the default) or offline (exact).
+    pub fn set_realtime(&mut self, on: bool) {
+        self.realtime = on;
+        if !on {
+            self.solver.unlimited();
+        }
+    }
+
     pub fn process(&mut self, buffer: &mut [f32]) {
         self.commit();
+        if self.realtime {
+            self.solver.begin_block(buffer.len() * self.oversampler.factor());
+        }
         for s in buffer.iter_mut() {
             let y = self.process_sample(*s as f64);
             *s = if y.is_finite() { y as f32 } else { 0.0 };
@@ -232,6 +247,10 @@ impl Pedal {
 
     pub fn refactors(&self) -> u64 {
         self.solver.refactors()
+    }
+
+    pub fn diagnostics(&self) -> crate::solver::Diagnostics {
+        self.solver.diagnostics()
     }
 
     /// Bucket-brigade clock frequencies (Hz) and delays (s) (diagnostics).

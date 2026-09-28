@@ -693,6 +693,10 @@ struct Newton {
     p_target: Vec<f64>,
     v_good: Vec<f64>,
     pub refactors: u64,
+    pub lm_runs: u64,
+    pub homotopy_runs: u64,
+    pub restarts: u64,
+    pub lm_ok: u64,
 }
 
 impl Newton {
@@ -714,6 +718,10 @@ impl Newton {
             p_target: vec![0.0; nv],
             v_good: vec![0.0; nv],
             refactors: 0,
+            lm_runs: 0,
+            homotopy_runs: 0,
+            restarts: 0,
+            lm_ok: 0,
         }
     }
 
@@ -924,6 +932,36 @@ impl Newton {
 /// Deepest sub-stepping level (2^5 = 32 sub-steps per sample).
 const MAX_SUBSTEP_LEVEL: usize = 5;
 
+/// How much of the rescue ladder `advance` may use after plain Newton fails.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Rescue {
+    /// None: the sample holds (real-time budget spent).
+    Off,
+    /// Restart from the last converged point, then homotopy (real time).
+    Fast,
+    /// Also Levenberg-Marquardt (offline; it has not rescued a sample the
+    /// cheaper rungs missed in any model, and costs dense normal equations).
+    Full,
+}
+
+/// Newton iterations one homotopy rescue may spend before giving up.
+const HOMOTOPY_MAX_ITER: usize = 240;
+
+/// Real-time guard: Newton iterations a block may spend per (oversampled)
+/// step, on average, before the rescue ladder is switched off for the rest
+/// of the block. Plain Newton converges in 2-7 iterations per step even when
+/// clipping hard; the ladder (restart, homotopy, sub-stepping) can cost
+/// hundreds. Past the budget Newton runs at `RELAXED_TOL` and a sample it
+/// cannot finish holds its state instead of stalling the audio thread.
+/// Measured cost: <= 0.1% NRMSE against an unguarded run (BD-2, worst case).
+pub const RT_ITER_BUDGET_PER_STEP: f64 = 6.0;
+/// Newton tolerance (volts) once a block's budget is spent: 1 mV at a port
+/// is inaudible next to the ~0.1-8 V signals and saves most iterations when a
+/// stage is clipping hard.
+const RELAXED_TOL: f64 = 1e-3;
+/// Budget charged for building a sub-step system on the audio path.
+const LAZY_BUILD_COST: f64 = 400.0;
+
 /// One implicit step: solve the nonlinear ports, then commit reactive
 /// history. State is only touched when Newton converged.
 /// Returns (output, converged, iterations).
@@ -942,6 +980,8 @@ fn advance(
     aux: &[f64],
     max_iter: usize,
     taps: &mut [f64],
+    rescue: Rescue,
+    tol: f64,
 ) -> (f64, bool, usize) {
     let nv = circuit.nv;
     for k in 0..nv {
@@ -951,19 +991,38 @@ fn advance(
     if !aux.is_empty() {
         r.mv_a.mul_vec_add(aux, &mut newton.p);
     }
-    let (mut iters, mut ok) = newton.solve(circuit, &r.kt, max_iter, NEWTON_TOL);
-    // Fallbacks for the rare sample plain Newton cannot finish, both anchored
-    // at the last converged point of this same system (same K).
-    if !ok && newton.k_ok == r.kt.as_ptr() as usize {
+    let (mut iters, mut ok) = newton.solve(circuit, &r.kt, max_iter, tol);
+    // Cheap rescue first: plain Newton again from the last converged point
+    // with a fresh Jacobian (the extrapolated start overshoots at clipping
+    // corners, and a stale chord Jacobian stalls there).
+    if !ok && rescue != Rescue::Off && newton.k_ok == r.kt.as_ptr() as usize {
         newton.v.copy_from_slice(&newton.v_ok);
-        let (more, ok2) = newton.levenberg_marquardt(circuit, &r.kt, 60, NEWTON_TOL);
+        newton.lu_valid = false;
+        newton.restarts += 1;
+        let (more, ok2) = newton.solve(circuit, &r.kt, 24, tol);
         iters += more;
         ok = ok2;
     }
-    if !ok && newton.k_ok == r.kt.as_ptr() as usize {
-        let (more, ok2) = newton.homotopy(circuit, &r.kt);
+    // Fallbacks for the rare sample plain Newton cannot finish, both anchored
+    // at the last converged point of this same system (same K). Continuation
+    // first: a few short Newton solves along p is far cheaper than
+    // Levenberg-Marquardt's dense normal equations, and it succeeds on the
+    // op-amp-against-the-rail limit cycles where LM tends to stall.
+    if !ok && rescue != Rescue::Off && newton.k_ok == r.kt.as_ptr() as usize {
+        newton.homotopy_runs += 1;
+        let (more, ok2) = newton.homotopy(circuit, &r.kt, HOMOTOPY_MAX_ITER);
         iters += more;
         ok = ok2;
+    }
+    if !ok && rescue == Rescue::Full && newton.k_ok == r.kt.as_ptr() as usize {
+        newton.v.copy_from_slice(&newton.v_ok);
+        newton.lm_runs += 1;
+        let (more, ok2) = newton.levenberg_marquardt(circuit, &r.kt, 60, NEWTON_TOL);
+        iters += more;
+        ok = ok2;
+        if ok {
+            newton.lm_ok += 1;
+        }
     }
     if !ok {
         return (0.0, false, iters);
@@ -1070,7 +1129,11 @@ fn junction_limit(new: f64, old: f64, nvt: f64, vcrit: f64) -> f64 {
         if arg > 0.0 {
             old + nvt * arg.ln()
         } else {
-            new
+            // The linearized current went negative: the junction turns off.
+            // Land at zero bias; from there reverse bias is reached freely,
+            // whereas the raw step can be astronomically large when it was
+            // computed from an exponential current at strong forward bias.
+            new.max(0.0)
         }
     } else {
         new
@@ -1080,9 +1143,13 @@ fn junction_limit(new: f64, old: f64, nvt: f64, vcrit: f64) -> f64 {
 /// Knee limiting for the op-amp output clamp (see `Limit::Rails`).
 #[inline]
 fn raillim(new: f64, old: f64, vlo: f64, vhi: f64, knee: f64) -> f64 {
-    if new > vhi + knee && old <= vhi + knee {
+    // Only a step that crosses the knee from inside is stopped. The test must
+    // be strict: once a step has landed exactly on the knee, a `<=` test
+    // clamps every later step back onto it and Newton stalls there for good
+    // (an op-amp driven into its rail needs its output slightly past the knee).
+    if new > vhi + knee && old < vhi + knee {
         vhi + knee
-    } else if new < vlo - knee && old >= vlo - knee {
+    } else if new < vlo - knee && old > vlo - knee {
         vlo - knee
     } else {
         new
@@ -1094,7 +1161,7 @@ impl Newton {
     /// exactly and, with K fixed, the solution moves continuously with p.
     /// Walk p along the straight line to the target, halving the stride on
     /// failure (the homotopy strategy of Holters & Zölzer's ACME.jl).
-    fn homotopy(&mut self, circuit: &Circuit, kt: &[f64]) -> (usize, bool) {
+    fn homotopy(&mut self, circuit: &Circuit, kt: &[f64], max_total: usize) -> (usize, bool) {
         self.p_target.copy_from_slice(&self.p);
         self.v.copy_from_slice(&self.v_ok);
         self.v_good.copy_from_slice(&self.v_ok);
@@ -1108,6 +1175,10 @@ impl Newton {
             self.lu_valid = false;
             let (it, ok) = self.solve(circuit, kt, 30, NEWTON_TOL);
             iters += it;
+            if iters > max_total {
+                self.p.copy_from_slice(&self.p_target);
+                return (iters, false);
+            }
             if ok {
                 t = next;
                 self.v_good.copy_from_slice(&self.v);
@@ -1192,6 +1263,28 @@ fn lu_apply_colmajor(a: &[f64], piv: &[usize], b: &mut [f64], n: usize) {
     }
 }
 
+/// Counters for the rescue paths of `Solver::step` (profiling only).
+#[derive(Default, Clone, Debug)]
+pub struct Diagnostics {
+    /// Samples that needed the second full pass (offline only).
+    pub retries: u64,
+    /// Levenberg-Marquardt and homotopy runs (inside `advance`).
+    pub lm: u64,
+    pub homotopy: u64,
+    /// Sub-step attempts per level (index = level).
+    pub substep_tries: [u64; 8],
+    /// Reduced systems built lazily on the audio path.
+    pub lazy_builds: u64,
+    /// Newton restarts from the last converged point (inside `advance`).
+    pub restarts: u64,
+    /// Samples held because the block's rescue budget was spent.
+    pub guarded: u64,
+    /// Levenberg-Marquardt runs that converged.
+    pub lm_ok: u64,
+    /// Steps solved at the relaxed tolerance (budget spent).
+    pub relaxed: u64,
+}
+
 pub struct Solver {
     circuit: Circuit,
     dt: f64,
@@ -1222,6 +1315,10 @@ pub struct Solver {
     save_state: Vec<f64>,
     save_vst: Vec<f64>,
     pub substeps: u64,
+    /// Diagnostics: how often each rescue path ran.
+    pub diag: Diagnostics,
+    /// Iterations left in the current block (see `begin_block`).
+    budget: f64,
 
     pub failures: u64,
     pub iterations: u64,
@@ -1272,6 +1369,8 @@ impl Solver {
             save_state: vec![0.0; ns],
             save_vst: vec![0.0; ns],
             substeps: 0,
+            diag: Diagnostics::default(),
+            budget: f64::INFINITY,
 
             failures: 0,
             iterations: 0,
@@ -1395,8 +1494,40 @@ impl Solver {
 
     /// Node voltages are not tracked per sample; this reports the nonlinear
     /// port voltages for diagnostics.
+    /// Rescue-path counters, with the Newton fallback counts filled in.
+    pub fn diagnostics(&self) -> Diagnostics {
+        let mut d = self.diag.clone();
+        d.lm = self.newton.lm_runs;
+        d.homotopy = self.newton.homotopy_runs;
+        d.restarts = self.newton.restarts;
+        d.lm_ok = self.newton.lm_ok;
+        d
+    }
+
     pub fn refactors(&self) -> u64 {
         self.newton.refactors
+    }
+
+    /// Start a real-time block of `steps` solver steps: grants the iteration
+    /// budget for the rescue ladder (see `RT_ITER_BUDGET_PER_STEP`). Offline
+    /// use never calls this and keeps an unlimited budget.
+    pub fn begin_block(&mut self, steps: usize) {
+        self.budget = steps as f64 * RT_ITER_BUDGET_PER_STEP;
+    }
+
+    fn rescue_level(&self) -> Rescue {
+        if !self.budget.is_finite() {
+            Rescue::Full
+        } else if self.budget > 0.0 {
+            Rescue::Fast
+        } else {
+            Rescue::Off
+        }
+    }
+
+    /// Lift the budget (offline rendering and validation).
+    pub fn unlimited(&mut self) {
+        self.budget = f64::INFINITY;
     }
 
     pub fn port_voltages(&self) -> &[f64] {
@@ -1414,31 +1545,53 @@ impl Solver {
         self.samples += 1;
         let nv = self.circuit.nv;
         self.save_v.copy_from_slice(&self.newton.v);
-        // Linear extrapolation of the port voltages as the Newton start.
+        // Linear extrapolation of the port voltages as the Newton start,
+        // limited like a Newton step: at a switching junction the raw
+        // prediction can land volts into forward bias, where the exponential
+        // blows the first residual up to ~1e23 and Newton diverges.
         for k in 0..nv {
             let v = self.newton.v[k];
-            self.newton.v[k] = 2.0 * v - self.v_prev[k];
+            let predicted = 2.0 * v - self.v_prev[k];
+            self.newton.v[k] = match self.circuit.limits[k] {
+                Limit::Junction { nvt, vcrit, symmetric } => pnjlim(predicted, v, nvt, vcrit, symmetric),
+                Limit::Rails { vlo, vhi, knee } => raillim(predicted, v, vlo, vhi, knee),
+                Limit::None => predicted,
+            };
+        }
+        let realtime = self.budget.is_finite();
+        let rescue = self.rescue_level();
+        let tol = if rescue == Rescue::Off { RELAXED_TOL } else { NEWTON_TOL };
+        if rescue == Rescue::Off {
+            self.diag.relaxed += 1;
         }
         let (mut y, mut ok, iters) = advance(
             &self.circuit, &mut self.newton, &self.reduced, &self.g, &self.alpha, &self.beta,
-            &mut self.state, &mut self.vst, u, &self.aux, 12, &mut self.taps,
+            &mut self.state, &mut self.vst, u, &self.aux, 12, &mut self.taps, rescue, tol,
         );
         self.iterations += iters as u64;
-        if !ok {
+        self.budget -= iters as f64;
+        // Offline only: a second full pass with a longer iteration cap. In
+        // real time it would repeat the restart and homotopy `advance` just
+        // ran; go straight to sub-stepping instead.
+        if !ok && !realtime {
+            self.diag.retries += 1;
             // Restart from the last converged point with a fresh Jacobian.
             self.newton.v.copy_from_slice(&self.save_v);
             self.newton.lu_valid = false;
             let (y2, ok2, more) = advance(
                 &self.circuit, &mut self.newton, &self.reduced, &self.g, &self.alpha, &self.beta,
-                &mut self.state, &mut self.vst, u, &self.aux, 40, &mut self.taps,
+                &mut self.state, &mut self.vst, u, &self.aux, 40, &mut self.taps, Rescue::Full, NEWTON_TOL,
             );
             self.iterations += more as u64;
+            self.budget -= more as f64;
             y = y2;
             ok = ok2;
         }
-        if !ok {
-            ok = false;
+        if !ok && self.budget > 0.0 {
             for level in 1..=MAX_SUBSTEP_LEVEL {
+                if self.budget <= 0.0 {
+                    break;
+                }
                 self.newton.v.copy_from_slice(&self.save_v);
                 self.newton.lu_valid = false;
                 if let Some(value) = self.substep(level, u) {
@@ -1447,19 +1600,23 @@ impl Solver {
                     break;
                 }
             }
-            if !ok {
+        }
+        if !ok {
+            // Never commit an unconverged step: garbage currents would
+            // charge capacitors to absurd voltages and every later sample
+            // would fail too. Hold the state for this sample instead (a
+            // one-sample freeze) and try again with the next input.
+            if self.budget > 0.0 {
                 if DEBUG_NEWTON.load(std::sync::atomic::Ordering::Relaxed) && self.failures < 3 {
                     eprintln!("== sample {} failed at every sub-step level (u={u:.4}, u_prev={:.4})", self.samples, self.u_prev);
                 }
-                // Never commit an unconverged step: garbage currents would
-                // charge capacitors to absurd voltages and every later sample
-                // would fail too. Hold the state for this sample instead (a
-                // one-sample freeze) and try again with the next input.
                 self.failures += 1;
-                self.newton.v.copy_from_slice(&self.save_v);
-                self.newton.lu_valid = false;
-                y = self.y_prev;
+            } else {
+                self.diag.guarded += 1;
             }
+            self.newton.v.copy_from_slice(&self.save_v);
+            self.newton.lu_valid = false;
+            y = self.y_prev;
         }
         self.v_prev.copy_from_slice(&self.save_v);
         self.u_prev = u;
@@ -1483,7 +1640,10 @@ impl Solver {
     /// Integrate the current sample as 2^level sub-steps. Leaves the solver
     /// untouched and returns None if any sub-step fails.
     fn substep(&mut self, level: usize, u: f64) -> Option<f64> {
+        self.diag.substep_tries[level] += 1;
         if self.fine[level].is_none() {
+            self.diag.lazy_builds += 1;
+            self.budget -= LAZY_BUILD_COST;
             let dt = self.dt / (1u64 << level) as f64;
             let reduced = reduce(&self.circuit, &self.overrides, Some(dt)).ok()?;
             let g: Vec<f64> = self.circuit.reactives.iter().map(|x| companion_g(x, dt)).collect();
@@ -1491,7 +1651,8 @@ impl Solver {
         }
         self.save_state.copy_from_slice(&self.state);
         self.save_vst.copy_from_slice(&self.vst);
-        let (fine, g_fine) = self.fine[level].as_ref().unwrap();
+        // Borrowed out for the duration (the loop also updates the budget).
+        let (fine, g_fine) = self.fine[level].take().unwrap();
         // Re-express history at the fine step via (voltage, current).
         for (k, x) in self.circuit.reactives.iter().enumerate() {
             let i = history_current(x, self.state[k], self.vst[k], self.g[k]);
@@ -1505,14 +1666,17 @@ impl Solver {
             for k in 0..self.aux.len() {
                 self.aux_mid[k] = self.aux_prev[k] + (self.aux[k] - self.aux_prev[k]) * frac;
             }
+            let rescue = self.rescue_level();
             let (yj, ok, iters) = advance(
-                &self.circuit, &mut self.newton, fine, g_fine, &self.alpha, &self.beta,
-                &mut self.state, &mut self.vst, uj, &self.aux_mid, 40, &mut self.taps,
+                &self.circuit, &mut self.newton, &fine, &g_fine, &self.alpha, &self.beta,
+                &mut self.state, &mut self.vst, uj, &self.aux_mid, 40, &mut self.taps, rescue, NEWTON_TOL,
             );
             self.iterations += iters as u64;
+            self.budget -= iters as f64;
             if !ok {
                 self.state.copy_from_slice(&self.save_state);
                 self.vst.copy_from_slice(&self.save_vst);
+                self.fine[level] = Some((fine, g_fine));
                 return None;
             }
             y = yj;
@@ -1521,6 +1685,7 @@ impl Solver {
             let i = history_current(x, self.state[k], self.vst[k], g_fine[k]);
             self.state[k] = history_from(x, self.vst[k], i, self.g[k]);
         }
+        self.fine[level] = Some((fine, g_fine));
         self.substeps += 1;
         Some(y)
     }
@@ -1541,6 +1706,29 @@ mod lu_tests {
             let ax: f64 = (0..n).map(|c| a_colmajor[c * n + r] * x[c]).sum();
             assert!((ax - b[r]).abs() < 1e-9 * (1.0 + b[r].abs()), "row {r}: A x = {ax}, b = {}, x = {x:?}", b[r]);
         }
+    }
+
+    #[test]
+    fn rail_limit_lets_a_step_leave_the_knee() {
+        // Crossing into the clamp from inside stops at the knee...
+        assert_eq!(raillim(9.0, 7.0, 1.0, 7.25, 0.02), 7.27);
+        // ...but a step starting on the knee is free to go further in.
+        assert_eq!(raillim(9.0, 7.27, 1.0, 7.25, 0.02), 9.0);
+        assert_eq!(raillim(-2.0, 0.98, 1.0, 7.25, 0.02), -2.0);
+    }
+
+    #[test]
+    fn junction_turning_off_lands_at_zero_bias() {
+        let (nvt, vcrit) = (0.0259, 0.8);
+        // A decrease whose linearized current would go negative stops at 0 V
+        // instead of taking an arbitrarily large raw step.
+        assert_eq!(junction_limit(-1.0e20, 2.4, nvt, vcrit), 0.0);
+        // Ordinary decreases keep the logarithmic step (it lands on the
+        // linearized target current, a little below the raw step).
+        let v = junction_limit(0.89, 0.9, nvt, vcrit);
+        assert!(v > 0.85 && v < 0.89);
+        // Reverse bias is reached freely from below vcrit.
+        assert_eq!(junction_limit(-5.0, 0.0, nvt, vcrit), -5.0);
     }
 
     #[test]
