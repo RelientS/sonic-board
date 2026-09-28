@@ -83,7 +83,7 @@ export type FreeBoardProps = BoardNodeProps & {
 
 /** Status chip for a pedal: circuit engine, NAM model or a degraded engine. */
 export function engineChip(spec: EffectSpec, status: EffectStatus | undefined, namLoaded: boolean) {
-  if (spec.nam) return { tone: namLoaded ? 'loaded' : 'missing', text: namLoaded ? '本机 NAM' : '缺少 NAM 模型' };
+  if (spec.nam) return { tone: namLoaded ? 'loaded' : 'missing', text: namLoaded ? 'NAM 已加载' : '缺少 NAM 模型' };
   if (status === 'passthrough') return { tone: 'missing', text: '直通 · 引擎未加载', title: '该效果的音频引擎没有加载，当前为直通' };
   if (status === 'fallback') return { tone: 'missing', text: 'FALLBACK', title: '电路求解出错，已自动切回干声' };
   if (CIRCUIT_EFFECT_IDS.has(spec.id)) return { tone: 'loaded', text: 'CIRCUIT', title: '按原理图逐元件实时求解' };

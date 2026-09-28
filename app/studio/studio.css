@@ -471,3 +471,6 @@ button.board-plate:focus-visible { outline: 3px solid var(--focus); outline-offs
 @media (prefers-reduced-motion: reduce) {
   .jack-dot, .cable-add { transition: none; }
 }
+
+.nam-builtin-select { display: flex; align-items: center; gap: 8px; color: var(--dim); font-size: 12px; }
+.nam-builtin-select select { min-height: 40px; max-width: 320px; padding: 0 10px; border: 1px solid var(--seam); border-radius: 8px; background: var(--case); color: var(--text); font: inherit; }

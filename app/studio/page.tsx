@@ -75,6 +75,17 @@ const initialBoard = instantiatePreset(initialFactoryPreset, 'initial');
 /** Minimum spacing between live audio updates while a knob is dragged. */
 const PLAYBACK_REFRESH_INTERVAL_MS = 30;
 
+type PrivatePedalModel = { id: string; slotId: string; name: string; setting: string; author?: string; url?: string; loudness?: number | null };
+const PRIVATE_NAM_STORAGE_PREFIX = 'sonic-board-private-nam:';
+
+function readStoredPrivateNam(slotId: string) {
+  try {
+    return window.localStorage.getItem(PRIVATE_NAM_STORAGE_PREFIX + slotId);
+  } catch {
+    return null;
+  }
+}
+
 const PHONE_QUERY = '(max-width: 720px)';
 function subscribePhone(onChange: () => void) {
   const query = window.matchMedia(PHONE_QUERY);
@@ -100,8 +111,12 @@ export default function Studio() {
   const [pickerTarget, setPickerTarget] = useState<PickerTarget | null>(null);
   // A '+' on a patch cable: the picked pedal goes into that cable.
   const [pickerCable, setPickerCable] = useState<Cable | null>(null);
-  // Top-down photos by spec id, for accounts allowed to see them (none yet).
-  const [pedalSkins] = useState<Record<string, string>>({});
+  // Top-down photos by spec id, only for the owner account (licensed for personal use).
+  const [pedalSkins, setPedalSkins] = useState<Record<string, string>>({});
+  // Built-in pedal NAM captures (owner only) and the one chosen per NAM slot.
+  const [privatePedalModels, setPrivatePedalModels] = useState<PrivatePedalModel[]>([]);
+  const [privateNam, setPrivateNam] = useState<Record<string, NamModelRecord>>({});
+  const [privateNamIds, setPrivateNamIds] = useState<Record<string, string>>({});
   // Signal direction on the board: null follows the default (right-to-left with photos).
   const [flowSetting, setFlowSetting] = useState<FlowDirection | null>(null);
   const flowDirection: FlowDirection = flowSetting ?? (Object.keys(pedalSkins).length ? 'rtl' : 'ltr');
@@ -129,6 +144,8 @@ export default function Studio() {
   const [agentError, setAgentError] = useState('');
   const [audioError, setAudioError] = useState('');
   const [namModels, setNamModels] = useState<Record<string, NamModelRecord>>({});
+  // A model the player imported into this browser wins over a built-in capture.
+  const activeNamModels = useMemo(() => ({ ...privateNam, ...namModels }), [privateNam, namModels]);
   // Owner-only NAM amp captures: the list, and the selected capture's model.
   const [namAmps, setNamAmps] = useState<PrivateAmpSummary[]>([]);
   const [ampModel, setAmpModel] = useState<BoardAudioConfig['ampModel']>(undefined);
@@ -158,9 +175,9 @@ export default function Studio() {
     output,
     routing,
     amp,
-    namModels,
+    namModels: activeNamModels,
     ampModel: ampModel?.id === amp.ampId ? ampModel : undefined,
-  }), [chain, values, bypassed, source, mode, output, routing, amp, namModels, ampModel]);
+  }), [chain, values, bypassed, source, mode, output, routing, amp, activeNamModels, ampModel]);
 
   const refreshNamAmps = useCallback(() => {
     void fetch('/api/amp-models', { credentials: 'same-origin' })
@@ -171,6 +188,22 @@ export default function Studio() {
         setNamAmps(amps);
       })
       .catch(() => { /* offline: the built-in amps still work */ });
+    void fetch('/api/private-assets', { credentials: 'same-origin' })
+      .then((response): Promise<{ skins?: Array<{ specId: string }>; pedalModels?: PrivatePedalModel[] }> => (response.ok ? response.json() : Promise.resolve({})))
+      .then((payload) => {
+        const skins = Array.isArray(payload.skins) ? payload.skins : [];
+        setPedalSkins(Object.fromEntries(skins.map((skin) => [skin.specId, '/api/private-assets?skin=' + encodeURIComponent(skin.specId)])));
+        const models = Array.isArray(payload.pedalModels) ? payload.pedalModels : [];
+        setPrivatePedalModels(models);
+        if (!models.length) setPrivateNam({});
+        // Load the remembered (or first) capture for each slot.
+        new Set(models.map((model) => model.slotId)).forEach((slotId) => {
+          const remembered = readStoredPrivateNam(slotId);
+          const choice = models.find((model) => model.slotId === slotId && model.id === remembered) ?? models.find((model) => model.slotId === slotId);
+          if (choice) void loadPrivatePedalModel(choice);
+        });
+      })
+      .catch(() => { /* offline: drawn pedals and local models still work */ });
   }, []);
 
   useEffect(() => {
@@ -441,6 +474,20 @@ export default function Studio() {
     return repository;
   }
 
+  async function loadPrivatePedalModel(model: PrivatePedalModel) {
+    try {
+      const response = await fetch('/api/private-assets?pedalModel=' + encodeURIComponent(model.id), { credentials: 'same-origin' });
+      if (!response.ok) throw new Error(String(response.status));
+      const parsed = parseNamModel(await response.text(), model.id + '.nam');
+      const record = createNamModelRecord(model.slotId, { ...parsed, name: `${model.name}（${model.setting}）` });
+      setPrivateNam((current) => ({ ...current, [model.slotId]: record }));
+      setPrivateNamIds((current) => ({ ...current, [model.slotId]: model.id }));
+      try { window.localStorage.setItem(PRIVATE_NAM_STORAGE_PREFIX + model.slotId, model.id); } catch { /* storage is optional */ }
+    } catch {
+      setAudioError('内置 NAM 采样加载失败（需要所有者账号登录）。');
+    }
+  }
+
   async function importNamModel(spec: EffectSpec, file?: File) {
     if (!spec.nam || !file || namImporting) return;
     const slotId = spec.nam.slotId;
@@ -482,6 +529,42 @@ export default function Studio() {
   function namSection(spec: EffectSpec) {
     if (!spec.nam) return null;
     const localModel = namModels[spec.nam.slotId];
+    const builtIn = privatePedalModels.filter((model) => model.slotId === spec.nam!.slotId);
+    const builtInActive = !localModel ? privateNam[spec.nam.slotId] : undefined;
+    if (builtIn.length && !localModel) {
+      return <div className="nam-local-actions">
+        <div className="nam-model-state loaded">
+          <strong>{builtInActive ? `内置采样：${builtInActive.name}` : '正在加载内置采样…'}</strong>
+          <small>Tone3000 上的真实采样，仅你的账号可用。也可以导入自己的 .nam 替换。</small>
+        </div>
+        <label className="nam-builtin-select">
+          <span>采样</span>
+          <select
+            value={privateNamIds[spec.nam.slotId] ?? builtIn[0].id}
+            onChange={(event) => {
+              const choice = builtIn.find((model) => model.id === event.target.value);
+              if (choice) void loadPrivatePedalModel(choice);
+            }}
+          >
+            {builtIn.map((model) => <option key={model.id} value={model.id}>{model.name}（{model.setting}）</option>)}
+          </select>
+        </label>
+        <label className={'nam-import' + (namImporting === spec.nam.slotId ? ' disabled' : '')}>
+          <input
+            className="nam-file-input"
+            type="file"
+            accept=".nam"
+            disabled={namImporting === spec.nam.slotId}
+            onChange={(event) => {
+              const file = event.currentTarget.files?.[0];
+              event.currentTarget.value = '';
+              void importNamModel(spec, file);
+            }}
+          />
+          导入自己的 .nam
+        </label>
+      </div>;
+    }
     const busy = namImporting === spec.nam.slotId;
     return <div className="nam-local-actions">
       <div className={'nam-model-state ' + (localModel ? 'loaded' : 'missing')}>
@@ -793,7 +876,7 @@ export default function Studio() {
     lit: playing && mode === 'wet' && !amp.bypassed,
     sourceLabel,
     engineStatus: (instanceId: string) => (playing ? effectStatus.get(instanceId) : undefined),
-    namLoaded: (spec: EffectSpec) => !spec.nam || Boolean(namModels[spec.nam.slotId]),
+    namLoaded: (spec: EffectSpec) => !spec.nam || Boolean(activeNamModels[spec.nam.slotId]),
     onOpenNode: openNode,
     onBypass: toggleBypass,
     onInsert: requestInsert,
