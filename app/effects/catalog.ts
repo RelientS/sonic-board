@@ -632,9 +632,15 @@ export function makeDefaultValues(specId: string) {
   return Object.fromEntries(getEffectSpec(specId).controls.map((control) => [control.id, control.defaultValue]));
 }
 
-export function instantiatePreset(preset: FactoryPreset): InstantiatedPreset {
+/**
+ * A fresh board from a preset. `instanceTag` fixes the instance ids (the
+ * initial board must render the same ids on the server and the client);
+ * otherwise a running serial keeps every instantiation unique.
+ */
+export function instantiatePreset(preset: FactoryPreset, instanceTag?: string): InstantiatedPreset {
   presetSerial += 1;
-  const chain = preset.chain.map((item, index) => ({ instanceId: `${item.specId}-${presetSerial}-${index + 1}`, specId: item.specId, lane: item.lane ?? 'A' }));
+  const tag = instanceTag ?? String(presetSerial);
+  const chain = preset.chain.map((item, index) => ({ instanceId: `${item.specId}-${tag}-${index + 1}`, specId: item.specId, lane: item.lane ?? 'A' }));
   const values = Object.fromEntries(chain.map((item, index) => [
     item.instanceId,
     { ...makeDefaultValues(item.specId), ...preset.chain[index].settings },

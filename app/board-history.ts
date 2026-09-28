@@ -1,12 +1,15 @@
 /**
  * Undo/redo stack for board edits. Edits recorded in quick succession (a knob
  * drag sends one change per pixel) coalesce into a single step: the snapshot
- * taken before the first of them is kept and later ones are dropped.
+ * taken before the first of them is kept and later ones are dropped. With a
+ * `key`, only edits sharing the key coalesce (the same knob), so two quick
+ * but different gestures stay two steps.
  */
 export class BoardHistory<T> {
   private past: T[] = [];
   private future: T[] = [];
   private lastRecordAt = Number.NEGATIVE_INFINITY;
+  private lastKey: string | undefined;
   private readonly limit: number;
   private readonly coalesceMs: number;
 
@@ -16,9 +19,10 @@ export class BoardHistory<T> {
   }
 
   /** Records the state as it was before an edit made at time `now` (ms). */
-  record(before: T, now = performance.now()) {
-    const coalesce = now - this.lastRecordAt < this.coalesceMs && this.past.length > 0;
+  record(before: T, now = performance.now(), key?: string) {
+    const coalesce = now - this.lastRecordAt < this.coalesceMs && this.past.length > 0 && key === this.lastKey;
     this.lastRecordAt = now;
+    this.lastKey = key;
     this.future = [];
     if (coalesce) return;
     this.past.push(before);
