@@ -301,8 +301,9 @@
 .play.active { border-color: var(--lamp); background: var(--lamp); color: var(--on-lamp); box-shadow: 0 0 22px rgb(245 165 36 / 35%); }
 .play.is-loading { border-color: var(--lamp); background: var(--lamp-soft); color: var(--lamp); cursor: wait; opacity: 1; }
 .source-trigger { min-width: 0; height: 52px; display: grid; align-content: center; gap: 2px; padding: 6px 12px; overflow: hidden; border: 1px solid var(--seam); border-radius: 8px; background: var(--case); color: var(--text); text-align: left; cursor: pointer; }
-.source-trigger span, .source-trigger small { overflow: hidden; color: var(--dim); text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
-.source-trigger strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 750; }
+.source-trigger span { overflow: hidden; color: var(--dim); text-overflow: ellipsis; white-space: nowrap; font-size: 11px; line-height: 1.25; }
+.source-trigger small { display: none; }
+.source-trigger strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 750; line-height: 1.3; }
 .source-trigger.is-live { border-color: var(--lamp); }
 .source-trigger.is-live strong { color: var(--lamp); }
 .waveform { position: relative; height: 44px; display: flex; align-items: center; gap: 3px; padding: 8px 10px; overflow: hidden; border: 1px solid var(--seam); border-radius: 8px; background: var(--case-sunk); }
