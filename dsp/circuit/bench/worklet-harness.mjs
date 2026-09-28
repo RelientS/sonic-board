@@ -11,7 +11,7 @@ globalThis.registerProcessor = (name, cls) => { registered[name] = cls; };
 await import(processorPath);
 const wasmModule = await WebAssembly.compile(readFileSync(wasmPath));
 const Processor = registered['sonic-circuit'];
-const stages = chain.map((index) => new Processor({ processorOptions: { wasmModule, expectedRuntimeVersion: 6, modelIndex: Number(index), controls: [0.6, 0.5, 0.6], switches: [0] } }));
+const stages = chain.map((index) => new Processor({ processorOptions: { wasmModule, expectedRuntimeVersion: 7, modelIndex: Number(index), controls: [0.6, 0.5, 0.6], switches: [0] } }));
 console.log('ready:', stages.map((s) => s.ready).join(', '));
 const seconds = 2;
 const levels = stages.map(() => 0);

@@ -59,7 +59,7 @@ export const CIRCUIT_MODELS: Record<string, { model: string; controls: string[];
 };
 export const CIRCUIT_EFFECT_IDS: ReadonlySet<string> = new Set(Object.keys(CIRCUIT_MODELS));
 // Also the circuit.wasm cache key: bump whenever the WASM or its models change.
-const CIRCUIT_RUNTIME_VERSION = 6;
+const CIRCUIT_RUNTIME_VERSION = 7;
 export { EFFECT_FIDELITY_PROFILES, type EffectFidelityProfile };
 
 const MAX_CURVE_CACHE_ENTRIES = 32;
