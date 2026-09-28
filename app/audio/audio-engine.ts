@@ -348,6 +348,8 @@ type LiveGraph = {
   trim: GainNode;
   /** Post-trim tap for the input level meter. */
   meter: AnalyserNode;
+  /** Tap on the final mix (after amp, cab and master) for the output waveform. */
+  outputMeter: AnalyserNode;
   /** Loop region actually playing (seconds into the source buffer). */
   loop: LoopRegion;
   /** Master output level (the "output" control). */
@@ -1968,6 +1970,8 @@ function buildLiveGraph(
   const input = context.createGain();
   const trim = context.createGain();
   const meter = context.createAnalyser();
+  const outputMeter = context.createAnalyser();
+  outputMeter.fftSize = 1024;
   const fade = context.createGain();
   const scheduled: AudioScheduledSourceNode[] = [];
   const slots = new Map<string, EffectSlot>();
@@ -1992,6 +1996,7 @@ function buildLiveGraph(
     fade.gain.setValueAtTime(0, now);
     fade.gain.linearRampToValueAtTime(1, now + SWAP_FADE_SECONDS);
     master.output.connect(fade).connect(context.destination);
+    fade.connect(outputMeter);
     source.start(0, positionSeconds);
   } catch (error) {
     stopScheduled(scheduled);
@@ -2011,6 +2016,7 @@ function buildLiveGraph(
     input,
     trim,
     meter,
+    outputMeter,
     loop,
     level,
     masterOutput: masterOutput ?? level,
@@ -2154,6 +2160,28 @@ function applyLoop(session: LiveAudioSession, graph: LiveGraph, loop: LoopRegion
 const meterScratch = new WeakMap<AnalyserNode, Float32Array<ArrayBuffer>>();
 
 /** Post-trim input peak over the last ~40 ms, in dBFS (-Infinity when silent or stopped). */
+/**
+ * Min and max of the last ~21 ms of the final mix (what you hear), or null
+ * when nothing is playing. Drives the processed-output waveform.
+ */
+export function readOutputExtremes(session: LiveAudioSession | null) {
+  const meter = session?.graph?.outputMeter;
+  if (!meter) return null;
+  let block = meterScratch.get(meter);
+  if (!block) {
+    block = new Float32Array(meter.fftSize);
+    meterScratch.set(meter, block);
+  }
+  meter.getFloatTimeDomainData(block);
+  let min = 0;
+  let max = 0;
+  for (let i = 0; i < block.length; i += 1) {
+    if (block[i] < min) min = block[i];
+    else if (block[i] > max) max = block[i];
+  }
+  return { min, max };
+}
+
 export function readInputPeakDbfs(session: LiveAudioSession | null) {
   const meter = session?.graph?.meter;
   if (!meter) return Number.NEGATIVE_INFINITY;

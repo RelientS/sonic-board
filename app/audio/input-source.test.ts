@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
@@ -159,4 +160,14 @@ test('a take and an example phrase are different sources to the engine', () => {
   assert.equal(sourceKeyOf({ source, input: { trimDb: 0, loop: null, take } }), 'take:take-a:10');
   // Loop and trim are applied in place: they are not part of the source key.
   assert.equal(sourceKeyOf({ source, input: { trimDb: 6, loop: { start: 1, end: 2 } } }), sourceKeyOf({ source }));
+});
+
+test('the transport waveform can show the processed output along the timeline', () => {
+  const transport = readFileSync(new URL('../studio/Transport.tsx', import.meta.url), 'utf8');
+  const engine = readFileSync(new URL('./audio-engine.ts', import.meta.url), 'utf8');
+  // The tap sits after the master section, on what reaches the speakers.
+  assert.match(engine, /master\.output\.connect\(fade\)\.connect\(context\.destination\);\n\s*fade\.connect\(outputMeter\);/);
+  assert.match(transport, /readOutputExtremes\(session\)/);
+  assert.match(transport, /const next = Math\.min\(columns - 1, Math\.floor\(\(position \/ total\) \* columns\)\)/);
+  assert.match(transport, /aria-pressed=\{view === 'output'\}/);
 });

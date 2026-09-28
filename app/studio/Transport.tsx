@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 
-import { currentSourcePosition, readInputPeakDbfs, type BoardAudioConfig, type LiveAudioSession } from '../audio/audio-engine.ts';
+import { currentSourcePosition, readInputPeakDbfs, readOutputExtremes, type BoardAudioConfig, type LiveAudioSession } from '../audio/audio-engine.ts';
 import type { LiveSessionController } from '../audio/live-session-controller.ts';
 import { dragLoop, effectiveLoop, formatSeconds, type LoopRegion } from '../audio/source-catalog.ts';
 import { peakScale, type WaveformPeaks } from '../audio/waveform.ts';
@@ -84,6 +84,9 @@ export function SourceWaveform({ playback, playing, loading, liveInputActive, pe
 }) {
   const host = useRef<HTMLDivElement | null>(null);
   const canvas = useRef<HTMLCanvasElement | null>(null);
+  // What you hear, filled in along the timeline as the playhead passes.
+  const outputCanvas = useRef<HTMLCanvasElement | null>(null);
+  const [view, setView] = useState<'output' | 'input'>('output');
   const playhead = useRef<HTMLElement | null>(null);
   const progress = useRef<HTMLSpanElement | null>(null);
   const size = useCanvasSize(canvas);
@@ -124,6 +127,55 @@ export function SourceWaveform({ playback, playing, loading, liveInputActive, pe
     return () => window.cancelAnimationFrame(frame);
   }, [playback, playing, liveInputActive, duration]);
 
+  // Processed output: each frame's min/max of the final mix is written into
+  // the column under the playhead, so one pass through the loop redraws the
+  // whole waveform as it sounds after the pedals, amp and cab.
+  useEffect(() => {
+    const element = outputCanvas.current;
+    if (!element || size.width === 0) return;
+    const context = element.getContext('2d');
+    if (!context) return;
+    element.width = Math.round(size.width * size.ratio);
+    element.height = Math.round(size.height * size.ratio);
+    context.setTransform(size.ratio, 0, 0, size.ratio, 0, 0);
+    context.clearRect(0, 0, size.width, size.height);
+    if (!playing || liveInputActive || !peaks || view !== 'output') return;
+    const columns = peaks.max.length;
+    const step = size.width / columns;
+    const barWidth = Math.max(1, step - 1);
+    const middle = size.height / 2;
+    const lows = new Float32Array(columns);
+    const highs = new Float32Array(columns);
+    let column = -1;
+    let frame = 0;
+    const tick = () => {
+      const session = playback.current;
+      const position = currentSourcePosition(session);
+      const total = session?.bufferDuration ?? peaks.duration;
+      const extremes = readOutputExtremes(session);
+      if (position !== null && total > 0 && extremes) {
+        const next = Math.min(columns - 1, Math.floor((position / total) * columns));
+        if (next !== column) {
+          // A new column this pass: forget what the previous pass left there.
+          lows[next] = extremes.min;
+          highs[next] = extremes.max;
+          column = next;
+        } else {
+          lows[next] = Math.min(lows[next], extremes.min);
+          highs[next] = Math.max(highs[next], extremes.max);
+        }
+        context.clearRect(next * step, 0, step, size.height);
+        const top = middle - Math.max(0.5, Math.min(1, highs[next]) * middle * 0.92);
+        const bottom = middle - Math.min(-0.5, Math.max(-1, lows[next]) * middle * 0.92);
+        context.fillStyle = 'rgba(245, 165, 36, 0.85)';
+        context.fillRect(next * step, top, barWidth, Math.max(1, bottom - top));
+      }
+      frame = window.requestAnimationFrame(tick);
+    };
+    frame = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(frame);
+  }, [playback, playing, liveInputActive, peaks, size, view]);
+
   // Live input: a scrolling trace of the input level.
   useEffect(() => {
     const element = canvas.current;
@@ -137,7 +189,9 @@ export function SourceWaveform({ playback, playing, loading, liveInputActive, pe
     let frame = 0;
     const tick = () => {
       history.copyWithin(0, 1);
-      const level = readInputPeakDbfs(playback.current);
+      const out = view === 'output' ? readOutputExtremes(playback.current) : null;
+      const outPeak = out ? Math.max(out.max, -out.min) : 0;
+      const level = view === 'output' ? (outPeak > 0 ? 20 * Math.log10(outPeak) : Number.NEGATIVE_INFINITY) : readInputPeakDbfs(playback.current);
       history[history.length - 1] = Number.isFinite(level) ? Math.max(0, Math.min(1, (level + 60) / 60)) : 0;
       context.clearRect(0, 0, size.width, size.height);
       context.fillStyle = 'rgba(245, 165, 36, 0.7)';
@@ -150,7 +204,7 @@ export function SourceWaveform({ playback, playing, loading, liveInputActive, pe
     };
     frame = window.requestAnimationFrame(tick);
     return () => window.cancelAnimationFrame(frame);
-  }, [liveInputActive, playback, size]);
+  }, [liveInputActive, playback, size, view]);
 
   const secondsAt = (clientX: number) => {
     const rect = host.current?.getBoundingClientRect();
@@ -191,7 +245,7 @@ export function SourceWaveform({ playback, playing, loading, liveInputActive, pe
   return (
     <div
       ref={host}
-      className={'waveform' + (loading ? ' is-loading' : '') + (liveInputActive ? ' is-live' : '')}
+      className={'waveform' + (loading ? ' is-loading' : '') + (liveInputActive ? ' is-live' : '') + (view === 'output' && playing ? ' shows-output' : '')}
       role="group"
       aria-label={liveInputActive ? '实时输入电平' : `音源波形：${sourceName}`}
       onPointerDown={(event) => {
@@ -204,7 +258,16 @@ export function SourceWaveform({ playback, playing, loading, liveInputActive, pe
       onPointerCancel={endDrag}
       onDoubleClick={() => { if (!liveInputActive) onLoop(null); }}
     >
-      <canvas ref={canvas} aria-hidden="true" />
+      <canvas ref={canvas} className="waveform-input" aria-hidden="true" />
+      <canvas ref={outputCanvas} className="waveform-output" aria-hidden="true" />
+      <button
+        type="button"
+        className="waveform-view"
+        aria-pressed={view === 'output'}
+        title={view === 'output' ? '正在显示处理后的声音（播放时沿时间线刷新），点一下改看输入' : '正在显示输入，点一下改看处理后的声音'}
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={() => setView((current) => (current === 'output' ? 'input' : 'output'))}
+      >{view === 'output' ? '处理后' : '输入'}</button>
       {!liveInputActive && peaks && (
         <div
           className={'loop-region' + (whole ? ' is-whole' : '')}
