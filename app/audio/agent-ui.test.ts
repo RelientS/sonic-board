@@ -32,7 +32,8 @@ test('agent uses a persistent desktop dock and a mobile full-height workspace', 
 
 test('pedals, playback, and presets expose keyboard and loading state', () => {
   // Every board node is a real button with a descriptive, numbered label.
-  assert.match(page, /className="pedal-face"[\s\S]*?aria-label=\{`\$\{index \+ 1\}\. \$\{spec\.name\}/);
+  // Parked (uncabled) pedals say so instead of a chain number.
+  assert.match(page, /className="pedal-face"[\s\S]*?aria-label=\{`\$\{parked \? '未接入' : `\$\{index \+ 1\}\.`\} \$\{spec\.name\}/);
   assert.match(page, /aria-current=\{selected \? 'true' : undefined\}/);
   assert.match(page, /className="footswitch"[\s\S]*?aria-pressed=\{!bypassed\}/);
   assert.match(page, /if \(playbackLoading \|\| playbackLoadingRef\.current\) return/);
@@ -60,7 +61,7 @@ test('agent modal traps focus, restores its opener, and makes background inert',
 
 test('phones get a vertical signal flow with a fixed transport and sheets', () => {
   assert.match(page, /return useSyncExternalStore\(subscribePhone/);
-  assert.match(page, /\{isPhone \? <FlowList \{\.\.\.nodeProps\} \/> : <Board \{\.\.\.nodeProps\} \/>\}/);
+  assert.match(page, /\{isPhone \? <FlowList \{\.\.\.nodeProps\} \/> : \(\s*<Board\s+\{\.\.\.nodeProps\}/);
   assert.match(studioStyles, /--mobile-transport-clearance:\s*\d+px/);
   const phone = studioStyles.slice(studioStyles.indexOf('@media (max-width: 720px)'));
   assert.match(phone, /\.studio \{ display: block;[^}]*padding-bottom: calc\(var\(--mobile-transport-clearance\)/);

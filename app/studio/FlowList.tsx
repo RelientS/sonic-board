@@ -20,7 +20,7 @@ const MOVE_TOLERANCE_PX = 8;
  * row) to reorder; the + rows insert at that spot.
  */
 export function FlowList(props: BoardNodeProps) {
-  const { state, deckOpen, lit, sourceLabel, engineStatus, namLoaded, onOpenNode, onBypass, onInsert, onMove, onOpenInput } = props;
+  const { state, deckOpen, lit, sourceLabel, engineStatus, namLoaded, onOpenNode, onBypass, onInsert, onMove, onOpenInput, onConnectParked } = props;
   const parallel = state.routing.mode === 'parallel';
   const root = useRef<HTMLDivElement | null>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
@@ -185,6 +185,33 @@ export function FlowList(props: BoardNodeProps) {
           </section>
         );
       })}
+      {state.parked.length > 0 && (
+        <section className="flow-lane flow-parked" aria-label="未接入的效果器">
+          <h3>未接入（不发声）</h3>
+          <ol>
+            {state.parked.map((item) => {
+              const spec = getEffectSpec(item.specId);
+              return (
+                <li className={'flow-row is-parked' + (state.selected === item.instanceId ? ' is-selected' : '')} key={item.instanceId}>
+                  <button
+                    type="button"
+                    className="flow-open"
+                    data-node-id={item.instanceId}
+                    aria-label={`未接入：${spec.name}。打开面板`}
+                    aria-expanded={deckOpen && state.selected === item.instanceId}
+                    aria-controls="focus-deck"
+                    onClick={(event) => onOpenNode(item.instanceId, event.detail === 0)}
+                  >
+                    <MiniPedal spec={spec} />
+                    <span className="flow-text"><strong>{spec.name}</strong><small>在板上，但没有接线</small></span>
+                  </button>
+                  <button type="button" className="flow-connect" aria-label={`把${spec.name}接到链尾`} onClick={() => onConnectParked(item.instanceId)}>接入</button>
+                </li>
+              );
+            })}
+          </ol>
+        </section>
+      )}
       <button
         type="button"
         className={'flow-node flow-mixer' + (state.selected === MIXER_NODE ? ' is-selected' : '')}

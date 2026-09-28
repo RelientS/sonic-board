@@ -6,7 +6,8 @@ import type { SignalLane } from '../audio/audio-core.ts';
 import { EFFECT_SPECS, getEffectSearchText, type EffectCategory } from '../effects/catalog.ts';
 import { CATEGORY_FILTERS, categoryNames, isCircuitModelled, MiniPedal, StyleFilters, type StyleFilter } from './studio-shared.tsx';
 
-export type PickerTarget = { lane: SignalLane; index: number; atEnd: boolean };
+/** Where a picked pedal goes: a chain slot, or into a specific patch cable. */
+export type PickerTarget = { lane: SignalLane; index: number; atEnd: boolean; cableLabel?: string };
 
 /**
  * Command-palette pedal picker (⌘/Ctrl+K, the + slots, or "添加效果器"). Type
@@ -70,7 +71,7 @@ export function PedalPicker({ open, target, parallel, full, onPick, onClose }: {
     }
   }
 
-  const where = !target || target.atEnd
+  const where = target?.cableLabel ? `插入到${target.cableLabel}` : !target || target.atEnd
     ? (parallel && target ? `添加到 ${target.lane} 路末尾` : '添加到链的末尾')
     : `插入到${parallel ? `${target.lane} 路` : ''}第 ${target.index + 1} 位`;
 

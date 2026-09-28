@@ -1,6 +1,6 @@
 /* The studio: top bar, the board as the one stage, the focus deck docked
-   under it, and the transport. Board sizes are in board units: the whole
-   board is zoomed to fit the stage (see board-layout.ts). */
+   under it, and the transport. The board is laid out in millimetres and
+   scaled to fit the stage (see board-geometry.ts). */
 
 .studio {
   --mobile-transport-clearance: 176px;
@@ -83,51 +83,8 @@
 .stage { position: relative; min-height: 0; overflow: hidden; }
 .board-stage { position: absolute; inset: 0; display: grid; place-items: center; padding: 14px 18px; overflow: hidden; }
 .board-stage.is-dragging { cursor: grabbing; user-select: none; }
-.board-surface { position: relative; }
-.board-zoom {
-  position: relative;
-  border: 10px solid #37383a;
-  border-radius: 22px;
-  background:
-    repeating-linear-gradient(90deg, rgb(255 255 255 / 1.8%) 0 2px, transparent 2px 8px),
-    linear-gradient(180deg, #252729, #151719);
-  box-shadow: inset 0 0 0 1px #66686a, inset 0 26px 70px rgb(255 255 255 / 3%), 0 20px 45px rgb(0 0 0 / 30%);
-}
-.tiers { position: relative; height: 100%; padding: 40px 22px; }
-.tiers.has-bends { padding-inline: 66px; }
-.tier { position: relative; z-index: 1; display: flex; height: var(--row-h); align-items: center; }
-.tier + .tier { margin-top: var(--row-gap); }
-.tier.is-reverse { flex-direction: row-reverse; }
-.tier-bend { position: absolute; z-index: 0; width: var(--bend); height: calc(var(--row-h) + var(--row-gap)); margin-top: -4px; border: 9px solid #0e0f11; box-shadow: 0 4px 6px #000; }
-.tier-bend.right { right: 22px; border-left: 0; border-radius: 0 70px 70px 0; }
-.tier-bend.left { left: 22px; border-right: 0; border-radius: 70px 0 0 70px; }
 .board-empty { position: absolute; top: 18px; right: 0; left: 0; margin: 0; color: var(--dim); text-align: center; font-size: 14px; }
 .board-empty b { display: inline-grid; width: 22px; height: 22px; place-items: center; border: 1px solid var(--seam-strong); border-radius: 50%; color: var(--text); }
-
-/* Cables and insert slots between nodes */
-.slot { position: relative; display: flex; min-width: 14px; height: 64px; flex: 1 1 36px; align-items: center; justify-content: center; transition: flex-basis 160ms ease-out; }
-.slot-cable, .lane::before, .lane::after, .lanes::before, .lanes::after { height: 9px; border-top: 2px solid #393a3c; border-bottom: 2px solid #050505; background: linear-gradient(#111214, #282a2c, #08090a); box-shadow: 0 4px 6px #000; }
-.slot .slot-cable { position: absolute; top: 50%; right: -8px; left: -8px; transform: translateY(-50%); }
-.slot-cable.is-fixed { position: relative; display: block; flex: 0 0 36px; width: 36px; margin: 0 -4px; }
-.slot-add { position: relative; z-index: 3; display: grid; width: 30px; height: 30px; place-items: center; padding: 0; border: 1px solid var(--seam-strong); border-radius: 50%; background: var(--case-raised); color: var(--text); cursor: pointer; font: 700 18px/1 var(--font-display); opacity: 0; transform: scale(.85); transition: opacity var(--fast), transform var(--fast), background var(--fast); }
-.slot:hover .slot-add, .slot-add:focus-visible { opacity: 1; transform: scale(1); }
-.slot-add:hover { background: var(--text); color: var(--room); }
-.board-stage.is-dragging .slot-add { opacity: 0; }
-.tiers.is-empty .slot-add { opacity: 1; transform: scale(1); }
-.slot.is-target { flex: 0 0 150px; }
-.slot.is-target::after { content: ''; position: absolute; z-index: 4; top: -58px; bottom: -58px; left: 50%; width: 4px; transform: translateX(-50%); border-radius: 2px; background: var(--lamp); box-shadow: 0 0 14px var(--lamp-glow); }
-@media (hover: none) { .slot-add { opacity: .9; transform: scale(1); } }
-
-/* Input and routing nodes */
-.input-node, .junction-node { position: relative; z-index: 2; display: grid; flex: 0 0 auto; place-items: center; align-content: center; gap: 6px; padding: 0; border: 1px solid #6c6f72; border-radius: 12px; background: linear-gradient(#414346, #222426); color: #dcdad2; box-shadow: 0 8px 16px #09090a; cursor: pointer; }
-.input-node { width: 64px; height: 84px; }
-.input-node small, .junction-node small { font-size: 11px; font-weight: 700; }
-.jack-plate { display: grid; width: 30px; height: 30px; place-items: center; border: 3px solid #979a9c; border-radius: 50%; background: #151617; }
-.jack-plate i { width: 10px; height: 10px; border-radius: 50%; background: #000; box-shadow: inset 0 0 0 2px #444; }
-.junction-node { width: 84px; height: 84px; }
-.junction-node strong { font: 800 22px/1 var(--font-display); color: #efd9a0; }
-.junction-node.is-selected, .input-node:hover, .junction-node:hover { border-color: var(--seam-strong); }
-.junction-node.is-selected { box-shadow: 0 0 0 3px var(--lamp), 0 8px 16px #09090a; }
 
 /* Pedals on the board: display-only knobs, a real footswitch. */
 .pedal-node { position: relative; z-index: 2; flex: 0 0 136px; width: 136px; height: 244px; }
@@ -177,32 +134,10 @@
 .screw { position: absolute; width: 7px; height: 7px; border: 1px solid #545556; border-radius: 50%; background: radial-gradient(circle at 35% 30%, #f3f3ef, #777 70%); }
 .screw::after { content: ''; position: absolute; top: 2px; left: 0; width: 5px; height: 1px; transform: rotate(-24deg); background: #3e3f40; }
 .screw.tl { top: 6px; left: 7px; } .screw.tr { top: 6px; right: 7px; } .screw.bl { bottom: 6px; left: 7px; } .screw.br { right: 7px; bottom: 6px; }
-.jack { display: none; }
 
-/* Parallel: splitter, two lanes on buses, then the mixer. */
-.parallel-board { display: flex; height: 100%; align-items: center; padding: 40px 22px; }
-.splitter-node { position: relative; z-index: 2; display: grid; flex: 0 0 56px; height: 84px; place-items: center; border: 1px solid #6c6f72; border-radius: 10px; background: linear-gradient(#414346, #222426); color: #dcdad2; font-size: 11px; font-weight: 700; }
-.lanes { position: relative; display: grid; flex: 1 1 auto; grid-template-rows: repeat(2, 292px); row-gap: 64px; min-width: 0; padding: 0 24px; }
-.lanes::before, .lanes::after { content: ''; position: absolute; top: 142px; bottom: 142px; width: 9px; height: auto; border: 0; border-inline: 2px solid #050505; background: linear-gradient(90deg, #111214, #282a2c, #08090a); }
-.lanes::before { left: 0; }
-.lanes::after { right: 0; }
-.lane { position: relative; display: flex; min-width: 0; align-items: center; padding: 0 6px; border: 1px solid #4a4d50; border-radius: 16px; background: rgb(255 255 255 / 2.5%); }
-.lane-a { border-color: #6d6038; }
-.lane-b { border-color: #3f6169; }
-.lane::before, .lane::after { content: ''; position: absolute; top: 50%; width: 26px; transform: translateY(-50%); }
-.lane::before { left: -25px; }
-.lane::after { right: -25px; }
-.lane-label { position: relative; z-index: 2; display: grid; flex: 0 0 40px; height: 40px; place-items: center; border: 1px solid #74777a; border-radius: 50%; background: #202224; color: #e9e7de; font: 800 13px/1 var(--font-display); font-stretch: 112%; }
-.lane-empty { position: absolute; left: 50%; transform: translateX(-50%); color: #a7aaa7; font-size: 12px; pointer-events: none; }
-
-/* The rig on the board */
-.board-zoom .rig-object { flex: 0 0 auto; }
+/* The rig beside the board */
 .rig-object.is-selected { box-shadow: 0 0 0 3px var(--lamp); }
 .rig-object:focus-visible { outline: 3px solid var(--focus); outline-offset: 6px; }
-
-/* Dragging */
-.drag-ghost { position: fixed; z-index: 90; display: flex; align-items: center; gap: 10px; padding: 8px 12px 8px 8px; transform: translate(-50%, -120%); border: 1px solid var(--lamp); border-radius: 10px; background: var(--case-raised); color: var(--text); box-shadow: 0 18px 40px rgb(0 0 0 / 55%); pointer-events: none; font-size: 13px; font-weight: 750; white-space: nowrap; }
-.drag-ghost .mini-pedal { margin: 0; }
 
 /* ---------- Focus deck ---------- */
 .focus-deck { z-index: 15; display: grid; grid-template-rows: auto minmax(0, 1fr); max-height: min(44vh, 380px); border-top: 1px solid var(--seam-strong); background: var(--case); box-shadow: 0 -18px 40px rgb(0 0 0 / 35%); }
@@ -446,5 +381,93 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .slot, .flow-slot, .flow-row, .metal-switch, .slot-add { transition: none; }
+  .flow-slot, .flow-row, .metal-switch { transition: none; }
+}
+
+/* ---------- Free-form board: real footprints, patch cables ---------- */
+.free-board { place-items: center; }
+.free-board.is-zoomed { place-items: start; overflow: auto; }
+.board-frame { position: relative; flex: none; }
+.board-canvas { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
+.board-surface.free {
+  position: absolute;
+  border: 10px solid #37383a;
+  border-radius: 20px;
+  background:
+    repeating-linear-gradient(90deg, rgb(255 255 255 / 1.8%) 0 2px, transparent 2px 8px),
+    linear-gradient(180deg, #252729, #151719);
+  box-shadow: inset 0 0 0 1px #66686a, inset 0 26px 70px rgb(255 255 255 / 3%), 0 20px 45px rgb(0 0 0 / 30%);
+  box-sizing: content-box;
+  margin: -10px;
+}
+.cable-layer { position: absolute; z-index: 1; inset: 0; overflow: visible; pointer-events: none; }
+.cable path { fill: none; stroke-linecap: round; }
+.cable-shadow { stroke: rgb(0 0 0 / 55%); stroke-width: 4.2; transform: translateY(1.6px); }
+.cable-body { stroke: #4b4d52; stroke-width: 2.6; }
+.cable.is-side .cable-body { stroke: #3a3b3f; stroke-dasharray: 5 3; }
+.cable-plug { fill: #b9babc; stroke: #1b1c1e; stroke-width: .8; }
+.cable.is-live .cable-body { stroke: var(--lamp); stroke-width: 2.8; }
+.cable.is-live.is-refused .cable-body { stroke: #d76a6a; stroke-dasharray: 4 3; }
+.free-board.is-dragging .cable.on-chain .cable-body { stroke: #5a5c62; }
+
+.pedal-node.free { position: absolute; z-index: 2; flex: none; }
+.pedal-node.free .pedal-face { touch-action: none; }
+.pedal-node.free.is-dragging { z-index: 5; opacity: .9; }
+.pedal-node.free.is-dragging .pedal-shell, .pedal-node.free.is-dragging .pedal-skin { box-shadow: 0 26px 40px rgb(0 0 0 / 60%); }
+.pedal-node.is-parked .pedal-face { opacity: .5; filter: saturate(.5); }
+.parked-chip { position: absolute; z-index: 6; top: 50%; left: 50%; transform: translate(-50%, -50%); padding: 4px 8px; border: 1px solid var(--seam-strong); border-radius: 999px; background: rgb(22 21 27 / 85%); color: var(--text); font-size: 11px; font-weight: 750; white-space: nowrap; pointer-events: none; }
+.pedal-node.has-skin .pedal-face { border-radius: 6px; }
+.pedal-skin { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; filter: drop-shadow(0 10px 12px rgb(0 0 0 / 55%)); pointer-events: none; user-select: none; }
+.pedal-node.has-skin.is-bypassed .pedal-skin { filter: drop-shadow(0 10px 12px rgb(0 0 0 / 55%)) brightness(.7) saturate(.6); }
+.pedal-node.has-skin.is-selected .pedal-face { box-shadow: 0 0 0 3px var(--lamp), 0 0 26px rgb(245 165 36 / 22%); }
+.skin-led { position: absolute; z-index: 4; top: 6px; left: 50%; width: 9px; height: 9px; transform: translateX(-50%); border: 2px solid rgb(0 0 0 / 55%); border-radius: 50%; background: #3e2020; }
+.skin-led.on { background: var(--accent); box-shadow: 0 0 8px 2px color-mix(in srgb, var(--accent) 65%, transparent); }
+
+.utility-box { position: absolute; z-index: 2; display: grid; place-items: center; align-content: center; gap: 2px; padding: 0; border: 1px solid #6c6f72; border-radius: 10px; background: linear-gradient(#414346, #222426); color: #dcdad2; box-shadow: 0 8px 16px #09090a; cursor: grab; touch-action: none; }
+.utility-box strong { font: 800 18px/1 var(--font-display); color: #efd9a0; }
+.utility-box small { font-size: 11px; font-weight: 700; }
+.utility-box.is-selected { box-shadow: 0 0 0 3px var(--lamp), 0 8px 16px #09090a; }
+.utility-box.is-dragging { z-index: 5; }
+.utility-box:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+
+.board-plate { position: absolute; z-index: 2; display: grid; place-items: center; padding: 0; border: 1px solid #6c6f72; border-radius: 8px; background: linear-gradient(#3b3d40, #1f2123); color: #dcdad2; }
+.board-plate small { font: 800 11px/1 var(--font-display); font-stretch: 112%; letter-spacing: .04em; transform: translateY(-14px); }
+button.board-plate { cursor: pointer; }
+button.board-plate:hover { border-color: var(--seam-strong); }
+button.board-plate:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+
+.jack-dot { position: absolute; z-index: 6; width: 16px; height: 16px; transform: translate(-50%, -50%); border: 3px solid #8d9092; border-radius: 50%; background: #0c0d0e; box-shadow: 0 1px 3px rgb(0 0 0 / 60%); cursor: crosshair; touch-action: none; transition: transform var(--fast), border-color var(--fast); }
+.jack-dot.is-plugged { border-color: #c9cacc; background: #2b2c2f; }
+.jack-dot:hover, .jack-dot.is-target { transform: translate(-50%, -50%) scale(1.35); border-color: var(--lamp); }
+.jack-dot.is-target { box-shadow: 0 0 0 4px rgb(245 165 36 / 30%), 0 0 14px var(--lamp); }
+
+.cable-add { position: absolute; z-index: 4; display: grid; width: 26px; height: 26px; place-items: center; padding: 0; transform: translate(-50%, -50%) scale(.85); border: 1px solid var(--seam-strong); border-radius: 50%; background: var(--case-raised); color: var(--text); cursor: pointer; font: 700 16px/1 var(--font-display); opacity: 0; transition: opacity var(--fast), transform var(--fast), background var(--fast); }
+.board-surface.free:hover .cable-add, .cable-add:focus-visible { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+.cable-add:hover { background: var(--text); color: var(--room); }
+.free-board.is-dragging .cable-add { opacity: 0; pointer-events: none; }
+@media (hover: none) { .cable-add { opacity: .9; transform: translate(-50%, -50%) scale(1); } }
+
+.align-guide { position: absolute; z-index: 7; background: var(--lamp); box-shadow: 0 0 6px var(--lamp-glow); pointer-events: none; }
+.align-guide.is-vertical { width: 1px; transform: translateX(-.5px); }
+.align-guide.is-horizontal { height: 1px; transform: translateY(-.5px); }
+
+.rig-dock { position: absolute; z-index: 2; display: grid; place-items: center; }
+.rig-cable { position: absolute; z-index: 1; inset: 0; overflow: visible; pointer-events: none; }
+.rig-cable path { fill: none; stroke: #0d0e10; stroke-width: 9; stroke-linecap: round; filter: drop-shadow(0 4px 4px #000); }
+
+.board-tools { position: absolute; z-index: 10; top: 10px; right: 14px; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.board-tools button { min-height: 32px; padding: 0 11px; border: 1px solid var(--seam); border-radius: 7px; background: rgb(43 40 51 / 88%); color: var(--text); cursor: pointer; font-size: 12px; font-weight: 700; backdrop-filter: blur(6px); }
+.board-tools button:hover { border-color: var(--seam-strong); }
+.board-tools button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.board-zoom-controls { display: inline-flex; gap: 2px; }
+.board-zoom-controls button { min-width: 32px; padding: 0 8px; font-family: var(--font-display); }
+.patch-warning { position: absolute; z-index: 10; top: 10px; left: 14px; max-width: min(520px, 55%); margin: 0; padding: 8px 12px; border: 1px solid var(--warn); border-radius: 8px; background: var(--warn-bg); color: var(--warn); font-size: 12px; line-height: 1.5; }
+
+.deck-connect { min-height: 36px; padding: 0 12px; border: 1px solid var(--lamp); border-radius: 8px; background: var(--lamp-soft); color: var(--lamp); cursor: pointer; font-weight: 750; }
+.flow-parked h3 { color: var(--dim); }
+.flow-row.is-parked .flow-open { opacity: .6; }
+.flow-connect { flex: 0 0 auto; min-height: 40px; padding: 0 12px; white-space: nowrap; border: 1px solid var(--lamp); border-radius: 8px; background: var(--lamp-soft); color: var(--lamp); cursor: pointer; font-weight: 750; }
+
+@media (prefers-reduced-motion: reduce) {
+  .jack-dot, .cable-add { transition: none; }
 }

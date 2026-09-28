@@ -31,6 +31,8 @@ export type FocusDeckProps = {
   onClose: () => void;
   onStep: (direction: -1 | 1) => void;
   onNudge: (instanceId: string, direction: -1 | 1) => void;
+  /** Cables a parked pedal onto the end of the chain. */
+  onConnectParked: (instanceId: string) => void;
   onLane: (instanceId: string, lane: SignalLane) => void;
   onBypass: (instanceId: string) => void;
   onRemove: (instanceId: string) => void;
@@ -55,7 +57,9 @@ export const FocusDeck = forwardRef<HTMLHeadingElement, FocusDeckProps>(function
   if (!open) return null;
   const order = nodeOrder(state);
   const position = order.indexOf(state.selected);
-  const pedal = state.chain.find((item) => item.instanceId === state.selected);
+  const chained = state.chain.find((item) => item.instanceId === state.selected);
+  const pedal = chained ?? state.parked.find((item) => item.instanceId === state.selected);
+  const parked = Boolean(pedal && !chained);
   const parallel = state.routing.mode === 'parallel';
 
   let art: ReactNode;
@@ -72,18 +76,19 @@ export const FocusDeck = forwardRef<HTMLHeadingElement, FocusDeckProps>(function
     const chip = engineChip(spec, props.engineStatus(pedal.instanceId), props.namLoaded(spec));
     art = <MiniPedal spec={spec} size="large" />;
     title = spec.name;
-    subtitle = `${categoryNames[spec.category]}，${spec.family}${parallel ? `，${laneOf(pedal)} 路` : ''}`;
+    subtitle = parked ? `${categoryNames[spec.category]}，未接入信号链（不发声）` : `${categoryNames[spec.category]}，${spec.family}${parallel ? `，${laneOf(pedal)} 路` : ''}`;
     actions = (
       <div className="deck-actions">
         {chip && <span className={'engine-chip ' + chip.tone} title={chip.title}>{chip.text}</span>}
         <button type="button" role="switch" aria-checked={!bypassed} className={'deck-bypass' + (bypassed ? '' : ' is-on')} onClick={() => props.onBypass(pedal.instanceId)}>
           <i aria-hidden="true" />{bypassed ? '已旁通' : '已启用'}
         </button>
-        <div className="deck-move" role="group" aria-label="在链中的位置">
+        {parked && <button type="button" className="deck-connect" onClick={() => props.onConnectParked(pedal.instanceId)}>接到链尾</button>}
+        {!parked && <div className="deck-move" role="group" aria-label="在链中的位置">
           <button type="button" aria-label="前移" title="前移（Alt + ←）" disabled={rowIndex <= 0} onClick={() => props.onNudge(pedal.instanceId, -1)}>前移</button>
           <button type="button" aria-label="后移" title="后移（Alt + →）" disabled={rowIndex >= row.length - 1} onClick={() => props.onNudge(pedal.instanceId, 1)}>后移</button>
-        </div>
-        {parallel && (
+        </div>}
+        {parallel && !parked && (
           <div className="deck-lane" role="radiogroup" aria-label="所在通道">
             {(['A', 'B'] as const).map((lane) => (
               <button key={lane} type="button" role="radio" aria-checked={laneOf(pedal) === lane} className={laneOf(pedal) === lane ? 'active' : ''} onClick={() => props.onLane(pedal.instanceId, lane)}>{lane} 路</button>

@@ -36,15 +36,19 @@ import { captureUserPreset, instantiateUserPreset, parseUserPresets, type UserPr
 import { Board } from './Board';
 import {
   boardFromPreset,
+  captureLayout,
   cloneBoardUiState,
   laneItems,
   laneOf,
   MAX_PEDALS,
   nodeOrder,
   RIG_NODE,
+  spotForCableInsert,
   type BoardUiState,
   type SnapshotId,
 } from './board-store';
+import type { FlowDirection } from './board-geometry';
+import type { Cable } from './patch-graph';
 import { FlowList } from './FlowList';
 import { FocusDeck } from './FocusDeck';
 import { ControlHelpDialog, type HelpTarget } from './Knob';
@@ -94,6 +98,13 @@ export default function Studio() {
   const deckHeading = useRef<HTMLHeadingElement | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerTarget, setPickerTarget] = useState<PickerTarget | null>(null);
+  // A '+' on a patch cable: the picked pedal goes into that cable.
+  const [pickerCable, setPickerCable] = useState<Cable | null>(null);
+  // Top-down photos by spec id, for accounts allowed to see them (none yet).
+  const [pedalSkins] = useState<Record<string, string>>({});
+  // Signal direction on the board: null follows the default (right-to-left with photos).
+  const [flowSetting, setFlowSetting] = useState<FlowDirection | null>(null);
+  const flowDirection: FlowDirection = flowSetting ?? (Object.keys(pedalSkins).length ? 'rtl' : 'ltr');
   const [presetOpen, setPresetOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [sourcePickerOpen, setSourcePickerOpen] = useState(false);
@@ -526,7 +537,20 @@ export default function Studio() {
 
   function requestInsert(lane: SignalLane, index: number) {
     const row = laneItems(chain, routing.mode, lane);
+    setPickerCable(null);
     setPickerTarget({ lane, index, atEnd: index >= row.length });
+    setPickerOpen(true);
+  }
+
+  /** A short-lived message for refused board edits (clears itself). */
+  function showNotice(message: string) {
+    setAudioError(message);
+    window.setTimeout(() => setAudioError((current) => (current === message ? '' : current)), 2600);
+  }
+
+  function requestInsertOnCable(cable: Cable) {
+    setPickerCable(cable);
+    setPickerTarget({ lane: 'A', index: 0, atEnd: false, cableLabel: '这根线上' });
     setPickerOpen(true);
   }
 
@@ -534,19 +558,23 @@ export default function Studio() {
   function openPickerAtEnd() {
     const focusedPedal = chain.find((item) => item.instanceId === selected);
     const lane = routing.mode === 'parallel' && focusedPedal ? laneOf(focusedPedal) : 'A';
+    setPickerCable(null);
     setPickerTarget({ lane, index: laneItems(chain, routing.mode, lane).length, atEnd: true });
     setPickerOpen(true);
   }
 
   function pickPedal(specId: string) {
-    if (board.latest.current.chain.length >= MAX_PEDALS) {
+    const current = board.latest.current;
+    if (current.chain.length + current.parked.length >= MAX_PEDALS) {
       setAudioError('当前板面最多放 16 块效果器，请先移除一块。');
       return;
     }
     const target = pickerTarget ?? { lane: 'A' as const, index: chain.length, atEnd: true };
     manualPedalSerial.current += 1;
     const instanceId = `${specId}-manual-${manualPedalSerial.current}`;
-    dispatch({ type: 'add', specId, instanceId, lane: target.lane, index: target.index });
+    if (pickerCable) dispatch({ type: 'insertOnCable', specId, instanceId, cable: pickerCable, at: spotForCableInsert(current, pickerCable, specId) ?? undefined });
+    else dispatch({ type: 'add', specId, instanceId, lane: target.lane, index: target.index });
+    setPickerCable(null);
     setPickerOpen(false);
     setDeckOpen(true);
     focusNodeElement(instanceId);
@@ -717,7 +745,7 @@ export default function Studio() {
       return;
     }
     try {
-      const captured = captureUserPreset({ name, chain, values, bypassed, source, output, routing, amp });
+      const captured = captureUserPreset({ name, chain, parked: state.parked, layout: captureLayout(state), values, bypassed, source, output, routing, amp });
       const next = [captured, ...userPresets].slice(0, 24);
       window.localStorage.setItem('sonic-board-user-presets', JSON.stringify(next));
       setUserPresets(next);
@@ -771,6 +799,7 @@ export default function Studio() {
     onInsert: requestInsert,
     onMove: (instanceId: string, lane: SignalLane, slot: number) => { dispatch({ type: 'move', instanceId, lane, slot }); },
     onOpenInput: () => setSourcePickerOpen(true),
+    onConnectParked: (instanceId: string) => { dispatch({ type: 'connectParked', instanceId, lane: 'A' }); },
   };
   const statusText = playbackLoading ? '正在加载试听，请稍候；重复点击不会中断加载。' : render === 'ready' ? 'WAV 音频已下载' : saveState === 'saved' ? '音色已保存在当前浏览器' : '';
 
@@ -796,7 +825,19 @@ export default function Studio() {
       />
 
       <section id="board" className="stage" aria-label="效果器板">
-        {isPhone ? <FlowList {...nodeProps} /> : <Board {...nodeProps} />}
+        {isPhone ? <FlowList {...nodeProps} /> : (
+          <Board
+            {...nodeProps}
+            direction={flowDirection}
+            skins={pedalSkins}
+            onPlace={(id, x, y) => { dispatch({ type: 'place', id, x, y }); }}
+            onPatch={(cables) => { dispatch({ type: 'patch', cables }); }}
+            onInsertOnCable={requestInsertOnCable}
+            onTidy={() => { dispatch({ type: 'tidy' }); }}
+            onDirectionChange={setFlowSetting}
+            onNotice={showNotice}
+          />
+        )}
       </section>
 
       <FocusDeck
@@ -813,6 +854,7 @@ export default function Studio() {
         onClose={closeDeck}
         onStep={stepFocus}
         onNudge={(instanceId, direction) => { dispatch({ type: 'nudge', instanceId, direction }); }}
+        onConnectParked={nodeProps.onConnectParked}
         onLane={assignLane}
         onBypass={toggleBypass}
         onRemove={removePedal}
