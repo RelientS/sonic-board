@@ -1,0 +1,104 @@
+* Ibanez TS808 Tube Screamer (Maxon-built, 1979-81, JRC4558D)
+*@name Ibanez TS808 Tube Screamer
+*@input Vin
+*@output out 1
+*@oversample 4
+*@opamp JRC4558 gbw=3e6 slew=1e6 aol=1e5 vlo=1.0 vhi=8.0 rout=75
+*@pot drive Rdrv - 500k log
+*@pot tone RtoneA RtoneB 20k lin
+*@pot level RlvlA RlvlB 100k log
+*@control Drive drive default=0.5
+*@control Tone tone default=0.5
+*@control Level level default=0.5
+*
+* Sources:
+*  - ElectroSmash "Tube Screamer Analysis" (electrosmash.com/tube-screamer-
+*    analysis, via web.archive.org): full TS808 schematic
+*    (tube-screamer-block-diagram.png) incl. the JFET switching, and the
+*    true-bypass redraw with "RA 0 / RB 100 / RC 10k" = TS808 output values.
+*    Designators follow ElectroSmash (it uses R11 twice; the 1k in series
+*    with the Level pot is called R11b here).
+*  - R.G. Keen, "The Technology of the Tube Screamer" (geofex.com
+*    tstech/tsxtech.htm): same values; TS808 output series/shunt 100R/10k
+*    (TS9: 470R/100k), 510k input bias, 10k (+) bias, 4.7k/0.047u, 51k +
+*    500k drive, 51p, 1k/0.22u, 20k tone with 220R/0.22u, 100k level.
+* UNCERTAIN: pot tapers. Drive is 500k audio (A) in every source; Tone is
+* 20k linear. The Level pot is listed "100K Lin" by ElectroSmash, but the
+* Ibanez/Maxon part is widely reported as 100kA; audio taper used here.
+*
+* Effect-on path. Q2 (2SK44SP JFET switch, on) is its ~100 ohm on
+* resistance (Keen); the bypass JFET Q4 (off) with C11/R18 and the Q5/Q6/Q7
+* flip-flop/LED are omitted (Q4's 0.1u + 510k only load Q1's emitter).
+* Supply: R33/R32 10k divider + C16 47u (C17 100u/D8 are across the ideal
+* 9 V source and omitted).
+* Op-amp: JRC4558D (Aol 100 dB, GBW 3 MHz, SR 1 V/us); output swing ~1..8 V
+* on a single 9 V supply. Clipping diodes MA150 (≈1N914) -> 1N914 model.
+* Transistors 2SC1815(GR): LTspice-style 2SC1815-GR parameters (as in
+* boss_bd2.cir), junction capacitances dropped.
+*
+* Controls (rotation 1.0 = fully clockwise):
+*  - Drive: P1 used as a rheostat in series with R6 51k (gain 12 .. 118).
+*  - Tone: lug1 at the C5/(+) node, lug3 at the (-) node; CW = brighter.
+*  - Level: lug1 ground, lug3 from R11b, wiper to the JFET switch.
+
+Vcc vcc 0 9
+R33 vcc vb 10k
+R32 vb 0 10k
+C16 vb 0 47u
+
+* Guitar pickup source impedance (DI samples act as pickup EMF).
+Vin src 0 0
+Rpu src pu 6.5k
+Lpu pu jack 2.3
+
+* Q1 input buffer (emitter follower)
+C1 jack n1 0.02u
+R1 n1 b1 1k
+R2 b1 vb 510k
+Q1 vcc b1 e1 Q2SC1815
+R3 e1 0 10k
+
+* U2 clipping amplifier
+C2 e1 p2 1u
+R5 p2 vb 10k
+XU2 p2 m2 o2 JRC4558
+R4 m2 n4 4.7k
+C3 n4 0 0.047u
+R6 m2 n6 51k
+Rdrv n6 o2 250k
+C4 m2 o2 51p
+D1 m2 o2 D1N914
+D2 o2 m2 D1N914
+
+* R7/C5 low-pass, U1 active tone stage
+R7 o2 p1 1k
+C5 p1 0 0.22u
+R9 p1 vb 10k
+RtoneA p1 tw 10k
+RtoneB tw m1 10k
+C6 tw n8 0.22u
+R8 n8 0 220
+R11 m1 o1 1k
+XU1 p1 m1 o1 JRC4558
+
+* Level pot, Q2 JFET switch (on), Q3 output buffer
+C7 o1 n7 1u
+R11b n7 ltop 1k
+RlvlB ltop lw 50k
+RlvlA lw 0 50k
+RQ2 lw sw 100
+R17 sw vb 510k
+C8 sw b3 0.1u
+R12 b3 vb 510k
+Q3 vcc b3 e3 Q2SC1815
+R13 e3 0 10k
+RB e3 n9 100
+C9 n9 out 10u
+RC out 0 10k
+* Amplifier input load
+Rload out 0 1meg
+
+.model Q2SC1815 NPN(IS=2.04f BF=300 BR=3.377 VAF=100)
+* 1N914 / MA150. RS (0.57 ohm) omitted so the pair solves as one port.
+.model D1N914 D(IS=2.52n N=1.752)
+.end

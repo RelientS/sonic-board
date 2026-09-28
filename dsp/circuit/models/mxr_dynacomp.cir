@@ -1,0 +1,92 @@
+* MXR Dyna Comp (script logo, CA3080)
+*@name MXR Dyna Comp
+*@input Vin
+*@output out 1
+*@oversample 2
+*@ota CA3080 is=1e-14 n=1 beta=125 v0=1 w=0.15
+*@control Output RV3 default=0.85
+*@control Sensitivity RV2 default=0.5
+*@pot RV3 RV3a RV3b 50k log
+*@pot RV2 - RV2r 500k lin
+*
+* Source: the classic CA3080 Dyna Comp as laid out in bubbajfett's
+* kicad-guitar-pedals "dynacomp" board (pad-to-net connectivity read from
+* its .kicad_pcb), with part values cross-checked against the
+* Network-Direction "MXR Dyna Comp" BOM and the ElectroSmash analysis
+* (Q1 emitter follower, CA3080 driving a 150k load into the Q2 phase
+* splitter, full-wave Q3/Q4 envelope detector on C8 10u with a 150k
+* release resistor, Q5 buffer and Sensitivity pot setting Iabc).
+*
+* Controls: Output is RV3 (50k A, lug 1 ground, wiper to the jack);
+* Sensitivity is RV2 (500k B) wired as a rheostat from Q5's emitter, in
+* series with R13 27k to pin 5: clockwise lowers the resistance, raising
+* Iabc and so the gain and the compression.
+*
+* Trimmer RV1 (2k, between the OTA inputs, wiper fed by R5 470k from 9 V)
+* nulls the input offset; it is set (1.7k / 300 ohm) to the split that zeroes
+* the OTA input offset at full Sensitivity with no signal, where the gain
+* is highest (the residual offset at lower settings stays under 0.1 V).
+*
+* Simplifications: C10 and the polarity-protection diode sit on the ideal
+* 9 V source and are omitted; the bypass switching is omitted.
+* Devices: 2N3904 -> standard SPICE model; 1N4148 as in the other models;
+* CA3080 -> *@ota macro (bias diode ~0.6 V at 100 uA, beta 125 from the
+* 2 uA input bias at Iabc 500 uA, output mirrors fading ~1 V from a rail).
+.model Q2N3904 NPN(IS=6.734f BF=416.4 BR=0.7371 NF=1 VAF=74.03 RB=10)
+.model D1N4148 D(IS=2.52n N=1.752)
+
+Vcc vcc 0 9
+R15 vcc vb 56k
+R16 vb 0 27k
+C11 vb 0 10u
+
+* Guitar pickup and input buffer
+Vin src 0 0
+Rpu src pu 6.5k
+Lpu pu jack 2.3
+C1 jack n1 10n
+R1 n1 q1b 10k
+R2 q1b vb 1meg
+Q1 vcc q1b q1e Q2N3904
+R3 q1e 0 10k
+
+* CA3080: signal into (-); (+) sees it only through the offset trimmer
+C2 q1e inn 1u
+R4 inn 0 1meg
+R5 vcc trim 470k
+RV1a inp trim 1.7k
+RV1b trim inn 300
+R6 nc3 inp 15k
+C3 inp nc3 10n
+C4 nc3 0 1u
+XU1 inp inn q2b abc vcc 0 CA3080
+R7 q2b vb 150k
+C5 vb q2b 1n
+
+* Phase splitter and output
+Q2 q2c q2b q2e Q2N3904
+R8 vcc q2c 10k
+R9 q2e 0 10k
+C9 q2e nc9 47n
+R14 vol_top nc9 10k
+RV3a 0 out 25k
+RV3b out vol_top 25k
+Rload out 0 1meg
+
+* Full-wave envelope detector: Q3/Q4 discharge C8, R12 recharges it
+C6 q2c d1k 10n
+R10 d1k 0 1meg
+D1 0 d1k D1N4148
+Q3 q3c d1k 0 Q2N3904
+C7 q2e d2k 10n
+R11 d2k 0 1meg
+D2 0 d2k D1N4148
+Q4 q3c d2k 0 Q2N3904
+R12 vcc q3c 150k
+C8 q3c 0 10u
+
+* Q5 buffer -> Sensitivity -> Iabc
+Q5 vcc q3c q5e Q2N3904
+RV2r q5e nr13 250k
+R13 nr13 abc 27k
+.end

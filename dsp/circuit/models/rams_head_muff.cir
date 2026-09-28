@@ -1,0 +1,94 @@
+* Electro-Harmonix Big Muff Pi Ram's Head (Violet 1973 #4)
+*@name Big Muff Pi Ram's Head
+*@input Vin
+*@output out 1
+*@oversample 4
+*@pot sustain RsusA RsusB 100k lin
+*@pot tone RtoneA RtoneB 100k lin
+*@pot volume RvolA RvolB 100k lin
+*@control Volume volume default=0.6
+*@control Tone tone default=0.5
+*@control Sustain sustain default=0.6
+*
+* Values from Kit Rae's trace of 18 identical violet Ram's Head units
+* (bigmuffpage.com, "Version 2 Big Muff, Violet 1st Version - 1973 #4"),
+* the circuit EHX reissued as the Ram's Head Big Muff Pi.
+* Pots are linear; transistors FS36999 (2N5133 family), diodes 1N914.
+
+Vcc vcc 0 9
+
+* Guitar pickup source impedance (DI samples act as pickup EMF).
+Vin src 0 0
+Rpu src pu 6.5k
+Lpu pu jack 2.3
+
+* Q4 input booster
+R2 jack n1 33k
+C1 n1 b4 0.1u
+R14 b4 0 100k
+R9 b4 c4 470k
+C10 b4 c4 470p
+R13 vcc c4 12k
+Q4 c4 b4 e4 FS36999
+R22 e4 0 100
+
+* Sustain: C4 feeds the pot top, R23 560R sits below the bottom lug.
+C4 c4 sus_top 0.1u
+RsusA sus_bot sus_w 50k
+RsusB sus_w sus_top 50k
+R23 sus_bot 0 560
+
+* Q3 first clipping stage
+C5 sus_w n5 0.1u
+R19 n5 b3 8.2k
+R20 b3 0 100k
+R17 b3 c3 470k
+C12 b3 c3 470p
+C6 b3 d3 0.1u
+D3 d3 c3 D1N914
+D4 c3 d3 D1N914
+R18 vcc c3 12k
+Q3 c3 b3 e3 FS36999
+R21 e3 0 100
+
+* Q2 second clipping stage
+C13 c3 n13 0.1u
+R12 n13 b2 8.2k
+R16 b2 0 100k
+R15 b2 c2 470k
+C11 b2 c2 470p
+C7 b2 d2 0.1u
+D1 d2 c2 D1N914
+D2 c2 d2 D1N914
+R11 vcc c2 12k
+Q2 c2 b2 e2 FS36999
+R10 e2 0 100
+
+* Passive tone stack: C9/R5 high-pass, R8/C8 low-pass, blended by the pot.
+C9 c2 t_hi 4n
+R5 t_hi 0 33k
+R8 c2 t_lo 33k
+C8 t_lo 0 10n
+RtoneA t_lo t_w 50k
+RtoneB t_w t_hi 50k
+
+* Q1 output recovery stage
+C3 t_w b1 0.1u
+R7 vcc b1 470k
+R3 b1 0 100k
+R6 vcc c1 12k
+Q1 c1 b1 e1 FS36999
+R4 e1 0 2.7k
+
+C2 c1 vol_top 0.1u
+RvolA 0 out 50k
+RvolB out vol_top 50k
+* Amplifier input load
+Rload out 0 1meg
+
+* 2N5133-family NPN: moderate gain (hFE ~ 300), Early voltage from 2N5088 data.
+.model FS36999 NPN(IS=5.911f BF=300 BR=1.271 VAF=62.37 RB=10 RC=1.61)
+* RS (0.57 ohm) is negligible against the 12k-470k feedback network and is
+* omitted so each antiparallel pair solves as a single port.
+.model D1N914 D(IS=2.52n N=1.752)
+.end

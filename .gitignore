@@ -37,3 +37,8 @@ next-env.d.ts
 /outputs/
 /work/
 /dsp/**/target/
+/public/audio/nam/
+
+# account store (SONIC_DATA_DIR default)
+/.data/
+/dsp/circuit/scratch/

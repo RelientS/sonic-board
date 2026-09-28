@@ -28,9 +28,24 @@ The PedalKernel runtime, copied circuit definitions, and the generated `public/a
 
 The corresponding Sonic Board wrapper source is in `dsp/pedalkernel-wasm`. Rebuild it with `npm run build:dsp`.
 
+## Circuit model sources
+
+The netlists in `dsp/circuit/models` are original Sonic Board work, written
+from published schematics and build documents of the referenced pedals. Each
+file cites its sources in its header; the main references are Kit Rae's Big
+Muff Page, ElectroSmash circuit analyses, Beavis Audio, tagboardeffects, Aion
+FX and PedalPCB build documentation, gaussmarkov, and Boss service schematics
+as reproduced on hobby-hour.com and schematicheaven.net. Transistor and diode
+SPICE parameters come from common vendor and LTspice libraries as noted.
+
 ## FreePats Direct DI
 
 The fixed clean electric-guitar samples under `public/audio/guitars` are derived from the [FreePats Clean Electric Guitar Direct DI](https://freepats.zenvoid.org/ElectricGuitar/clean-electric-guitar.html) collection and are distributed under CC0 as stated by the source project.
+
+## Geist fonts
+
+`public/fonts/geist-*.woff2` are the latin and latin-ext subsets of Geist and
+Geist Mono by Vercel, distributed under the SIL Open Font License 1.1.
 
 ## Trademarks
 

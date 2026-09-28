@@ -1,0 +1,112 @@
+* Fulltone OCD (Obsessive Compulsive Drive), v1.x "version 3" values
+*@name Fulltone OCD
+*@input Vin
+*@output out 1
+*@oversample 4
+*@opamp TL082 gbw=3e6 slew=13e6 aol=2e5 vlo=1.5 vhi=7.2 rout=75
+*@pot drive Rdrv - 1meg log
+*@pot tone Rtone - 10k lin
+*@pot volume RvolA RvolB 500k lin
+*@control Volume volume default=0.5
+*@control Tone tone default=0.5
+*@control Drive drive default=0.5
+*@switch HP R11 1e9 22k default=1
+*
+* Which version: Fulltone never published schematics and changed values
+* between runs (v1.1 .. v1.7, then v2 / "v4"). The most documented trace is
+* tuemmueh's (freestompboxes.org), reproduced by the PCB Guitar Mania "TOC"
+* build document v2.1 (pcbguitarmania.com/wp-content/uploads/2018/02/
+* TOC-2v1-Building-Docs.pdf) whose BOM is "based on OCD version 3" and
+* whose table lists V1..V4 differences (R4, C2, C8, D1, pots). The Sabrotone
+* vero layout of the same trace also says "revision 3". This file models
+* that version 3: R4 2k2, C2 68n, C8 47n, D1 jumper (no 1N34A; the
+* germanium diode is the V4 change), Drive A1M, Tone B10K, Volume B500K.
+* UNCERTAIN: how "version 3" maps to Fulltone's v1.x numbering (the
+* v1.4 units reportedly used Drive 500kA / Tone 25kA = the table's V1/V2).
+* Cross-check: Analog Is Not Dead "Circuit Analysis: Fulltone's OCD" has the
+* same topology but differs in details: input bias 470k (here 1M, R3),
+* R9-equivalent shunt cap 10n (here C4 1n: the "10n or 1n" dispute on the
+* Musikding forum), C4 100n (here C2 68n) and a different MOSFET wiring
+* (its reader comment notes other traces match the one used here).
+* Omitted: PCBGM's optional 2N5457 input / 2N5088 output buffers (not in
+* the original true-bypass units), bypass switching, LED.
+*
+* Supply: D2 1N5817 (~0.3 V drop) + R20 27R + C11 220u -> ~8.7 V ideal
+* source; VR from R21/R22 10k + C12 220u.
+*
+* ENGINE LIMITATION - clipping MOSFETs: the engine has no MOSFET device.
+* Both 2N7000 are diode-connected (Q1: D=G on the clip node, S on VR;
+* Q2: D=G on VR, S on the clip node through the D1 jumper). Each one is a
+* two-terminal device: its channel (square law above Vth ~1.6-2 V) in
+* parallel with the reverse body diode. The body diode of the *other*
+* MOSFET clamps each polarity at ~0.5 V, far below Vth, so the channels
+* never conduct: the clipper is effectively the two body diodes in
+* antiparallel. They are modelled with the LTspice 2N7000 VDMOS body-diode
+* parameters (Is=2.5p, N=1; Rb=3.3 ohm dropped vs R7 10k). Checked in
+* ngspice against the full VDMOS model: see the note at the end.
+*
+* Controls (rotation 1.0 = fully clockwise):
+*  - Drive A1M: rheostat in series with R6 18k in IC1A's feedback
+*    (gain 1 + (18k + Drive)/2.2k at HF = 9 .. 464).
+*  - Tone B10K: rheostat (wiper tied to lug3) + R14 1k in series with C8 to
+*    ground; CW = more resistance = less treble shunted = brighter.
+*  - Volume B500K: lug1 ground, lug3 from the HP/LP network, wiper out.
+*  - HP switch (1 = HP): R11 22k in parallel with R12 33k (13.2k) -> more
+*    level and a higher treble corner; 0 = LP (R12 alone).
+
+Vcc vcc 0 8.7
+R21 vcc vr 10k
+R22 vr 0 10k
+C12 vr 0 220u
+
+* Guitar pickup source impedance (DI samples act as pickup EMF).
+Vin src 0 0
+Rpu src pu 6.5k
+Lpu pu jack 2.3
+
+* Input: 1M pull-down, C1, R2 into IC1A (+) biased by R3 to VR
+R1 jack 0 1meg
+C1 jack n1 22n
+R2 n1 pa 10k
+R3 pa vr 1meg
+
+* IC1A gain stage
+XIC1A pa ma oa TL082
+R4 ma n4 2.2k
+C2 n4 0 68n
+R6 ma n6 18k
+Rdrv n6 oa 500k
+C3 ma oa 220p
+
+* R7/C4 low-pass into the MOSFET clipper (body diodes, see header)
+R7 oa clip 10k
+C4 clip 0 1n
+DQ1 vr clip D2N7000B
+DQ2 clip vr D2N7000B
+
+* IC1B second stage
+R8 clip pb 10k
+XIC1B pb mb ob TL082
+C5 mb n9 100n
+R9 n9 0 39k
+R10 mb ob 150k
+C6 mb ob 220p
+
+* Output: C7, HP/LP (R11 switched || R12), Tone (C8 + Tone + R14), Volume
+C7 ob n7 1u
+R11 n7 vt 22k
+R12 n7 vt 33k
+C8 vt n8 47n
+Rtone n8 n14 5k
+R14 n14 0 1k
+RvolB vt out 250k
+RvolA out 0 250k
+* Amplifier input load
+Rload out 0 1meg
+
+* 2N7000 body diode (LTspice standard.mos 2N7000 VDMOS: Is=2.5p, Rb=3.3).
+* ngspice check: replacing DQ1/DQ2 by the full LTspice 2N7000 VDMOS (Vto=1.6
+* Kp=0.17 ksubthres=0.1 Is=2.5p Rb=3.3, Cgs/Cjo 50p) changes the output by
+* 0.3-0.6% NRMSE across Drive 0..1 and 50-500 mV inputs.
+.model D2N7000B D(IS=2.5p N=1)
+.end

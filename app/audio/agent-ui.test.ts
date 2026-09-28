@@ -2,18 +2,22 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
-const page = readFileSync(new URL('../page.tsx', import.meta.url), 'utf8');
+import { studioSource, studioStyles } from './studio-sources.ts';
+
+const page = studioSource;
+const agent = readFileSync(new URL('../agent/ToneAgentDock.tsx', import.meta.url), 'utf8');
 const styles = readFileSync(new URL('../globals.css', import.meta.url), 'utf8');
+const layout = readFileSync(new URL('../layout.tsx', import.meta.url), 'utf8');
 
 test('workbench exposes an accessible tone agent and clean input picker', () => {
   assert.match(page, /<ToneAgentDock/);
   assert.match(page, /captureToneAgentBoard/);
-  assert.match(page, /function SourcePickerDialog/);
+  // The input node's deck replaced the source picker dialog.
+  assert.match(page, /export function InputDeck\(/);
   assert.match(page, /className=\{'agent-open-button'/);
   assert.match(page, /aria-label=\{agentOpen \? '关闭音色 Agent' : '打开音色 Agent'\}/);
-  assert.match(page, /aria-label="选择清音输入"/);
-  assert.match(page, /真实采样 · 未处理 DI · CC0/);
-  assert.match(page, /FreePats Direct DI/);
+  assert.match(page, /aria-label=\{`输入：\$\{sourceName\}。打开输入面板`\}/);
+  assert.match(page, /FreePats Direct DI<\/a>（CC0），未经处理的直录信号/);
   assert.match(page, /performance\.description/);
   assert.doesNotMatch(page, /Black & Green Guitars/);
 });
@@ -24,4 +28,75 @@ test('agent uses a persistent desktop dock and a mobile full-height workspace', 
   assert.match(styles, /\.source-picker-dialog/);
   assert.match(styles, /@media\s*\(max-width:\s*720px\)[\s\S]*?\.tone-agent-dock[^}]*inset:\s*0/s);
   assert.match(styles, /@media\s*\(max-width:\s*720px\)[\s\S]*?\.tone-agent-composer textarea[^}]*font-size:\s*16px/s);
+});
+
+test('pedals, playback, and presets expose keyboard and loading state', () => {
+  // Every board node is a real button with a descriptive, numbered label.
+  // Parked (uncabled) pedals say so instead of a chain number.
+  assert.match(page, /className="pedal-face"[\s\S]*?aria-label=\{`\$\{parked \? '未接入' : `\$\{index \+ 1\}\.`\} \$\{spec\.name\}/);
+  assert.match(page, /aria-current=\{selected \? 'true' : undefined\}/);
+  assert.match(page, /className=\{'footswitch'[\s\S]*?aria-pressed=\{!bypassed\}/);
+  assert.match(page, /if \(playbackLoading \|\| playbackLoadingRef\.current\) return/);
+  assert.match(page, /disabled=\{playbackLoading\}/);
+  assert.match(page, /正在加载试听，请稍候；重复点击不会中断加载/);
+  assert.match(page, /aria-busy=\{playbackLoading\}/);
+  assert.match(page, /role="progressbar"/);
+  assert.match(page, /setAttribute\('aria-valuenow', String\(percent\)\)/);
+  assert.match(page, /<SourceWaveform playback=\{playback\} playing=\{playing\} loading=\{playbackLoading\}/);
+  assert.match(page, /aria-label=\{'载入 ' \+ preset\.name\}/);
+  assert.match(page, /aria-current=\{isCurrent \? 'true' : undefined\}/);
+  assert.doesNotMatch(page, /className="waveform" aria-label=\{'试听进度/);
+});
+
+test('agent modal traps focus, restores its opener, and makes background inert', () => {
+  assert.match(agent, /role="dialog"/);
+  assert.match(agent, /aria-modal="true"/);
+  assert.match(agent, /closeButton\.current\?\.focus\(\)/);
+  assert.match(agent, /returnFocus.*document\.activeElement/);
+  assert.match(agent, /withInert\.inert = true/);
+  assert.match(agent, /if \(event\.key !== 'Escape'\) return/);
+  assert.match(agent, /function trapTab/);
+  assert.match(agent, /event\.shiftKey \? last : first/);
+});
+
+test('phones get a vertical signal flow with a fixed transport and sheets', () => {
+  assert.match(page, /return useSyncExternalStore\(subscribePhone/);
+  assert.match(page, /\{isPhone \? <FlowList \{\.\.\.nodeProps\} \/> : \(\s*<Board\s+\{\.\.\.nodeProps\}/);
+  assert.match(studioStyles, /--mobile-transport-clearance:\s*\d+px/);
+  const phone = studioStyles.slice(studioStyles.indexOf('@media (max-width: 720px)'));
+  assert.match(phone, /\.studio \{ display: block;[^}]*padding-bottom: calc\(var\(--mobile-transport-clearance\)/);
+  assert.match(phone, /\.transport \{ position: fixed;/);
+  // The page scrolls vertically; only the drag handle captures touch.
+  assert.match(phone, /\.flow-handle \{[^}]*touch-action: none/);
+  assert.match(phone, /\.focus-deck \{ position: fixed;/);
+  assert.match(phone, /\.picker-dialog \{ position: fixed; inset: 0;/);
+});
+
+test('layout points browsers at the existing favicon asset', () => {
+  assert.match(layout, /icons:\s*\{[\s\S]*icon:\s*'\/favicon\.svg'/);
+});
+
+test('playback progress follows the active session clock and refresh failures recover safely', () => {
+  assert.match(page, /function getPlaybackProgress\(session: LiveAudioSession \| null\)/);
+  assert.match(page, /session\.context\.state === 'closed'/);
+  assert.match(page, /session\.context\.currentTime/);
+  assert.match(page, /session\.startedAt/);
+  assert.match(page, /session\.duration/);
+  assert.match(page, /const offset = \(\(elapsed % session\.duration\) \+ session\.duration\) % session\.duration/);
+  assert.match(page, /const watchSession = \(\) => \{/);
+  // The playhead is the absolute position in the source (the loop is a region inside it).
+  assert.match(page, /const position = currentSourcePosition\(session\)/);
+  // Progress is animated outside React state so playback does not re-render the page.
+  assert.doesNotMatch(page, /setProgress/);
+  assert.match(page, /window\.requestAnimationFrame\(tick\)/);
+  assert.match(page, /if \(session\?\.context\.state === 'closed'\)/);
+  assert.match(page, /void playback\.stop\(\)\.catch\(\(\) => \{/);
+  assert.doesNotMatch(page, /value \+ 1\.35/);
+  assert.match(page, /refreshLiveSession\(session, audioConfig\)\.catch\(async \(\) => \{/);
+  assert.match(page, /await playback\.stop\(\)/);
+  assert.match(page, /setPlaying\(false\);\n\s*setAudioError\('试听更新失败，请重试。'\)/);
+  assert.match(page, /当前浏览器无法启动试听，请检查声音权限/);
+  assert.match(page, /setAudioError\('试听已停止，请重试。'\)/);
+  assert.match(page, /playbackRefreshSerial/);
+  assert.match(page, /refreshSerial !== playbackRefreshSerial\.current/);
 });

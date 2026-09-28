@@ -13,6 +13,7 @@ export type ControlLesson = {
 type LessonText = Omit<ControlLesson, 'range'>;
 
 const effectLessons: Record<string, LessonText> = {
+  input: { summary: '控制信号进入固定 NAM capture 前的电平，会改变模型被推动和饱和的程度。', low: '输入余量更大，失真更松、更接近 capture 的弱输入响应。', high: '更强地推动模型，压缩、谐波和底噪都会增加。', tip: '先从 0 dB 附近开始；如果出现削顶或毛刺，先降低输入而不是只减输出。' },
   level: { summary: '控制这个模块送往下一级的输出电平，不直接等于失真量。', low: '输出更小，方便防止后级过载。', high: '输出更大，可以推动后面的效果或箱头。', tip: '先旁通比较干湿音量，再决定是否需要刻意推动后级。' },
   volume: { summary: '控制效果处理后的整体输出音量，不改变旋钮本身的核心音色结构。', low: '整体声音更小。', high: '整体声音更大，并可能推动后级。', tip: '做音色比较时先调到与旁通音量接近，避免把更响误认为更好。' },
   tone: { summary: '改变效果声的高频重心或低通截止点，决定声音偏暗还是偏亮。', low: '高频更少，声音更暗、更圆。', high: '高频更多，拨弦与噪点更清楚。', tip: '法兹后太刺就往左；音墙被鼓和贝斯盖住时可小幅往右。' },
@@ -33,6 +34,7 @@ const effectLessons: Record<string, LessonText> = {
   high: { summary: '控制高频和高中的增益，决定失真的切割感与噪点。', low: '更暗、更柔。', high: '更亮、更凶，齿音也更多。', tip: '录音中可稍亮，耳机直听时通常需要保守一些。' },
   rate: { summary: '控制调制循环的速度，也就是每秒完成多少次摆动。', low: '移动缓慢，像音墙在呼吸。', high: '变化明显，接近旋转、抖动或颤音。', tip: '盯鞋常从很慢开始，让运动被感觉到但不抢走和弦。' },
   speed: { summary: '控制相位器低频振荡器的扫动速度。', low: '相位凹口缓慢移动，适合铺底。', high: '旋转感更快、更明显。', tip: 'Phase 90 只有这个旋钮，先从九点钟附近的慢速位置开始。' },
+  script: { summary: '切换 Phase 90 的早期 Script 版与后期 Block 版：Block 版多一颗 22k 反馈电阻。', low: 'BLOCK：反馈让凹口更深、中频有共振峰，效果更强烈。', high: 'SCRIPT：无反馈，扫动更柔和圆润，是早期原版的声音。', tip: '盯鞋音墙里通常 SCRIPT 更好融合；想要放克切分的“嗖嗖”感再切 BLOCK。' },
   depth: { summary: '控制调制摆动的幅度，决定音高、相位或音量变化有多深。', low: '效果轻微，主要增加质感。', high: '扫动宽，效果存在感强。', tip: '链上已有长混响和法兹时，深度通常不必太高。' },
   res: { summary: '把部分处理信号反馈回来，强调相位或镶边的共振峰。', low: '扫动平滑、自然。', high: '共振更尖、更像喷气声。', tip: '先调速度和深度，最后加共振，较容易避免刺耳。' },
   mix: { summary: '设定干声与效果声的比例，决定效果占据多少主体。', low: '以原始吉他为主。', high: '以处理后的效果声为主。', tip: '串联多个空间效果时，每一级都留些干声通常更清楚。' },
@@ -78,6 +80,16 @@ const overrides: Record<string, Partial<LessonText>> = {
   'reverse-space.preDelay': { summary: '控制干声与反向混响上升包络之间的间隔，决定吸入感是否紧贴拨弦。' },
   'rodent-dist.filter': { summary: '控制失真后的低通滤波，方向与普通音色旋钮相反：向右会削掉更多高频。' },
   'soft-detune.cents': { tip: '日常增厚先从 5–10 音分附近开始，超过约 15 音分会明显像跑调。' },
+  'studio-comp.sustain': { tip: '清音、布鲁斯和放克先从中低位置开始；需要更长的分解尾音时再逐步提高。灵敏度调高会同时提高底噪，原机也是如此。' },
+  'analog-chorus.rate': { summary: '控制 CE-2 三角波 LFO 的速度：线性电位器，约 0.3 Hz（最左）到 3.6 Hz（最右）。', tip: '盯鞋铺底从 0–1 之间开始；超过 5 左右会明显变成颤音式的抖动。' },
+  'analog-chorus.depth': { summary: '控制 LFO 送进 BBD 时钟的幅度，也就是约 4.7 ms 的延迟摆动多宽（满深度约 3.9–5.4 ms）。', tip: '慢速时深度要开大才听得出流动；速度快时适当收小，避免跑调感。' },
+  'studio-comp.level': { tip: '原机输出是对数电位器，余量不大：压缩后要开到 8–9 左右才与旁通音量相当，灵敏度越高，需要的输出越少。' },
+  'blue-drive.gain': { tip: '布鲁斯和独立摇滚可从轻推开始；若后面已有失真，保留起音通常比继续加增益更清楚。' },
+  'fuzz-face.fuzz': { tip: '布鲁斯或复古清理先从中低位置开始，再用吉他音量退回清音；满法兹更适合需要持续的段落。' },
+  'chainsaw-dist.distortion': { tip: '金属节奏先用中高位置并检查低频余量；过高会让快速闷音失去轮廓。' },
+  'bias-tremolo.rate': { tip: '放克和节奏型先把速率对齐歌曲拍点；铺底时放慢，避免调制抢过拨弦。' },
+  'digital-delay.time': { tip: '清音分解可按拍点设定；节奏型先让重复落在空拍，再用混合控制清晰度。' },
+  'cloud-hall.decay': { tip: '氛围和盯鞋可逐步延长尾音，但先降低混合，避免连续和弦完全叠成一团。' },
 };
 
 function bandLesson(id: string): LessonText {

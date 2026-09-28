@@ -1,0 +1,111 @@
+* MXR Phase 90 (script logo)
+*@name MXR Phase 90
+*@input Vin
+*@output out 1
+*@oversample 2
+*@opamp UA741 gbw=1e6 slew=0.5e6 aol=2e5 vlo=1.5 vhi=7.6 rout=75
+*@control Speed default=0.4
+*@switch Script R15 22k 1g default=1
+*@lfo Vlfo relax rate=Speed lo=4.229 hi=5.705 vlo=1.5 vhi=7.6 c=15u r=4.7k pot=500k:revlog load=3.9meg:3.1
+*
+* Source: General Guitar Gadgets "MXR Phase 90" schematic, version
+* 2015June30 (JD Sleep; generalguitargadgets.com/pdf/ggg_p90_sc.pdf),
+* reference designators as drawn there. Cross-checked against the
+* ElectroSmash Phase 90 analysis (4 x 47n all-pass stages, 2N5952 JFETs,
+* 5.1 V zener reference, 2N4125 PNP summing mixer, 15 uF relaxation LFO,
+* 250k bias trimmer) and the tagboardeffects "Phase 90 with script switch"
+* layout.
+*
+* Script vs block logo: the GGG drawing includes R15 (22k) from the stage 4
+* output to IC3's inverting input, the block-logo feedback that deepens the
+* notches and adds a mid-range resonance. Script units omit it; the Script
+* switch (default on) opens R15.
+*
+* LFO: IC6 is a Schmitt trigger (R25 470k output->+, R23 150k +->Vref)
+* charging C7 15 uF through R20 4k7 + R21 500k reverse-log (speed). It is
+* replaced by the *@lfo relax source Vlfo at the C7 node, which reproduces
+* the capacitor voltage exactly for these values: thresholds
+* Vref + (rail - Vref) * 150k/620k with the 741 output swinging 1.5..7.6 V on
+* a single 9 V supply, and R18 (3.9M to the ~3.1 V gate line) as the load.
+* C8/R19 only shape the comparator edges (under 5 mV at C7) and are dropped.
+* Speed range with these values: 0.13 Hz (CCW) to 14 Hz (CW).
+*
+* Simplifications: the 5.1 V zener reference (R16 10k from 9 V, C6 10u) is
+* an ideal 5.1 V source; D1, the LED and the bypass switching are omitted.
+* The bias trimmer R22 is set so the gates idle ~2.0 V below Vref, i.e. the
+* LFO swings the JFETs from just above pinch-off to ~1k channel resistance
+* (the factory "maximum sweep" setting for the VTO below).
+*
+* Devices: 2N5952 (IDSS 4-8 mA, VGS(off) -1.3..-3.5 V) -> NJF with
+* IDSS 6 mA at VTO -2.2 V (gfs 5.5 mS, inside the 2-6.5 mS datasheet range).
+* 2N4125 -> standard 2N3906 model (GGG lists the 2N3906 as the substitute).
+* uA741 -> macro: GBW 1 MHz, SR 0.5 V/us, Aol 106 dB.
+* Junction capacitances are not modelled.
+
+Vref vref 0 5.1
+
+* Guitar pickup and input buffer
+Vin src 0 0
+Rpu src pu 6.5k
+Lpu pu jack 2.3
+R1 jack n1 10k
+C1 n1 bin 0.01u
+R2 bin vref 470k
+X1 bin buf buf UA741
+
+* Four all-pass stages: in -> 10k -> (-), 10k feedback, in -> 47n -> (+),
+* (+) -> 22k || JFET channel -> Vref
+R7 buf m1 10k
+R11 m1 s1 10k
+C2 buf p1 0.047u
+R3 p1 vref 22k
+J1 p1 gate vref J2N5952
+X2 p1 m1 s1 UA741
+
+R8 s1 m2 10k
+R12 m2 s2 10k
+C3 s1 p2 0.047u
+R4 p2 vref 22k
+J2 p2 gate vref J2N5952
+X3 p2 m2 s2 UA741
+
+R9 s2 m3 10k
+R13 m3 s3 10k
+C4 s2 p3 0.047u
+R5 p3 vref 22k
+J3 p3 gate vref J2N5952
+X4 p3 m3 s3 UA741
+
+R10 s3 m4 10k
+R14 m4 s4 10k
+C5 s3 p4 0.047u
+R6 p4 vref 22k
+J4 p4 gate vref J2N5952
+X5 p4 m4 s4 UA741
+
+* Block-logo feedback (opened by the Script switch)
+R15 s4 m2 22k
+
+* JFET gate bias: trimmer R22 (250k, Vref to ground) via R17 1M, LFO via
+* R18 3.9M, C10 to Vref
+RtrA vref trim 124k
+RtrB trim 0 126k
+R17 trim gate 1meg
+R18 lfo gate 3.9meg
+C10 gate vref 0.047u
+Vlfo lfo 0 DC 4.95
+
+* Q5 summing mixer: dry (R27) + wet (R24) into the base, R26 feedback
+R24 s4 mixb 150k
+R27 buf mixb 150k
+R26 mixb col 150k
+Q5 col mixb vref Q2N4125
+R28 col 0 56k
+C9 col o1 0.047u
+R29 o1 0 150k
+R30 o1 out 10k
+Rload out 0 1meg
+
+.model J2N5952 NJF(VTO=-2.2 BETA=1.24m LAMBDA=4m IS=33.57f)
+.model Q2N4125 PNP(IS=1.41f BF=180.7 BR=4.977 NF=1 VAF=18.7 RB=10)
+.end

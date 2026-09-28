@@ -9,7 +9,17 @@ User=ubuntu
 Group=ubuntu
 WorkingDirectory=/srv/sonic-board/current
 Environment=NODE_ENV=production
-ExecStart=/usr/bin/npm start -- --port 3111 --hostname 127.0.0.1
+# TOKEN_SHARE_KEY (agent model access), SONIC_DATA_DIR (accounts, private
+# amp captures in amps/) and SONIC_OWNER_USERNAMES (who may load them).
+EnvironmentFile=/etc/sonic-board.env
+ReadWritePaths=/srv/sonic-board/data
+# Run the server directly (not via npm and sh) so systemd signals and
+# accounts memory for the node process itself.
+ExecStart=/srv/sonic-board/current/node_modules/.bin/vinext start --port 3111 --hostname 127.0.0.1
+# The origin also runs other services: keep a runaway process contained.
+MemoryHigh=768M
+MemoryMax=1G
+TasksMax=256
 Restart=always
 RestartSec=3
 TimeoutStopSec=20

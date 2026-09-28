@@ -9,6 +9,9 @@ export type AmpSpec = {
   finish: string;
   accent: string;
   controls: ControlSpec[];
+  /** A combo has its own speaker (`speakerCab`); a head plays through any cab. */
+  format: 'combo' | 'head';
+  speakerCab?: string;
   voicing: {
     drive: number;
     lowHz: number;
@@ -34,6 +37,12 @@ export type CabSpec = {
     airHz: number;
     airGain: number;
     impulseSeconds: number;
+  };
+  /** Measured impulse responses; the mic position/distance knobs pick the nearest capture. */
+  ir?: {
+    base: string;
+    points: Array<{ file: string; position: number; distance: number }>;
+    credit: string;
   };
 };
 
@@ -69,30 +78,35 @@ export const AMP_SPECS: AmpSpec[] = [
   {
     id: 'glass-120', name: 'Roland JC-120 Jazz Chorus', family: '高余量晶体管清音', finish: '#30363b', accent: '#68bdd4',
     description: '参考 JC-120 的快速、平直和高余量清音；未建模其内置立体声合唱电路。', modeling: '算法近似·非官方·非采样/捕获',
+    format: 'combo', speakerCab: 'open-2x12',
     controls: ampControls([50, 18, 48, 52, 58, 56, 68]),
     voicing: { drive: 0.24, lowHz: 110, midHz: 780, highHz: 3_200, presenceHz: 5_200, highCut: 13_500 },
   },
   {
     id: 'american-twin', name: "Fender '65 Twin Reverb", family: '大功率美式清音', finish: '#ded8ca', accent: '#c82f2d',
     description: '参考 Twin Reverb 的宽低频、明亮上端和轻微中频凹陷；不包含真空管、变压器或弹簧混响模型。', modeling: '算法近似·非官方·非采样/捕获',
+    format: 'combo', speakerCab: 'open-2x12',
     controls: ampControls([52, 28, 56, 42, 62, 52, 66]),
     voicing: { drive: 0.52, lowHz: 95, midHz: 720, highHz: 3_000, presenceHz: 4_800, highCut: 12_500 },
   },
   {
     id: 'brit-20', name: 'Marshall DSL20HR', family: 'EL34 英式箱头', finish: '#171819', accent: '#e3b445',
     description: '参考 DSL20HR 的靠前中频、紧实低频和可叠加的前级颗粒；未逐级重建 DSL 电路。', modeling: '算法近似·非官方·非采样/捕获',
+    format: 'head',
     controls: ampControls([50, 40, 52, 60, 54, 55, 64]),
     voicing: { drive: 0.92, lowHz: 105, midHz: 920, highHz: 3_200, presenceHz: 4_400, highCut: 10_800 },
   },
   {
     id: 'class-a-30', name: 'VOX AC30 Top Boost', family: 'EL84 英式亮音', finish: '#5b2f27', accent: '#d9b85e',
     description: '参考 AC30 Top Boost 的铃音高频、松软低中频和推动后的压缩感；未建模真实 EL84 功放。', modeling: '算法近似·非官方·非采样/捕获',
+    format: 'combo', speakerCab: 'blue-2x12',
     controls: ampControls([48, 36, 48, 53, 64, 58, 62]),
     voicing: { drive: 0.78, lowHz: 120, midHz: 1_050, highHz: 3_600, presenceHz: 5_600, highCut: 12_000 },
   },
   {
     id: 'dark-stack', name: 'MESA/Boogie Dual Rectifier', family: '美式高增益堆栈', finish: '#25222a', accent: '#a56be2',
     description: '参考 Dual Rectifier 的密集饱和、厚低频和收敛上端；未建模多级前级、整流或功放响应。', modeling: '算法近似·非官方·非采样/捕获',
+    format: 'head',
     controls: ampControls([46, 62, 58, 57, 48, 46, 58]),
     voicing: { drive: 1.42, lowHz: 92, midHz: 680, highHz: 2_800, presenceHz: 4_000, highCut: 9_200 },
   },
@@ -100,19 +114,38 @@ export const AMP_SPECS: AmpSpec[] = [
 
 export const CAB_SPECS: CabSpec[] = [
   {
-    id: 'open-1x12', name: "Fender '65 Deluxe Reverb 1×12 Jensen C12K", format: 'OPEN BACK', description: '参考开背 1×12 Jensen 箱体的轻、松和近场感。', modeling: '合成箱体·非实测 IR·非官方', controls: cabControls(),
+    id: 'mesa-2x12-v30', name: 'MESA/Boogie 2×12 Celestion Vintage 30', format: 'CLOSED BACK', description: '实测 IR：封闭 2×12 V30，MD421 在中心、锥盆、边缘 × 贴网罩、1 寸、2 寸九个点位采集。', modeling: '实测 IR · Dark Days (CC BY 4.0)', controls: cabControls(),
+    voicing: { lowCut: 70, highCut: 7_800, bodyHz: 130, bodyGain: 3, airHz: 3_000, airGain: 1, impulseSeconds: 0.19 },
+    ir: {
+      base: '/audio/cabs/mesa-2x12-v30/',
+      // Position: dust cap (bright) -> cone -> edge (dark). Distance: grille -> 2 in.
+      points: (['cap', 'cone', 'edge'] as const).flatMap((spot, i) => (['grille', '1in', '2in'] as const).map((range, j) => ({ file: `${spot}-${range}.wav`, position: i * 50, distance: j * 50 }))),
+      credit: 'Mesa 2x12 V30 impulse responses by Dark Days — https://darkdays.net (CC BY 4.0), trimmed',
+    },
+  },
+  {
+    id: 'marshall-4x12-greenback', name: 'Marshall 1960AX 4×12 Celestion Greenback', format: 'CLOSED BACK', description: '实测 IR：1998 年 1960AX 封闭 4×12 G12M Greenback，SM57 / e606 六个麦克风采集，麦克风位置旋钮切换。', modeling: '实测 IR · Jester Dyne Emerald (CC0)', controls: cabControls(),
+    voicing: { lowCut: 72, highCut: 7_200, bodyHz: 120, bodyGain: 4, airHz: 2_800, airGain: 1, impulseSeconds: 0.1 },
+    ir: {
+      base: '/audio/cabs/marshall-4x12-greenback/',
+      points: [1, 2, 3, 4, 5, 6].map((mic, i) => ({ file: `mic-${mic}.wav`, position: i * 20, distance: 50 })),
+      credit: 'Emerald Pack by Jester Dyne Productions — https://jester-dyne-productions.com (CC0), trimmed',
+    },
+  },
+  {
+    id: 'open-1x12', name: "Fender '65 Deluxe Reverb 1×12 Jensen C12K", format: 'OPEN BACK', description: '参考开背 1×12 Jensen 箱体的轻、松和近场感。', modeling: '扬声器频响模型·最小相位 IR·非实测·非官方', controls: cabControls(),
     voicing: { lowCut: 78, highCut: 8_900, bodyHz: 175, bodyGain: 2.2, airHz: 3_600, airGain: 1.4, impulseSeconds: 0.024 },
   },
   {
-    id: 'open-2x12', name: "Fender '65 Twin Reverb 2×12 Jensen C12K", format: 'OPEN BACK', description: '参考 Twin Reverb 开背 2×12 的宽松、饱满和明亮清音。', modeling: '合成箱体·非实测 IR·非官方', controls: cabControls(),
+    id: 'open-2x12', name: "Fender '65 Twin Reverb 2×12 Jensen C12K", format: 'OPEN BACK', description: '参考 Twin Reverb 开背 2×12 的宽松、饱满和明亮清音。', modeling: '扬声器频响模型·最小相位 IR·非实测·非官方', controls: cabControls(),
     voicing: { lowCut: 64, highCut: 8_500, bodyHz: 145, bodyGain: 2.8, airHz: 3_300, airGain: 1.2, impulseSeconds: 0.032 },
   },
   {
-    id: 'blue-2x12', name: 'VOX AC30C2X 2×12 Celestion Alnico Blue', format: 'ALNICO', description: '参考 AC30C2X 蓝盆 2×12 的铃音上端和柔和压缩。', modeling: '合成箱体·非实测 IR·非官方', controls: cabControls(),
+    id: 'blue-2x12', name: 'VOX AC30C2X 2×12 Celestion Alnico Blue', format: 'ALNICO', description: '参考 AC30C2X 蓝盆 2×12 的铃音上端和柔和压缩。', modeling: '扬声器频响模型·最小相位 IR·非实测·非官方', controls: cabControls(),
     voicing: { lowCut: 70, highCut: 9_600, bodyHz: 155, bodyGain: 2.1, airHz: 4_100, airGain: 2.4, impulseSeconds: 0.029 },
   },
   {
-    id: 'closed-4x12', name: 'Marshall 1960A 4×12 Celestion G12T-75', format: 'CLOSED BACK', description: '参考 1960A 封闭 4×12 的紧低频、密集中低频和强推动感。', modeling: '合成箱体·非实测 IR·非官方', controls: cabControls(),
+    id: 'closed-4x12', name: 'Marshall 1960A 4×12 Celestion G12T-75', format: 'CLOSED BACK', description: '参考 1960A 封闭 4×12 的紧低频、密集中低频和强推动感。', modeling: '扬声器频响模型·最小相位 IR·非实测·非官方', controls: cabControls(),
     voicing: { lowCut: 72, highCut: 7_600, bodyHz: 125, bodyGain: 4.2, airHz: 2_900, airGain: 1.1, impulseSeconds: 0.041 },
   },
   {
@@ -124,7 +157,62 @@ export const CAB_SPECS: CabSpec[] = [
 const ampsById = new Map(AMP_SPECS.map((amp) => [amp.id, amp]));
 const cabsById = new Map(CAB_SPECS.map((cab) => [cab.id, cab]));
 
+/**
+ * Private NAM amp captures (owner-only, served by /api/amp-models) use ids
+ * `nam:<capture id>`. Their controls act around the capture: input drive,
+ * a gentle post-EQ and master; the capture itself fixes the amp's knobs.
+ */
+export const NAM_AMP_PREFIX = 'nam:';
+type NamAmpInfo = { amp: string; setting: string; format?: 'combo' | 'head'; cab?: string };
+const namAmpInfo = new Map<string, NamAmpInfo>();
+const namAmpSpecs = new Map<string, AmpSpec>();
+
+export function isNamAmp(id: string) {
+  return id.startsWith(NAM_AMP_PREFIX);
+}
+
+export function registerNamAmps(entries: Array<{ id: string } & NamAmpInfo>) {
+  entries.forEach((entry) => namAmpInfo.set(entry.id, { amp: entry.amp, setting: entry.setting, format: entry.format, cab: entry.cab }));
+  namAmpSpecs.clear();
+}
+
+export function listNamAmps() {
+  return [...namAmpInfo.keys()].map((id) => getAmpSpec(NAM_AMP_PREFIX + id));
+}
+
+function namAmpSpec(id: string): AmpSpec {
+  const info = namAmpInfo.get(id.slice(NAM_AMP_PREFIX.length));
+  return {
+    id,
+    name: info?.amp ?? id.slice(NAM_AMP_PREFIX.length),
+    family: info ? `NAM 实采 · ${info.setting}` : 'NAM 实采',
+    description: '真实音箱的 NAM 神经网络采样（仅所有者账号可用）。采样固定了原机旋钮；这里的输入推动模型，低中高是采样后的轻度均衡。',
+    modeling: 'NAM 实采 · 私有 · Tone3000',
+    finish: '#26272a',
+    accent: '#f3c46a',
+    format: info?.format === 'combo' ? 'combo' : 'head',
+    speakerCab: info?.format === 'combo' && info.cab && cabsById.has(info.cab) ? info.cab : undefined,
+    controls: [
+      control('input', '输入', 50),
+      control('bass', '低频', 50),
+      control('mid', '中频', 50),
+      control('treble', '高频', 50),
+      control('master', '主音量', 60),
+    ],
+    // Only used if the capture cannot be loaded (e.g. signed out): a clean amp.
+    voicing: { drive: 0.4, lowHz: 100, midHz: 800, highHz: 3_200, presenceHz: 5_000, highCut: 12_000 },
+  };
+}
+
 export function getAmpSpec(id: string) {
+  if (isNamAmp(id)) {
+    let spec = namAmpSpecs.get(id);
+    if (!spec) {
+      spec = namAmpSpec(id);
+      namAmpSpecs.set(id, spec);
+    }
+    return spec;
+  }
   const amp = ampsById.get(id);
   if (!amp) throw new Error(`Unknown amp: ${id}`);
   return amp;
@@ -160,11 +248,14 @@ export function makeAmpCabConfig(
 }
 
 export function makeDefaultAmpCabConfig() {
-  return makeAmpCabConfig('brit-20', 'closed-4x12');
+  return makeAmpCabConfig('brit-20', 'marshall-4x12-greenback');
 }
 
 export function validateAmpCatalog() {
   const errors: string[] = [];
+  AMP_SPECS.forEach((amp) => {
+    if (amp.format === 'combo' && (!amp.speakerCab || !cabsById.has(amp.speakerCab))) errors.push(`combo without a known speaker cab: ${amp.id}`);
+  });
   const ids = new Set<string>();
   [...AMP_SPECS, ...CAB_SPECS].forEach((spec) => {
     if (ids.has(spec.id)) errors.push(`duplicate model: ${spec.id}`);

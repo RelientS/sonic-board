@@ -1,9 +1,28 @@
 import type { RoutingConfig, SignalLane, SourceKind } from '../audio/audio-core';
-import { normalizeSourceConfig, type SourceConfig } from '../audio/source-catalog.ts';
+import { normalizeSourceConfig, type InputSettings, type SourceConfig } from '../audio/source-catalog.ts';
 import { makeAmpCabConfig, type AmpCabConfig } from '../amps/catalog.ts';
 
 export type EffectCategory = 'Dynamics' | 'Tone' | 'Drive' | 'Mod' | 'Delay' | 'Space';
 export type ControlCurve = 'linear' | 'exponential';
+
+export const STYLE_TAGS = ['clean', 'blues', 'indie', 'funk', 'metal', 'shoegaze', 'ambient', 'rhythm', 'experimental'] as const;
+export type StyleTag = typeof STYLE_TAGS[number];
+
+export const STYLE_TAG_LABELS: Record<StyleTag, string> = {
+  clean: '清音',
+  blues: '布鲁斯',
+  indie: '独立',
+  funk: '放克',
+  metal: '金属',
+  shoegaze: '盯鞋',
+  ambient: '氛围',
+  rhythm: '节奏',
+  experimental: '实验',
+};
+
+const MAX_SEARCH_TERMS = 18;
+const MAX_SEARCH_TERM_LENGTH = 40;
+const MAX_STYLE_TAGS = 5;
 
 export type ControlSpec = {
   id: string;
@@ -14,6 +33,8 @@ export type ControlSpec = {
   unit: string;
   decimals?: number;
   curve?: ControlCurve;
+  /** A two-position switch: labels for the off (value < 50) and on positions. */
+  options?: readonly [string, string];
 };
 
 export type EffectSpec = {
@@ -23,10 +44,20 @@ export type EffectSpec = {
   category: EffectCategory;
   family: string;
   description: string;
+  /** Bounded aliases and use-case phrases used by library and agent search. */
+  searchTerms?: string[];
+  /** Stable style/use identifiers; labels are available through STYLE_TAG_LABELS. */
+  styleTags?: StyleTag[];
   finish: string;
   ink: string;
   accent: string;
   wide?: boolean;
+  /** A private model slot. Model bytes are imported by the user and never bundled with presets. */
+  nam?: {
+    slotId: string;
+    sourceUrl: string;
+    downloadHint: string;
+  };
   controls: ControlSpec[];
 };
 
@@ -40,6 +71,8 @@ export type FactoryPreset = {
   id: string;
   name: string;
   description: string;
+  /** Stable style/use identifiers for preset discovery. */
+  styleTags?: StyleTag[];
   source: SourceKind | SourceConfig;
   output: number;
   routing: RoutingConfig;
@@ -47,11 +80,25 @@ export type FactoryPreset = {
   chain: PresetChainItem[];
 };
 
+/**
+ * Where pedals sit on the board and how they are cabled (instance ids after
+ * instantiation). Pedals in `parked` are on the board but off the signal path.
+ */
+export type PresetLayout = {
+  positions: Record<string, { x: number; y: number }>;
+  cables: Array<{ from: { node: string; port: string }; to: { node: string; port: string } }>;
+  parked: Array<{ instanceId: string; specId: string }>;
+};
+
 export type InstantiatedPreset = {
+  selectedInstanceId?: string;
   chain: Array<{ instanceId: string; specId: string; lane?: SignalLane }>;
+  layout?: PresetLayout;
   values: Record<string, Record<string, number>>;
   bypassed: string[];
   source: SourceConfig;
+  /** Take / loop / trim (user presets only; the take audio stays in the browser). */
+  input?: InputSettings;
   output: number;
   routing: RoutingConfig;
   amp: AmpCabConfig;
@@ -71,13 +118,18 @@ const c = (
 const level = (id = 'level', label = '电平', defaultValue = 58) => c(id, label, defaultValue, -18, 12, 'dB', 1);
 const mix = (defaultValue = 40) => c('mix', '混合', defaultValue);
 const rate = (defaultValue = 25) => c('rate', '速率', defaultValue, 0.05, 10, 'Hz', 2, 'exponential');
+// Circuit-modelled pedals show the real knob scale (0-10) because the value
+// is the pot rotation handed to the schematic, not a derived parameter.
+const toggle = (id: string, label: string, on: boolean, options: readonly [string, string]): ControlSpec =>
+  ({ ...c(id, label, on ? 100 : 0, 0, 1, '', 0), options });
+const knob = (id: string, label: string, defaultValue: number) => c(id, label, defaultValue, 0, 10, '', 1);
 const tone = (defaultValue = 50) => c('tone', '音色', defaultValue, 800, 12_000, 'Hz', 0, 'exponential');
 
-export const EFFECT_SPECS: EffectSpec[] = [
+const EFFECT_SPECS_BASE: EffectSpec[] = [
   {
     id: 'studio-comp', name: 'MXR Dyna Comp', maker: 'MXR', category: 'Dynamics', family: 'Dyna Comp 风格压缩',
-    description: '均衡拨弦动态，同时保留清音分解的颗粒感。', finish: '#3978b7', ink: '#f4f6f8', accent: '#ef5e47',
-    controls: [level(), c('sustain', '灵敏度', 46)],
+    description: '均衡拨弦动态，同时保留清音分解的颗粒感；灵敏度越高，压缩越深、延音越长。', finish: '#3978b7', ink: '#f4f6f8', accent: '#ef5e47',
+    controls: [knob('level', '输出', 85), knob('sustain', '灵敏度', 46)],
   },
   {
     id: 'noise-gate', name: 'Boss NS-2 Noise Suppressor', maker: 'BOSS', category: 'Dynamics', family: 'NS-2 风格门限降噪',
@@ -94,44 +146,64 @@ export const EFFECT_SPECS: EffectSpec[] = [
     ],
   },
   {
-    id: 'blue-drive', name: 'Boss BD-2 Blues Driver', maker: 'BOSS', category: 'Drive', family: 'BD-2 风格动态过载',
-    description: '低到中增益的前级推动，适合放在空间效果之前。', finish: '#2f66b1', ink: '#f7f4e9', accent: '#f04d37',
-    controls: [level(), tone(54), c('gain', '增益', 38)],
+    id: 'blue-drive', name: 'Boss BD-2 Blues Driver', maker: 'BOSS', category: 'Drive', family: 'BD-2 电路级仿真',
+    description: '按原厂原理图逐元件求解：两级分立 JFET 差分放大、双联增益电位器与 IC 低音补偿，动态随拨弦力度变化。', finish: '#2f66b1', ink: '#f7f4e9', accent: '#f04d37',
+    controls: [knob('level', '电平', 58), knob('tone', '音色', 54), knob('gain', '增益', 38)],
   },
   {
-    id: 'rodent-dist', name: 'Pro Co RAT 2', maker: 'PRO CO', category: 'Drive', family: 'RAT 风格硬削波失真',
-    description: '失真到法兹之间的粗糙质感，反向滤波顺时针会削高频。', finish: '#242426', ink: '#f3f0df', accent: '#da3f34',
-    controls: [c('distortion', '失真', 56), c('filter', '滤波', 45), level('volume', '音量', 62)],
+    id: 'rodent-dist', name: 'Pro Co RAT 2', maker: 'PRO CO', category: 'Drive', family: 'RAT 2 电路级仿真',
+    description: '按 RAT 2 原理图求解：LM308 的有限带宽与压摆率、1N914 硬削波和反向 Filter，顺时针滤波更暗。', finish: '#242426', ink: '#f3f0df', accent: '#da3f34',
+    controls: [knob('distortion', '失真', 56), knob('filter', '滤波', 45), knob('volume', '音量', 62)],
   },
   {
-    id: 'wall-fuzz', name: 'Electro-Harmonix Big Muff Pi', maker: 'ELECTRO-HARMONIX', category: 'Drive', family: 'Big Muff 风格持续法兹', wide: true,
-    description: '四级晶体管与被动音色网络带来厚重延音和经典中频凹陷。', finish: '#d5d0c1', ink: '#20201e', accent: '#ed4f34',
-    controls: [level('volume', '音量', 58), tone(43), c('sustain', '延音', 67)],
+    id: 'fuzz-war-nam', name: 'Death By Audio Fuzz War', maker: 'DEATH BY AUDIO', category: 'Drive', family: 'Fuzz War 私人 NAM capture', wide: true,
+    description: '加载你保存在本机的固定 NAM capture；音色由采样时的实体旋钮位置决定。', finish: '#efe8d8', ink: '#171717', accent: '#da4d3a',
+    nam: {
+      slotId: 'fuzz-war-nam',
+      sourceUrl: 'https://www.tone3000.com/tones/fuzz-war-death-by-audio-6238',
+      downloadHint: '请下载 A1 Legacy .nam；A2 capture 暂不兼容当前浏览器运行时。',
+    },
+    controls: [c('input', '输入', 67, -24, 12, 'dB', 1), c('output', '输出', 67, -24, 12, 'dB', 1), mix(100)],
+  },
+  {
+    id: 'ds1-dist', name: 'Boss DS-1 Distortion', maker: 'BOSS', category: 'Drive', family: 'DS-1 电路级仿真',
+    description: '按原厂 DS-1 原理图求解：晶体管前级、运放增益与对 4.5V 的二极管硬削波，Big-Muff 式被动音色。', finish: '#f07c1e', ink: '#1d1b19', accent: '#2a2826',
+    controls: [knob('level', '电平', 55), knob('tone', '音色', 50), knob('dist', '失真', 60)],
+  },
+  {
+    id: 'wall-fuzz', name: "Electro-Harmonix Big Muff Pi Ram's Head", maker: 'ELECTRO-HARMONIX', category: 'Drive', family: "Ram's Head 电路级仿真", wide: true,
+    description: '按 1973 紫字 Ram\'s Head 原理图逐元件求解：四级晶体管、反馈回路二极管削波与 33k/4nF 音色网络。', finish: '#d9d6cf', ink: '#6d3f7f', accent: '#d83a3a',
+    controls: [knob('volume', '音量', 58), knob('tone', '音色', 43), knob('sustain', '延音', 67)],
+  },
+  {
+    id: 'opamp-muff', name: 'Electro-Harmonix Op-Amp Big Muff', maker: 'ELECTRO-HARMONIX', category: 'Drive', family: 'Op-Amp Big Muff 电路级仿真', wide: true,
+    description: '按 1978 运放版原理图求解：4558 与 741 两级、三串二极管反馈削波和 Tone 旁路开关，比晶体管版更硬更亮。', finish: '#e9793a', ink: '#27231f', accent: '#d8d4c9',
+    controls: [knob('volume', '音量', 58), knob('tone', '音色', 50), knob('sustain', '延音', 65), toggle('tonebypass', '旁路', false, ['TONE', 'BYPASS'])],
   },
   {
     id: 'fuzz-face', name: 'Dallas-Arbiter Fuzz Face', maker: 'DALLAS-ARBITER', category: 'Drive', family: 'Fuzz Face 锗管法兹',
     description: '两级晶体管反馈法兹，能随输入动态从粗粝清理到饱和。', finish: '#bb2f30', ink: '#f8efe2', accent: '#d6b24d',
-    controls: [c('fuzz', '法兹', 70), level('volume', '音量', 60)],
+    controls: [knob('fuzz', '法兹', 70), knob('volume', '音量', 60)],
   },
   {
     id: 'ocd-drive', name: 'Fulltone OCD', maker: 'FULLTONE', category: 'Drive', family: 'OCD MOSFET 过载',
     description: 'MOSFET 硬削波配宽频动态，适合从轻推到颗粒失真。', finish: '#e8e5db', ink: '#202124', accent: '#d13b32',
-    controls: [c('drive', '驱动', 50), tone(50), level('volume', '音量', 62)],
+    controls: [knob('drive', '驱动', 50), knob('tone', '音色', 50), knob('volume', '音量', 62), toggle('hp', 'HP/LP', true, ['LP', 'HP'])],
   },
   {
-    id: 'klon-centaur', name: 'Klon Centaur', maker: 'KLON', category: 'Drive', family: 'Centaur 双路混合过载',
-    description: '清音与锗二极管削波并行混合，适合保留起音的前级推动。', finish: '#b79b62', ink: '#241d12', accent: '#7c3328',
-    controls: [c('gain', '增益', 45), c('treble', '高频', 50), level('output', '输出', 62)],
+    id: 'klon-centaur', name: 'Klon Centaur', maker: 'KLON', category: 'Drive', family: 'Centaur 电路级仿真',
+    description: '按 Centaur 原理图求解：双联增益在清音与锗管削波路径间交叉混合，18V 电荷泵供电的运放留足余量。Studio Daydream KCM-OD 即此电路。', finish: '#b79b62', ink: '#241d12', accent: '#7c3328',
+    controls: [knob('gain', '增益', 45), knob('treble', '高频', 50), knob('output', '输出', 62)],
   },
   {
     id: 'sd1-drive', name: 'Boss SD-1 Super OverDrive', maker: 'BOSS', category: 'Drive', family: 'SD-1 非对称软削波',
     description: '非对称二极管软削波和中频聚焦，适合推动后级失真。', finish: '#e7c928', ink: '#27220b', accent: '#d24231',
-    controls: [c('drive', '驱动', 50), tone(50), level('level', '电平', 62)],
+    controls: [knob('drive', '驱动', 50), knob('tone', '音色', 50), knob('level', '电平', 62)],
   },
   {
     id: 'tube-screamer', name: 'Ibanez TS808 Tube Screamer', maker: 'IBANEZ', category: 'Drive', family: 'TS808 对称软削波',
     description: '对称反馈削波和经典中频隆起，让失真链更集中。', finish: '#4d9664', ink: '#f2f2dc', accent: '#d24b34',
-    controls: [c('drive', '驱动', 50), tone(50), level('level', '电平', 62)],
+    controls: [knob('drive', '驱动', 50), knob('tone', '音色', 50), knob('level', '电平', 62)],
   },
   {
     id: 'chainsaw-dist', name: 'Boss HM-2 Heavy Metal', maker: 'BOSS', category: 'Drive', family: 'HM-2 风格双频段高增益',
@@ -144,14 +216,14 @@ export const EFFECT_SPECS: EffectSpec[] = [
     controls: [rate(18), c('depth', '深度', 38), c('res', '共振', 18), mix(44)],
   },
   {
-    id: 'analog-chorus', name: 'Boss CE-2 Chorus', maker: 'BOSS', category: 'Mod', family: 'CE-2 风格 BBD 合唱',
-    description: '经典双旋钮 BBD 合唱，用速率和深度控制宽阔的周期漂移。', finish: '#66a7b8', ink: '#10282e', accent: '#e14f3c',
-    controls: [rate(30), c('depth', '深度', 48)],
+    id: 'analog-chorus', name: 'Boss CE-2 Chorus', maker: 'BOSS', category: 'Mod', family: 'CE-2 BBD 电路级仿真',
+    description: '经典双旋钮 BBD 合唱：MN3007 1024 级延迟约 4–5 ms，三角波 LFO 调制时钟，干湿 1:1 混合。', finish: '#66a7b8', ink: '#10282e', accent: '#e14f3c',
+    controls: [knob('rate', '速率', 30), knob('depth', '深度', 50)],
   },
   {
     id: 'phase90', name: 'MXR Phase 90', maker: 'MXR', category: 'Mod', family: 'Phase 90 四级相位',
-    description: '单旋钮控制四级相移网络的扫动速度，适合缓慢流动的音墙。', finish: '#e46e27', ink: '#24150e', accent: '#f1d24f',
-    controls: [c('speed', '速度', 18, 0.05, 10, 'Hz', 2, 'exponential')],
+    description: '单旋钮控制四级相移网络的扫动速度，适合缓慢流动的音墙；SCRIPT 开关切换早期无反馈版本与 Block 版的反馈共振。', finish: '#e46e27', ink: '#24150e', accent: '#f1d24f',
+    controls: [knob('speed', '速度', 40), toggle('script', 'SCRIPT', true, ['BLOCK', 'SCRIPT'])],
   },
   {
     id: 'jet-flanger', name: 'Electro-Harmonix Electric Mistress', maker: 'ELECTRO-HARMONIX', category: 'Mod', family: 'Electric Mistress 风格镶边',
@@ -210,11 +282,137 @@ export const EFFECT_SPECS: EffectSpec[] = [
   },
 ];
 
-export const FACTORY_PRESETS: FactoryPreset[] = [
+type EffectDiscovery = Pick<EffectSpec, 'searchTerms' | 'styleTags'>;
+
+const effectDiscovery: Record<string, EffectDiscovery> = {
+  'studio-comp': {
+    searchTerms: ['compressor', 'compression', 'dynamics', '压缩', '动态', 'clean', '清音', 'blues', '布鲁斯', 'funk', '放克', 'rhythm', 'rhythmic', '节奏', '律动'],
+    styleTags: ['clean', 'blues', 'funk', 'rhythm'],
+  },
+  'noise-gate': {
+    searchTerms: ['noise gate', 'gate', 'suppression', '降噪', '门限', 'metal', '金属', 'rhythm', 'rhythmic', '节奏', 'tight', '紧实', 'experimental', '实验'],
+    styleTags: ['metal', 'rhythm', 'experimental'],
+  },
+  'graphic-eq': {
+    searchTerms: ['equalizer', 'eq', 'tone shaping', '均衡', '音色塑形', 'clean', '清音', 'indie', '独立', 'metal', '金属', 'experimental', '实验', 'mix', '混音'],
+    styleTags: ['clean', 'indie', 'metal', 'experimental'],
+  },
+  'blue-drive': {
+    searchTerms: ['overdrive', 'drive', 'blues', 'blue', '布鲁斯', '蓝调', '过载', 'indie', '独立', 'clean boost', '清音推动', 'rhythm', '节奏'],
+    styleTags: ['blues', 'indie', 'clean', 'rhythm'],
+  },
+  'rodent-dist': {
+    searchTerms: ['distortion', '失真', 'overdrive', '过载', 'indie', '独立', 'metal', '金属', 'experimental', '实验', 'grunge', '粗粝'],
+    styleTags: ['indie', 'metal', 'experimental'],
+  },
+  'fuzz-war-nam': {
+    searchTerms: ['fuzz war', 'death by audio', 'nam', 'capture', '法兹', '盯鞋', 'shoegaze', 'noise', '噪音', 'wall of sound', '音墙', 'experimental', '实验'],
+    styleTags: ['shoegaze', 'indie', 'experimental'],
+  },
+  'ds1-dist': {
+    searchTerms: ['distortion', '失真', 'ds-1', 'boss', 'hard clipping', '硬削波', 'rock', '摇滚', 'grunge', '粗粝', 'indie', '独立', 'shoegaze', '盯鞋'],
+    styleTags: ['indie', 'metal', 'shoegaze'],
+  },
+  'opamp-muff': {
+    searchTerms: ['fuzz', '法兹', 'big muff', 'op-amp', '运放', 'sustain', '延音', 'shoegaze', '盯鞋', 'wall of sound', '音墙', 'indie', '独立', 'experimental', '实验'],
+    styleTags: ['shoegaze', 'indie', 'experimental'],
+  },
+  'wall-fuzz': {
+    searchTerms: ['fuzz', '法兹', 'fuzz pedal', "ram's head", 'big muff', 'sustain', '延音', 'shoegaze', '盯鞋', 'ambient', '氛围', 'indie', '独立', 'wall of sound', '音墙', 'experimental', '实验'],
+    styleTags: ['shoegaze', 'ambient', 'indie', 'experimental'],
+  },
+  'fuzz-face': {
+    searchTerms: ['fuzz', '法兹', 'germanium', '锗管', 'clean up', '动态清理', 'blues', '布鲁斯', '蓝调', 'indie', '独立', 'vintage', '复古'],
+    styleTags: ['blues', 'indie', 'clean'],
+  },
+  'ocd-drive': {
+    searchTerms: ['overdrive', '过载', 'drive', '驱动', 'blues', '布鲁斯', 'indie', '独立', 'rhythm', '节奏', 'rock', '摇滚'],
+    styleTags: ['blues', 'indie', 'rhythm'],
+  },
+  'klon-centaur': {
+    searchTerms: ['overdrive', '过载', 'clean boost', '清音推动', 'transparent', '透明', 'blues', '布鲁斯', 'indie', '独立', 'always on', '常开'],
+    styleTags: ['clean', 'blues', 'indie'],
+  },
+  'sd1-drive': {
+    searchTerms: ['overdrive', '过载', 'boost', '推动', 'blues', '布鲁斯', 'metal', '金属', 'rhythm', '节奏', 'tight', '紧实'],
+    styleTags: ['blues', 'metal', 'rhythm'],
+  },
+  'tube-screamer': {
+    searchTerms: ['overdrive', '过载', 'boost', '推动', 'blues', '布鲁斯', 'metal', '金属', 'rhythm', '节奏', 'mid boost', '中频推动'],
+    styleTags: ['blues', 'metal', 'rhythm'],
+  },
+  'chainsaw-dist': {
+    searchTerms: ['distortion', '失真', 'metal', 'heavy metal', '金属', '重金属', 'rhythm', 'rhythmic', '节奏', '律动', 'noise', '噪音', 'experimental', '实验', 'chainsaw', '电锯'],
+    styleTags: ['metal', 'rhythm', 'experimental'],
+  },
+  'slow-phase': {
+    searchTerms: ['phaser', 'phase', '相位', 'modulation', '调制', 'ambient', '氛围', 'indie', '独立', 'funk', '放克', 'rhythm', '节奏', 'swirl', '旋转'],
+    styleTags: ['ambient', 'indie', 'funk', 'rhythm'],
+  },
+  'analog-chorus': {
+    searchTerms: ['chorus', '合唱', 'clean', '清音', 'indie', '独立', 'ambient', '氛围', 'shoegaze', '盯鞋', 'funk', '放克', 'width', '拓宽'],
+    styleTags: ['clean', 'indie', 'ambient', 'shoegaze'],
+  },
+  phase90: {
+    searchTerms: ['phaser', 'phase', '相位', 'funk', '放克', 'rhythm', '节奏', 'indie', '独立', 'ambient', '氛围', 'swirl', '旋转'],
+    styleTags: ['funk', 'rhythm', 'indie', 'ambient'],
+  },
+  'jet-flanger': {
+    searchTerms: ['flanger', '镶边', 'jet', '喷气', 'experimental', '实验', 'indie', '独立', 'ambient', '氛围', 'rhythm', '律动', 'metal', '金属'],
+    styleTags: ['experimental', 'indie', 'ambient', 'rhythm'],
+  },
+  'tape-vibrato': {
+    searchTerms: ['vibrato', '颤音', 'pitch modulation', '音高调制', 'ambient', '氛围', 'indie', '独立', 'experimental', '实验', 'shoegaze', '盯鞋', 'tape', '磁带'],
+    styleTags: ['ambient', 'indie', 'experimental', 'shoegaze'],
+  },
+  'bias-tremolo': {
+    searchTerms: ['tremolo', '抖音', 'volume modulation', '音量调制', 'rhythm', 'rhythmic', '节奏', '律动', 'funk', '放克', 'indie', '独立', 'ambient', '氛围'],
+    styleTags: ['rhythm', 'funk', 'indie', 'ambient'],
+  },
+  'soft-detune': {
+    searchTerms: ['detune', '失谐', 'chorus', '合唱', 'shoegaze', '盯鞋', 'ambient', '氛围', 'indie', '独立', 'experimental', '实验', 'wide', '宽声场'],
+    styleTags: ['shoegaze', 'ambient', 'indie', 'experimental'],
+  },
+  'analog-delay': {
+    searchTerms: ['delay', '延迟', 'echo', '回声', 'analog', '模拟', 'ambient', '氛围', 'indie', '独立', 'shoegaze', '盯鞋', 'blues', '布鲁斯', 'space', '空间'],
+    styleTags: ['ambient', 'indie', 'shoegaze', 'blues'],
+  },
+  'dm2-delay': {
+    searchTerms: ['delay', '延迟', 'echo', '回声', 'slapback', '短回声', 'blues', '布鲁斯', 'rhythm', '节奏', 'rockabilly', '复古', 'clean', '清音'],
+    styleTags: ['blues', 'rhythm', 'clean'],
+  },
+  'tape-echo': {
+    searchTerms: ['delay', '延迟', 'echo', '回声', 'tape echo', '磁带回声', 'ambient', '氛围', 'indie', '独立', 'experimental', '实验', 'dub', '回响'],
+    styleTags: ['ambient', 'indie', 'experimental'],
+  },
+  'digital-delay': {
+    searchTerms: ['delay', '延迟', 'digital', '数字', 'rhythm', '节奏', 'clean', '清音', 'indie', '独立', 'ambient', '氛围', 'tempo', '拍点'],
+    styleTags: ['rhythm', 'clean', 'indie', 'ambient'],
+  },
+  'reverse-space': {
+    searchTerms: ['reverb', '混响', 'reverse', '反向', 'shoegaze', '盯鞋', 'ambient', '氛围', 'experimental', '实验', 'indie', '独立', 'space', '空间'],
+    styleTags: ['shoegaze', 'ambient', 'experimental', 'indie'],
+  },
+  'gated-room': {
+    searchTerms: ['reverb', '混响', 'gate', '门限', 'gated', '门限空间', 'metal', '金属', 'rhythm', '节奏', 'experimental', '实验', '80s', '八十年代'],
+    styleTags: ['metal', 'rhythm', 'experimental'],
+  },
+  'cloud-hall': {
+    searchTerms: ['reverb', '混响', 'space', '空间', 'hall', '大厅', 'ambient', '氛围', 'shoegaze', '盯鞋', 'indie', '独立', 'experimental', '实验', 'clean', '清音'],
+    styleTags: ['ambient', 'shoegaze', 'indie', 'experimental'],
+  },
+};
+
+export const EFFECT_SPECS: EffectSpec[] = EFFECT_SPECS_BASE.map((effect) => ({
+  ...effect,
+  ...(effectDiscovery[effect.id] ?? {}),
+}));
+
+const FACTORY_PRESETS_BASE: FactoryPreset[] = [
   {
     id: 'reverse-wall', name: '反向音墙', description: '反向空间先进法兹，厚、黏、带吸入感。', source: 'chords', output: 66,
     routing: { mode: 'serial', blend: 50, spread: 0 },
-    amp: makeAmpCabConfig('brit-20', 'closed-4x12', { gain: 32, mid: 64, presence: 52 }),
+    amp: makeAmpCabConfig('brit-20', 'marshall-4x12-greenback', { gain: 32, mid: 64, presence: 52 }),
     chain: [
       { specId: 'studio-comp', settings: { sustain: 38 } },
       { specId: 'soft-detune', settings: { cents: 34, blend: 22, spread: 62 } },
@@ -229,7 +427,7 @@ export const FACTORY_PRESETS: FactoryPreset[] = [
     amp: makeAmpCabConfig('glass-120', 'open-2x12', { gain: 14, treble: 61, presence: 58 }),
     chain: [
       { specId: 'studio-comp', settings: { sustain: 52 } },
-      { specId: 'analog-chorus', settings: { rate: 24, depth: 38 } },
+      { specId: 'analog-chorus', settings: { rate: 8, depth: 60 } },
       { specId: 'tape-echo', settings: { time: 42, repeats: 28, mix: 24, wow: 18 } },
       { specId: 'cloud-hall', settings: { mix: 42, decay: 58, motion: 26 } },
     ],
@@ -237,7 +435,7 @@ export const FACTORY_PRESETS: FactoryPreset[] = [
   {
     id: 'glide-bloom', name: '摇把花开', description: '缓慢颤音接反向空间，再由法兹焊成一体。', source: 'chords', output: 64,
     routing: { mode: 'serial', blend: 50, spread: 0 },
-    amp: makeAmpCabConfig('brit-20', 'closed-4x12', { gain: 28, mid: 61, treble: 51 }),
+    amp: makeAmpCabConfig('brit-20', 'marshall-4x12-greenback', { gain: 28, mid: 61, treble: 51 }),
     chain: [
       { specId: 'tape-vibrato', settings: { rate: 16, depth: 34, rise: 18 } },
       { specId: 'blue-drive', settings: { gain: 42, tone: 57, level: 62 } },
@@ -249,7 +447,7 @@ export const FACTORY_PRESETS: FactoryPreset[] = [
   {
     id: 'grey-machine', name: '灰色机器', description: '啮齿失真推动电锯失真，门限空间迅速收尾。', source: 'lead', output: 58,
     routing: { mode: 'serial', blend: 50, spread: 0 },
-    amp: makeAmpCabConfig('dark-stack', 'closed-4x12', { gain: 46, bass: 54, presence: 42 }),
+    amp: makeAmpCabConfig('dark-stack', 'mesa-2x12-v30', { gain: 46, bass: 54, presence: 42 }),
     chain: [
       { specId: 'noise-gate', settings: { threshold: 34, release: 28 } },
       { specId: 'rodent-dist', settings: { distortion: 48, filter: 58, volume: 56 } },
@@ -274,7 +472,7 @@ export const FACTORY_PRESETS: FactoryPreset[] = [
     routing: { mode: 'serial', blend: 50, spread: 0 },
     amp: makeAmpCabConfig('class-a-30', 'blue-2x12', { gain: 33, treble: 62, presence: 56 }),
     chain: [
-      { specId: 'blue-drive', settings: { gain: 34, tone: 48, level: 64 } },
+      { specId: 'blue-drive', settings: { gain: 34, tone: 48, level: 88 } },
       { specId: 'jet-flanger', settings: { manual: 46, rate: 18, depth: 72, res: 54, mix: 44 } },
       { specId: 'tape-echo', settings: { time: 58, repeats: 42, mix: 28, wow: 31 } },
       { specId: 'cloud-hall', settings: { mix: 43, decay: 67, motion: 42 } },
@@ -297,7 +495,7 @@ export const FACTORY_PRESETS: FactoryPreset[] = [
     amp: makeAmpCabConfig('glass-120', 'open-2x12', { gain: 17, mid: 55, treble: 59, presence: 57 }, { distance: 22, room: 15 }),
     chain: [
       { specId: 'studio-comp', lane: 'A', settings: { sustain: 40 } },
-      { specId: 'analog-chorus', lane: 'A', settings: { rate: 21, depth: 43 } },
+      { specId: 'analog-chorus', lane: 'A', settings: { rate: 5, depth: 65 } },
       { specId: 'digital-delay', lane: 'A', settings: { time: 36, feedback: 28, mix: 25, width: 76 } },
       { specId: 'reverse-space', lane: 'B', settings: { mix: 54, decay: 52, density: 80, highCut: 55 } },
       { specId: 'wall-fuzz', lane: 'B', settings: { sustain: 72, tone: 46, volume: 57 } },
@@ -307,7 +505,7 @@ export const FACTORY_PRESETS: FactoryPreset[] = [
   {
     id: 'dual-wall', name: '双重音墙', description: '两种失真分别占据左右，中间由箱头和封闭 4×12 收束。', source: 'chords', output: 55,
     routing: { mode: 'parallel', blend: 50, spread: 68 },
-    amp: makeAmpCabConfig('brit-20', 'closed-4x12', { gain: 24, bass: 50, mid: 66, presence: 48 }, { position: 56, distance: 14, room: 6 }),
+    amp: makeAmpCabConfig('brit-20', 'marshall-4x12-greenback', { gain: 24, bass: 50, mid: 66, presence: 48 }, { position: 56, distance: 14, room: 6 }),
     chain: [
       { specId: 'blue-drive', lane: 'A', settings: { gain: 36, tone: 54, level: 60 } },
       { specId: 'wall-fuzz', lane: 'A', settings: { sustain: 76, tone: 49, volume: 57 } },
@@ -319,6 +517,23 @@ export const FACTORY_PRESETS: FactoryPreset[] = [
   },
 ];
 
+const presetStyleTags: Record<string, StyleTag[]> = {
+  'reverse-wall': ['shoegaze', 'ambient', 'indie', 'experimental'],
+  'soft-focus': ['clean', 'ambient', 'indie'],
+  'glide-bloom': ['blues', 'shoegaze', 'ambient', 'indie'],
+  'grey-machine': ['metal', 'rhythm', 'experimental'],
+  'slow-orbit': ['ambient', 'indie', 'experimental'],
+  'jet-cloud': ['indie', 'funk', 'ambient', 'experimental'],
+  'pulse-haze': ['rhythm', 'funk', 'ambient'],
+  'stereo-bloom': ['clean', 'shoegaze', 'ambient', 'experimental'],
+  'dual-wall': ['metal', 'rhythm', 'shoegaze', 'experimental'],
+};
+
+export const FACTORY_PRESETS: FactoryPreset[] = FACTORY_PRESETS_BASE.map((preset) => ({
+  ...preset,
+  styleTags: presetStyleTags[preset.id] ?? [],
+}));
+
 const byId = new Map(EFFECT_SPECS.map((effect) => [effect.id, effect]));
 let presetSerial = 0;
 
@@ -326,6 +541,20 @@ export function getEffectSpec(id: string) {
   const effect = byId.get(id);
   if (!effect) throw new Error(`Unknown effect: ${id}`);
   return effect;
+}
+
+export function getEffectSearchText(effect: EffectSpec) {
+  const styleTerms = (effect.styleTags ?? []).flatMap((tag) => [tag, STYLE_TAG_LABELS[tag]]);
+  return [effect.id, effect.name, effect.maker, effect.family, effect.description, ...(effect.searchTerms ?? []), ...styleTerms].join(' ');
+}
+
+export function getPresetSearchText(preset: FactoryPreset) {
+  const styleTerms = (preset.styleTags ?? []).flatMap((tag) => [tag, STYLE_TAG_LABELS[tag]]);
+  const chainTerms = preset.chain.flatMap((item) => {
+    const effect = byId.get(item.specId);
+    return effect ? [effect.id, effect.name, effect.family, ...(effect.searchTerms ?? [])] : [item.specId];
+  });
+  return [preset.id, preset.name, preset.description, ...chainTerms, ...styleTerms].join(' ');
 }
 
 export function mapControlValue(control: ControlSpec, normalizedValue: number) {
@@ -337,9 +566,48 @@ export function mapControlValue(control: ControlSpec, normalizedValue: number) {
 }
 
 export function formatControlValue(control: ControlSpec, normalizedValue: number) {
+  if (control.options) return control.options[normalizedValue >= 50 ? 1 : 0];
   const value = mapControlValue(control, normalizedValue);
   const prefix = control.unit === 'dB' && value > 0 ? '+' : '';
   return `${prefix}${value} ${control.unit}`.trim();
+}
+
+function validateSearchTerms(ownerId: string, terms: unknown, errors: string[]) {
+  if (terms === undefined) return;
+  if (!Array.isArray(terms)) {
+    errors.push(`invalid search terms: ${ownerId}`);
+    return;
+  }
+  if (terms.length > MAX_SEARCH_TERMS) errors.push(`too many search terms: ${ownerId}`);
+  const seen = new Set<string>();
+  terms.forEach((term) => {
+    if (typeof term !== 'string' || !term.trim()) {
+      errors.push(`invalid search term: ${ownerId}`);
+      return;
+    }
+    const normalized = term.trim().toLocaleLowerCase();
+    if (seen.has(normalized)) errors.push(`duplicate search term: ${ownerId}.${term}`);
+    seen.add(normalized);
+    if (term.trim().length > MAX_SEARCH_TERM_LENGTH) errors.push(`search term too long: ${ownerId}.${term}`);
+  });
+}
+
+function validateStyleTags(ownerId: string, tags: unknown, errors: string[]) {
+  if (tags === undefined) return;
+  if (!Array.isArray(tags)) {
+    errors.push(`invalid style tags: ${ownerId}`);
+    return;
+  }
+  if (tags.length > MAX_STYLE_TAGS) errors.push(`too many style tags: ${ownerId}`);
+  const seen = new Set<string>();
+  tags.forEach((tag) => {
+    if (typeof tag !== 'string' || !STYLE_TAGS.includes(tag as StyleTag)) {
+      errors.push(`invalid style tag: ${ownerId}.${String(tag)}`);
+      return;
+    }
+    if (seen.has(tag)) errors.push(`duplicate style tag: ${ownerId}.${tag}`);
+    seen.add(tag);
+  });
 }
 
 export function validateCatalog(catalog: EffectSpec[]) {
@@ -349,6 +617,8 @@ export function validateCatalog(catalog: EffectSpec[]) {
     if (effectIds.has(effect.id)) errors.push(`duplicate effect: ${effect.id}`);
     effectIds.add(effect.id);
     if (effect.controls.length < 1) errors.push(`too few controls: ${effect.id}`);
+    validateSearchTerms(effect.id, effect.searchTerms, errors);
+    validateStyleTags(effect.id, effect.styleTags, errors);
     const controlIds = new Set<string>();
     effect.controls.forEach((control) => {
       if (controlIds.has(control.id)) errors.push(`duplicate control: ${effect.id}.${control.id}`);
@@ -360,13 +630,30 @@ export function validateCatalog(catalog: EffectSpec[]) {
   return errors;
 }
 
+export function validateFactoryPresets(presets: FactoryPreset[]) {
+  const errors: string[] = [];
+  const presetIds = new Set<string>();
+  presets.forEach((preset) => {
+    if (presetIds.has(preset.id)) errors.push(`duplicate preset: ${preset.id}`);
+    presetIds.add(preset.id);
+    validateStyleTags(preset.id, preset.styleTags, errors);
+  });
+  return errors;
+}
+
 export function makeDefaultValues(specId: string) {
   return Object.fromEntries(getEffectSpec(specId).controls.map((control) => [control.id, control.defaultValue]));
 }
 
-export function instantiatePreset(preset: FactoryPreset): InstantiatedPreset {
+/**
+ * A fresh board from a preset. `instanceTag` fixes the instance ids (the
+ * initial board must render the same ids on the server and the client);
+ * otherwise a running serial keeps every instantiation unique.
+ */
+export function instantiatePreset(preset: FactoryPreset, instanceTag?: string): InstantiatedPreset {
   presetSerial += 1;
-  const chain = preset.chain.map((item, index) => ({ instanceId: `${item.specId}-${presetSerial}-${index + 1}`, specId: item.specId, lane: item.lane ?? 'A' }));
+  const tag = instanceTag ?? String(presetSerial);
+  const chain = preset.chain.map((item, index) => ({ instanceId: `${item.specId}-${tag}-${index + 1}`, specId: item.specId, lane: item.lane ?? 'A' }));
   const values = Object.fromEntries(chain.map((item, index) => [
     item.instanceId,
     { ...makeDefaultValues(item.specId), ...preset.chain[index].settings },

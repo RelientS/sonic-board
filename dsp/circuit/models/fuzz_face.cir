@@ -1,0 +1,76 @@
+* Dallas-Arbiter Fuzz Face (1966-69 germanium, AC128 / NKT275 era)
+*@name Fuzz Face (Germanium)
+*@input Vin
+*@output out 1
+*@oversample 4
+*@pot volume RvolA RvolB 500k log
+*@pot fuzz RfzA RfzB 1k lin
+*@control Volume volume default=0.7
+*@control Fuzz fuzz default=0.8
+*
+* Sources:
+*  - ElectroSmash "Fuzz Face Analysis" (electrosmash.com/fuzz-face, via
+*    web.archive.org), schematic fuzz-face-original-schematic-parts.png and
+*    BOM: C1 2.2u, C2 20u, C3 0.01u, R1 33k, R2 470, R3 8.2k, R4 100k,
+*    Volume 500k audio, Fuzz 1k linear, Q1/Q2 AC128. Designators follow it.
+*  - R.G. Keen, "The Technology of the Fuzz Face" (geofex.com) for the same
+*    topology (positive ground, output taken from the R2/R3 tap).
+* Transistors: the article's PSpice AC128 models (D. Clark), Q1 beta 85
+* ("GERPNP_LOWGAIN") and Q2 beta 120 ("GERPNP_HIGHGAIN"), the low/high gain
+* pairing ElectroSmash recommends (Q1 70-80, Q2 110-130). Their very large
+* IS (85.8n / 120.8n, NF=1) is what gives germanium its ~0.15-0.2 V Vbe at
+* ~0.2-1 mA and its leaky, soft knee. Dropped (engine subset):
+* ISE/NE, ISC/NC (low-current recombination), IKF/IKR, VAR, TF/TR and the
+* junction capacitances. Collector-base leakage (ICBO) is not modelled
+* explicitly; UNCERTAIN: real NOS AC128/NKT275 units vary from ~20 to
+* >200 uA leakage, which shifts Q2's bias (the "Q2 Vc -4.5 V" bias target).
+*
+* Positive ground: node 0 is the battery (+) terminal, vee = -9 V. No supply
+* capacitor (none in the pedal); the battery's internal resistance, which
+* ElectroSmash notes adds to R2, is not included (ideal source).
+*
+* Controls (rotation 1.0 = fully clockwise):
+*  - Fuzz 1k lin: lug1 ground, lug3 Q2 emitter, wiper to C2. CW moves the
+*    wiper to the emitter so C2 bypasses all of it: max gain / least
+*    feedback through R4. CCW leaves 1k unbypassed (cleanest).
+*  - Volume 500k log: lug1 ground, lug3 C3, wiper to the jack.
+* Input impedance is only ~5-8k (it loads the pickup: keep Rpu/Lpu), so the
+* guitar volume knob cleaning the fuzz up is part of the model.
+
+* Battery: 0 = +9 V terminal (ground), vee = -9 V.
+Vbat 0 vee 9
+
+* Guitar pickup source impedance (DI samples act as pickup EMF).
+Vin src 0 0
+Rpu src pu 6.5k
+Lpu pu jack 2.3
+
+* Q1 input stage (common emitter, emitter grounded)
+C1 jack b1 2.2u
+R1 vee c1 33k
+Q1 c1 b1 0 AC128LO
+
+* Q2 output stage (direct coupled), collector load R2 + R3
+Q2 c2 c1 e2 AC128HI
+R3 c2 tap 8.2k
+R2 tap vee 470
+
+* Fuzz pot and C2 bypass
+RfzB e2 fw 500
+RfzA fw 0 500
+C2 fw 0 20u
+
+* Global shunt feedback Q2 emitter -> Q1 base
+R4 e2 b1 100k
+
+* Output: C3 from the R2/R3 tap to the Volume pot
+C3 tap vtop 0.01u
+RvolB vtop out 250k
+RvolA out 0 250k
+* Amplifier input load
+Rload out 0 1meg
+
+* ElectroSmash AC128 PSpice models (supported subset).
+.model AC128LO PNP(IS=85.8n BF=85 NF=1 VAF=102.2 BR=20 RB=173.3 RE=20 RC=60)
+.model AC128HI PNP(IS=120.8n BF=120 NF=1 VAF=102.2 BR=20 RB=173.3 RE=20 RC=60)
+.end

@@ -1,0 +1,143 @@
+* Klon Centaur professional overdrive (Bill Finnegan, 1994)
+*@name Klon Centaur
+*@input Vin
+*@output out 1
+*@oversample 2
+*@pot gain_a RgA1 RgA2 100k lin
+*@pot gain_b RgB1 RgB2 100k lin
+*@pot treble RtA RtB 10k lin
+*@pot output RvolA RvolB 10k lin
+*@control Gain gain_a gain_b default=0.5
+*@control Treble treble default=0.5
+*@control Output output default=0.5
+*
+* Sources:
+*  - ElectroSmash "Klon Centaur Analysis" (electrosmash.com/klon-centaur-analysis,
+*    via web.archive.org), full schematic Klon-Centaur-Schematic-Big.png: all
+*    topology and values below follow this drawing (reference designators too).
+*  - Aion FX "Refractor" (legacy PCB) documentation parts list
+*    (aionfx.com/app/files/docs/refractor_legacy_documentation.pdf): every
+*    resistor/cap value agrees; pots Gain 100kB dual, Treble 10kB, Output 10kB.
+* The owner's Studio Daydream KCM-OD Silver is a hand-built Klon-circuit pedal
+* (Gain/Treble/Output, "27V booster" charge pump, Japanese UNIZON germanium
+* diodes per the maker). Its exact component values are not published, so this
+* models the original Centaur.
+*
+* Controls (rotation 1.0 = fully clockwise, all pots linear B per schematic/Aion):
+*  - Gain (dual gang, same rotation on both): gang A has lug1 on U1B's (+)
+*    input, wiper on 4.5V, lug3 into R10 - CW shortens the wiper-R10 leg (more
+*    gain) and lifts the (+) input shunt (fully CCW the drive path is muted).
+*    Gang B has lug1 at the network-2 node, wiper feeding R15/R17/R18, lug3 on
+*    4.5V - CW fades the clean "network 2" feed as the drive rises.
+*  - Treble: lug3 toward R21 (summing amp side), lug1 toward R23 (output side);
+*    CW puts C14 near the input end -> HF shelf boost (+18 dB), CCW cut (-8 dB).
+*  - Output: lug1 ground, lug3 from R25, wiper to the jack.
+*
+* Supply: the TC1044/MAX1044 charge pump (not simulated) turns 9V into
+* +16.2V (doubler D7/D8) and -8.6V. U1 (buffer + gain stage) runs on 0/9V,
+* U2 (summing amp + tone) on -8.6/+16.2V (~25V span). Represented by the
+* absolute op-amp swing limits in the two *@opamp lines; the 4.5V reference
+* (R29/R30 27k divider + C18 47u in the pedal) is an ideal source.
+* Omitted: SW1 buffered-bypass switching (effect-on position modelled), R242
+* (shorted by SW1 in effect mode), R29/R30/C18 and power filtering, LED.
+
+* 4.5V virtual ground (ideal; really R29/R30 27k + C18 47u off the 9V rail)
+Vref vref 0 4.5
+
+* Guitar pickup source impedance (DI samples act as pickup EMF).
+Vin src 0 0
+Rpu src pu 6.5k
+Lpu pu jack 2.3
+
+* Input buffer U1A (unity-gain follower)
+R1 jack n1 10k
+C1 n1 bin 0.1u
+R2 bin vref 1meg
+X1A bin buf buf TL072_9V
+
+* Always-on clean path to the output jack (C2/R3/R4) bleeding in via R243
+C2 buf n2 4.7u
+R3 n2 0 100k
+R4 n2 cln 560
+R243 cln out 68k
+
+* Gain stage U1B: input C3 -> R6||C5, gang A shunts (+) to 4.5V,
+* gain leg R10 + (R11||C7), feedback R12||C8
+C3 buf n3 0.1u
+R6 n3 gp 10k
+C5 n3 gp 68n
+RgA1 gp vref 50k
+RgA2 vref n10 50k
+R10 n10 n11 2k
+R11 n11 inv1 15k
+C7 n11 inv1 82n
+R12 inv1 o1 422k
+C8 inv1 o1 390p
+X1B gp inv1 o1 TL072_9V
+
+* Germanium clipper: C9, R13, 1N34A pair to ground (0V, not 4.5V).
+* Rds carries the diodes' series resistance (RS=6.45 ohm) shared by the pair.
+C9 o1 n9 1u
+R13 n9 clip 1k
+D2 dg clip D1N34A
+D3 clip dg D1N34A
+Rds dg 0 6.45
+C10 clip e 1u
+R16 e sum 47k
+
+* Feed-forward network 1: R7, C16 (to ground), R19 into the summing node
+R7 n3 n16 1.5k
+C16 n16 0 1u
+R19 n16 sum 15k
+
+* Feed-forward network 2: R5||C4 from the buffer, R8 and C6+R9 to 4.5V,
+* gang B wiper -> R17 || (C12+R18) into the summing node, R15+C11 to the clip side
+R5 buf d 5.1k
+C4 buf d 68n
+R8 d vref 1.5k
+C6 d n6 390n
+R9 n6 vref 1k
+RgB1 d h 50k
+RgB2 h vref 50k
+R15 h n15 22k
+C11 n15 e 2.2n
+R17 sum h 27k
+C12 sum n18 27n
+R18 n18 h 12k
+
+* Summing amp U2A: R20 || C13 feedback
+R20 sum o2a 392k
+C13 sum o2a 820p
+X2A vref sum o2a TL072_27V
+
+* Active treble shelf U2B
+R22 o2a tinv 100k
+R24 tinv o2b 100k
+R21 o2a t21 1.8k
+RtB tw t21 5k
+RtA t23 tw 5k
+R23 t23 o2b 4.7k
+C14 tw tinv 3.9n
+X2B vref tinv o2b TL072_27V
+
+* Output: C15, R25, Output pot, anti-pop R28
+C15 o2b n25 4.7u
+R25 n25 vtop 560
+RvolA 0 out 5k
+RvolB out vtop 5k
+R28 out 0 100k
+* Amplifier input load
+Rload out 0 1meg
+
+* TL072: 3 MHz GBW, 13 V/us, Aol 200 V/mV, output swings ~1.5 V inside each
+* rail (datasheet: +-13.5 V on +-15 V into 10k): U1 (0/9V) swings 1.5..7.5V,
+* U2 (-8.6/+16.2V) swings -7.1..+14.7V. Phase reversal near the
+* negative common-mode limit is not modelled (input CM stays near 4.5V here).
+*@opamp TL072_9V gbw=3e6 slew=13e6 aol=2e5 vlo=1.5 vhi=7.5 rout=75
+*@opamp TL072_27V gbw=3e6 slew=13e6 aol=2e5 vlo=-7.1 vhi=14.7 rout=75
+
+* 1N34A germanium: Caneda library model (IS=2.58u N=1.61 RS=6.45; ~0.25 V at
+* 1 mA, ~0.35 V at 5 mA, matching the ~0.35 V measured on Centaur diodes).
+* RS lives in Rds so the antiparallel pair solves as a single port.
+.model D1N34A D(IS=2.58u N=1.61)
+.end

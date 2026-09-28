@@ -3,6 +3,8 @@ import test from 'node:test';
 
 import {
   applyToneAgentActions,
+  createToneAgentToolRuntime,
+  validateToneAgentBoardState,
   type ToneAgentBoardState,
   type ToneAgentAction,
 } from '../agent/tone-agent-runtime.ts';
@@ -17,7 +19,7 @@ function board(): ToneAgentBoardState {
     ],
     values: {
       'phase-1': { rate: 18, depth: 38, res: 18, mix: 44 },
-      'fuzz-1': { volume: 58, tone: 43, sustain: 67, mids: 54, attack: 22, gate: 8 },
+      'fuzz-1': { volume: 58, tone: 43, sustain: 67 },
     },
     bypassed: [],
     source: { guitar: 'single-neck', performance: 'chords', progression: 'dream-open' },
@@ -76,7 +78,8 @@ test('agent actions reject unknown pedals, controls, and out-of-range values', (
   ] as ToneAgentAction[]);
 
   assert.equal(result.changed, 0);
-  assert.equal(result.errors.length, 3);
+  assert.equal(result.errors.length, 1);
+  assert.match(result.errors[0], /未知旋钮/);
   assert.deepEqual(result.board, board());
 });
 
@@ -105,4 +108,60 @@ test('agent can replace the whole board with a validated catalog recipe', () => 
   assert.equal(result.board.name, '反向教学墙');
   assert.deepEqual(result.board.chain.map((item) => item.specId), ['reverse-space', 'wall-fuzz', 'graphic-eq']);
   assert.equal(result.board.values[result.board.chain[1].instanceId].tone, 48);
+});
+
+test('action application rejects a seventeenth action explicitly without partial changes', () => {
+  const original = board();
+  const actions: ToneAgentAction[] = Array.from({ length: 17 }, (_, index) => ({
+    type: 'update_effect',
+    instanceId: 'phase-1',
+    values: { rate: index },
+  }));
+  const result = applyToneAgentActions(original, actions);
+
+  assert.equal(result.changed, 0);
+  assert.match(result.errors[0], /最多执行 16 个/);
+  assert.deepEqual(result.board, original);
+});
+
+test('action batches apply atomically when a later action is invalid', () => {
+  const original = board();
+  const result = applyToneAgentActions(original, [
+    { type: 'set_output', value: 58 },
+    { type: 'set_monitor', mode: 'invalid' as 'wet' },
+  ]);
+
+  assert.equal(result.changed, 0);
+  assert.match(result.errors[0], /监听模式/);
+  assert.deepEqual(result.board, original);
+});
+
+test('board validation rejects malformed monitor, amp bypass, and incomplete controls', () => {
+  const valid = board();
+  assert.deepEqual(validateToneAgentBoardState(valid), []);
+  assert.match(validateToneAgentBoardState({ ...valid, monitorMode: 'invalid' })[0], /监听模式/);
+  assert.match(validateToneAgentBoardState({ ...valid, amp: { ...valid.amp, bypassed: 'yes' } })[0], /箱头或箱体状态/);
+  assert.match(validateToneAgentBoardState({ ...valid, values: { ...valid.values, 'phase-1': { rate: 18 } } })[0], /参数不完整/);
+  assert.throws(() => createToneAgentToolRuntime({ ...valid, monitorMode: 'invalid' } as unknown as ToneAgentBoardState), /监听模式/);
+});
+
+test('amp replacement preserves bypass unless the action changes it explicitly', () => {
+  const original = board();
+  original.amp.bypassed = true;
+  const replacement = makeAmpCabConfig('glass-120', 'open-2x12');
+  const ampWithoutBypass = {
+    ampId: replacement.ampId,
+    cabId: replacement.cabId,
+    ampValues: replacement.ampValues,
+    cabValues: replacement.cabValues,
+  };
+  const preserved = applyToneAgentActions(original, [{ type: 'set_amp_cab', amp: ampWithoutBypass } as ToneAgentAction]);
+
+  assert.equal(preserved.errors.length, 0);
+  assert.equal(preserved.board.amp.bypassed, true);
+  replacement.bypassed = false;
+  const changed = applyToneAgentActions(original, [{ type: 'set_amp_cab', amp: replacement }]);
+  assert.equal(changed.errors.length, 0);
+  assert.equal(changed.board.amp.bypassed, false);
+  assert.equal(original.amp.bypassed, true);
 });

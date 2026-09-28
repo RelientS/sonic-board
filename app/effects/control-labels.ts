@@ -1,4 +1,5 @@
 const CONTROL_LABELS: Record<string, string> = {
+  input: 'INPUT',
   level: 'LEVEL',
   tone: 'TONE',
   attack: 'ATTACK',
@@ -39,6 +40,10 @@ const CONTROL_LABELS: Record<string, string> = {
   lowCut: 'LOW CUT',
   highCut: 'HIGH CUT',
   density: 'DENSITY',
+  dist: 'DIST',
+  tonebypass: 'BYPASS',
+  hp: 'HP',
+  script: 'SCRIPT',
   hold: 'HOLD',
   motion: 'MOTION',
   '100': '100',
@@ -52,6 +57,7 @@ const CONTROL_LABELS: Record<string, string> = {
 
 export function getPedalControlLabel(effectId: string, controlId: string) {
   if (effectId === 'studio-comp' && controlId === 'sustain') return 'SENS';
+  if (effectId === 'studio-comp' && controlId === 'level') return 'OUTPUT';
   const label = CONTROL_LABELS[controlId];
   if (!label) throw new Error(`Missing pedal control label for ${effectId}.${controlId}`);
   return label;

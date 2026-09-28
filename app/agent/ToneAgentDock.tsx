@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import {
   ArrowUp,
   Bot,
@@ -15,6 +15,7 @@ import {
   X,
 } from 'lucide-react';
 
+import { AccountPanel, useAccount } from '../account/AccountPanel.tsx';
 import { getEffectSpec } from '../effects/catalog.ts';
 import type { ToneAgentAction, ToneAgentTraceStep } from './tone-agent-runtime.ts';
 
@@ -66,29 +67,103 @@ export function ToneAgentDock({
   onClear: () => void;
 }) {
   const thread = useRef<HTMLDivElement>(null);
+  const closeButton = useRef<HTMLButtonElement>(null);
+  const dock = useRef<HTMLElement>(null);
+  const account = useAccount(open, busy);
+  const [shareOpen, setShareOpen] = useState(false);
+  const signedIn = account.state.status === 'ready';
+  const credits = account.state.account?.credits ?? 0;
+
+  // Account gate before handing off to the page: logged-out users are sent to
+  // the login form, users without credits see the share-to-earn panel.
+  function submit() {
+    if (busy) {
+      onStop();
+      return;
+    }
+    if (!signedIn) {
+      dock.current?.querySelector<HTMLInputElement>('.account-auth input')?.focus();
+      return;
+    }
+    if (credits <= 0) {
+      setShareOpen(true);
+      return;
+    }
+    onSubmit();
+  }
 
   useEffect(() => {
     if (!open || !thread.current) return;
     thread.current.scrollTop = thread.current.scrollHeight;
   }, [open, turns]);
 
+  useEffect(() => {
+    if (!open) return;
+    const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const frame = window.requestAnimationFrame(() => closeButton.current?.focus());
+    const parent = dock.current?.parentElement;
+    const background = parent
+      ? Array.from(parent.children).filter((element): element is HTMLElement => element instanceof HTMLElement && element !== dock.current)
+      : [];
+    const inertState = background.map((element) => {
+      const withInert = element as HTMLElement & { inert: boolean };
+      const previous = withInert.inert;
+      withInert.inert = true;
+      return { element: withInert, previous };
+    });
+    function containFocus(event: globalThis.KeyboardEvent) {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      onOpenChange(false);
+    }
+    document.addEventListener('keydown', containFocus);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.removeEventListener('keydown', containFocus);
+      inertState.forEach(({ element, previous }) => { element.inert = previous; });
+      if (returnFocus?.isConnected) window.requestAnimationFrame(() => returnFocus.focus());
+    };
+  }, [open, onOpenChange]);
+
+  function trapTab(event: KeyboardEvent<HTMLElement>) {
+    if (event.key !== 'Tab' || !dock.current) return;
+    const focusable = Array.from(dock.current.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [href], summary, [contenteditable="true"], [tabindex]:not([tabindex="-1"])',
+    ));
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (!dock.current.contains(document.activeElement)) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+    } else if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
   if (!open) return null;
   return (
-    <aside className="tone-agent-dock" aria-label="Sonic Board 音色 Agent">
+    <aside id="tone-agent-dock" ref={dock} className="tone-agent-dock has-account" role="dialog" aria-modal="true" aria-labelledby="tone-agent-title" onKeyDown={trapTab}>
       <header className="tone-agent-header">
         <div className="tone-agent-title">
           <span className="tone-agent-mark"><Bot size={17} aria-hidden="true" /></span>
-          <span><strong>音色 Agent</strong><small>Pi Agent · gpt-5.6-terra</small></span>
+          <span><strong id="tone-agent-title">音色 Agent</strong><small>Pi Agent · gpt-5.6-terra</small></span>
         </div>
         <div className="tone-agent-header-actions">
           {turns.length > 0 && <button type="button" aria-label="清空 Agent 对话" title="清空对话" disabled={busy} onClick={onClear}><History size={15} aria-hidden="true" /></button>}
-          <button type="button" aria-label="关闭音色 Agent" onClick={() => onOpenChange(false)}><X size={17} aria-hidden="true" /></button>
+          <button ref={closeButton} type="button" aria-label="关闭音色 Agent" onClick={() => onOpenChange(false)}><X size={17} aria-hidden="true" /></button>
         </div>
       </header>
 
       <div className="tone-agent-context" title={boardSummary}>
         <CircleDot size={11} aria-hidden="true" /><span>已连接当前板面</span><b>{boardSummary}</b>
       </div>
+
+      <AccountPanel controller={account} shareOpen={shareOpen} onShareOpenChange={setShareOpen} />
 
       <div className="tone-agent-thread" ref={thread} role="log" aria-live="polite" aria-label="Agent 对话与工具调用">
         <section className="tone-agent-intro">
@@ -130,7 +205,7 @@ export function ToneAgentDock({
         {error && <div className="tone-agent-error" role="alert">{error}</div>}
       </div>
 
-      <form className="tone-agent-composer" onSubmit={(event) => { event.preventDefault(); if (busy) onStop(); else onSubmit(); }}>
+      <form className="tone-agent-composer" onSubmit={(event) => { event.preventDefault(); submit(); }}>
         <label htmlFor="tone-agent-input">和音色 Agent 对话</label>
         <div>
           <textarea
@@ -142,14 +217,14 @@ export function ToneAgentDock({
             onKeyDown={(event) => {
               if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing || event.keyCode === 229) return;
               event.preventDefault();
-              if (busy) onStop(); else onSubmit();
+              submit();
             }}
           />
-          <button type="submit" className={busy ? 'is-stop' : ''} aria-label={busy ? '中断 Agent' : '发送给 Agent'} disabled={!busy && !input.trim()}>
+          <button type="submit" className={busy ? 'is-stop' : ''} aria-label={busy ? '中断 Agent' : '发送给 Agent'} disabled={!busy && (!input.trim() || !signedIn)}>
             {busy ? <Square size={13} fill="currentColor" aria-hidden="true" /> : <ArrowUp size={16} aria-hidden="true" />}
           </button>
         </div>
-        <small>Enter 发送 · Shift + Enter 换行 · 调整后可撤销</small>
+        <small>{signedIn ? `Enter 发送 · Shift + Enter 换行 · 每次消耗 1 次 · 剩余 ${credits} 次` : '登录后即可与音色 Agent 对话 · 调整后可撤销'}</small>
       </form>
     </aside>
   );

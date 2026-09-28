@@ -1,0 +1,829 @@
+//! Offline companion for the realtime circuit engine.
+//!
+//! ```text
+//! circuit-tool op      <file.cir> [--controls a,b,c]
+//! circuit-tool compare <file.cir> [--controls ..] [--signal f:amp[,f:amp]] [--rate 192000] [--dur 0.1] [--skip 0.04]
+//!                      [--node NAME] [--bbd f:amp]   (probe another node; drive *@bbd outputs with a sine)
+//! circuit-tool render  <file.cir> <in.wav> <out.wav> [--controls ..] [--gain-db 0]
+//! circuit-tool bench   <file.cir> [--rate 48000]
+//! circuit-tool sweep   <file.cir> [--controls ..]   (small-signal magnitude response)
+//! ```
+//!
+//! `compare` writes an ngspice deck from the same netlist, runs `ngspice -b`
+//! and reports the normalized RMS error of the realtime solver against it.
+
+use sonic_board_circuit::lfo::LfoState;
+use sonic_board_circuit::netlist::{Kind, Netlist};
+use sonic_board_circuit::pedal::{be_elements, Pedal};
+use sonic_board_circuit::devices::VT;
+use sonic_board_circuit::solver::{Circuit, Solver, OPAMP_CC, OPAMP_GCLAMP, OPAMP_WCLAMP, OTA_RLEAK};
+use std::collections::HashMap;
+use std::f64::consts::PI;
+use std::fs;
+use std::process::Command;
+use std::time::Instant;
+
+struct Args {
+    positional: Vec<String>,
+    flags: HashMap<String, String>,
+}
+
+fn parse_args() -> Args {
+    let mut positional = Vec::new();
+    let mut flags = HashMap::new();
+    let mut it = std::env::args().skip(1);
+    while let Some(a) = it.next() {
+        if let Some(key) = a.strip_prefix("--") {
+            flags.insert(key.to_string(), it.next().unwrap_or_default());
+        } else {
+            positional.push(a);
+        }
+    }
+    Args { positional, flags }
+}
+
+fn controls_arg(args: &Args, net: &Netlist) -> Vec<f64> {
+    let mut out: Vec<f64> = net.controls.iter().map(|c| c.default).collect();
+    if let Some(list) = args.flags.get("controls") {
+        for (i, v) in list.split(',').enumerate() {
+            if let (Some(slot), Ok(x)) = (out.get_mut(i), v.trim().parse()) {
+                *slot = x;
+            }
+        }
+    }
+    out
+}
+
+fn switches_arg(args: &Args, net: &Netlist) -> Vec<f64> {
+    let mut out: Vec<f64> = net.switches.iter().map(|s| s.default).collect();
+    if let Some(list) = args.flags.get("switches") {
+        for (i, v) in list.split(',').enumerate() {
+            if let (Some(slot), Ok(x)) = (out.get_mut(i), v.trim().parse()) {
+                *slot = x;
+            }
+        }
+    }
+    out
+}
+
+fn overrides(net: &Netlist, controls: &[f64], switches: &[f64]) -> HashMap<String, f64> {
+    net.pot_values(controls)
+        .into_iter()
+        .chain(net.switch_values(switches))
+        .map(|(k, v)| (k.to_ascii_lowercase(), v))
+        .collect()
+}
+
+fn signal_arg(args: &Args) -> Vec<(f64, f64)> {
+    args.flags
+        .get("signal")
+        .map(|s| s.as_str())
+        .unwrap_or("440:0.3")
+        .split(',')
+        .map(|part| {
+            let (f, a) = part.split_once(':').expect("signal is freq:amp");
+            (f.parse().unwrap(), a.parse().unwrap())
+        })
+        .collect()
+}
+
+fn flag<T: std::str::FromStr>(args: &Args, key: &str, default: T) -> T {
+    args.flags.get(key).and_then(|v| v.parse().ok()).unwrap_or(default)
+}
+
+/// Breakpoints of every `*@lfo` source over `dur` seconds: the same
+/// waveform is written into the ngspice deck as a PWL source and linearly
+/// interpolated for the realtime solver.
+type Pwl = Vec<(f64, f64)>;
+
+fn lfo_waveforms(net: &Netlist, controls: &[f64], initial: &[f64], dur: f64) -> Vec<(String, Pwl)> {
+    const STEP: f64 = 20e-6;
+    net.lfos
+        .iter()
+        .enumerate()
+        .map(|(k, spec)| {
+            let position = spec
+                .control
+                .as_ref()
+                .and_then(|l| net.controls.iter().position(|c| &c.label == l))
+                .map(|i| controls[i])
+                .unwrap_or(0.5);
+            let mut lfo = LfoState::new(spec.clone(), initial[k], position);
+            let mut points = vec![(0.0, lfo.value())];
+            let steps = (dur / STEP).ceil() as usize + 2;
+            for j in 1..=steps {
+                points.push((j as f64 * STEP, lfo.next(STEP)));
+            }
+            (spec.source.to_ascii_lowercase(), points)
+        })
+        .collect()
+}
+
+/// Waveforms for the `*@bbd` output sources in `compare`: their netlist DC
+/// value plus an optional sine (`--bbd f:amp`), so the circuit around a
+/// bucket brigade can be checked against ngspice with the delay line cut.
+fn bbd_waveforms(args: &Args, net: &Netlist, dur: f64) -> Vec<(String, Pwl)> {
+    const STEP: f64 = 5e-6;
+    let (f, a) = args
+        .flags
+        .get("bbd")
+        .and_then(|s| s.split_once(':'))
+        .map(|(f, a)| (f.parse().unwrap_or(0.0), a.parse().unwrap_or(0.0)))
+        .unwrap_or((0.0, 0.0));
+    net.bbds
+        .iter()
+        .map(|b| {
+            let dc = net.elements.iter().find(|e| e.name.eq_ignore_ascii_case(&b.source)).map(|e| e.value).unwrap_or(0.0);
+            let steps = (dur / STEP).ceil() as usize + 2;
+            let points = (0..=steps).map(|j| {
+                let t = j as f64 * STEP;
+                (t, dc + a * (2.0 * PI * f * t).sin())
+            });
+            (b.source.to_ascii_lowercase(), points.collect())
+        })
+        .collect()
+}
+
+fn lfo_initial(net: &Netlist) -> Vec<f64> {
+    net.lfos
+        .iter()
+        .map(|l| {
+            net.elements
+                .iter()
+                .find(|e| e.name.eq_ignore_ascii_case(&l.source))
+                .map(|e| e.value)
+                .unwrap_or(0.0)
+        })
+        .collect()
+}
+
+/// Emit an ngspice deck equivalent to the realtime model.
+#[allow(clippy::too_many_arguments)]
+fn spice_deck(source: &str, net: &Netlist, ov: &HashMap<String, f64>, signal: &[(f64, f64)], burst: Option<(f64, f64, f64)>, aux: &[(String, Pwl)], rate: f64, dur: f64, out_file: &str) -> String {
+    let mut deck = String::new();
+    deck.push_str(&format!("* {} (generated by circuit-tool)\n", net.name));
+    let opamps: HashMap<String, &sonic_board_circuit::netlist::Element> = net
+        .elements
+        .iter()
+        .filter(|e| matches!(e.kind, Kind::OpAmp { .. }))
+        .map(|e| (e.name.to_ascii_lowercase(), e))
+        .collect();
+    let otas: HashMap<String, &sonic_board_circuit::netlist::Element> = net
+        .elements
+        .iter()
+        .filter(|e| matches!(e.kind, Kind::Ota { .. }))
+        .map(|e| (e.name.to_ascii_lowercase(), e))
+        .collect();
+    let mut lines: Vec<String> = Vec::new();
+    for raw in source.lines().skip(1) {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('*') || line.starts_with(';') {
+            continue;
+        }
+        let line = match line.find(';') {
+            Some(p) => line[..p].trim(),
+            None => line,
+        };
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        let name = tokens[0].to_ascii_lowercase();
+        if name == net.input.to_ascii_lowercase() {
+            // Input source becomes a chain of sines.
+            let (p, n) = (tokens[1], tokens[2]);
+            if let Some((on, off, floor)) = burst {
+                let sum: Vec<String> = signal.iter().map(|(f, a)| format!("{a:e}*sin({:e}*time)", 2.0 * PI * f)).collect();
+                lines.push(format!("B_sig {p} {n} V = ({}) * ({floor:e} + {:e} * {})", sum.join("+"), 1.0 - floor, spice_gate(on, off)));
+                continue;
+            }
+            for (k, (f, a)) in signal.iter().enumerate() {
+                let hi = if k == 0 { p.to_string() } else { format!("sig_{k}") };
+                let lo = if k + 1 == signal.len() { n.to_string() } else { format!("sig_{}", k + 1) };
+                lines.push(format!("V_sig{k} {hi} {lo} SIN(0 {a} {f})"));
+            }
+            continue;
+        }
+        if let Some((_, points)) = aux.iter().find(|(n, _)| *n == name) {
+            let mut pwl = format!("{} {} {} PWL(", tokens[0], tokens[1], tokens[2]);
+            for (k, (t, v)) in points.iter().enumerate() {
+                if k % 8 == 7 {
+                    pwl.push_str("\n+ ");
+                }
+                pwl.push_str(&format!("{t:e} {v:.9e} "));
+            }
+            pwl.push(')');
+            lines.push(pwl);
+            continue;
+        }
+        if let Some(v) = ov.get(&name) {
+            lines.push(format!("{} {} {} {:e}", tokens[0], tokens[1], tokens[2], v));
+            continue;
+        }
+        if let Some(el) = opamps.get(&name) {
+            let Kind::OpAmp { model } = &el.kind else { unreachable!() };
+            let m = &net.opamp_models[model];
+            let gm = 2.0 * PI * m.gbw * OPAMP_CC;
+            let imax = m.slew * OPAMP_CC;
+            let (inp, inn, out) = (&el.nodes[0], &el.nodes[1], &el.nodes[2]);
+            let int = format!("{}_int", el.name);
+            let o1 = format!("{}_o1", el.name);
+            lines.push(format!(
+                "B{n}_gm 0 {int} I = {imax:e}*({gm:e}*(V({inp})-V({inn}))/{imax:e})/sqrt(1+({gm:e}*(V({inp})-V({inn}))/{imax:e})^2) - {gc:e}*{wc:e}*(max((V({int})-({hi}))/{wc:e},0)+ln(1+exp(-abs((V({int})-({hi}))/{wc:e}))) - max((({lo})-V({int}))/{wc:e},0)-ln(1+exp(-abs((({lo})-V({int}))/{wc:e}))))",
+                n = el.name,
+                gc = OPAMP_GCLAMP,
+                wc = OPAMP_WCLAMP,
+                hi = m.vhi,
+                lo = m.vlo,
+            ));
+            lines.push(format!("R{}_ro {int} 0 {:e}", el.name, m.aol / gm));
+            lines.push(format!("C{}_cc {int} 0 {:e}", el.name, OPAMP_CC));
+            lines.push(format!("E{}_buf {o1} 0 {int} 0 1", el.name));
+            lines.push(format!("R{}_out {o1} {out} {:e}", el.name, m.rout));
+            continue;
+        }
+        if let Some(el) = otas.get(&name) {
+            let Kind::Ota { model } = &el.kind else { unreachable!() };
+            let m = &net.ota_models[model];
+            let [inp, inn, out, abc, vp, vn] = [0, 1, 2, 3, 4, 5].map(|k| el.nodes[k].as_str());
+            let n = &el.name;
+            // Bias diode through a 0 V sense source: its current is the tail.
+            lines.push(format!("V{n}_abc {abc} {n}_abc 0"));
+            lines.push(format!("D{n}_abc {n}_abc {vn} DOTA_{n}"));
+            lines.push(format!("R{n}_leak {abc} {vn} {OTA_RLEAK:e}"));
+            lines.push(format!(".model DOTA_{n} D(IS={:e} N={:e})", m.is, m.n));
+            let t = format!("tanh((V({inp})-V({inn}))/{:e})", 2.0 * VT);
+            let tail = format!("I(V{n}_abc)");
+            let ct = format!("1/(1+exp(-((V({vp})-V({out}))-({v0:e}))/{w:e}))", v0 = m.v0, w = m.w);
+            let cb = format!("1/(1+exp(-((V({out})-V({vn}))-({v0:e}))/{w:e}))", v0 = m.v0, w = m.w);
+            lines.push(format!("B{n}_a {vp} {out} I = {tail}*(1+{t})/2*{ct}"));
+            lines.push(format!("B{n}_b {out} {vn} I = {tail}*(1-{t})/2*{cb}"));
+            lines.push(format!("B{n}_bp {inp} {vn} I = {tail}*(1+{t})/{:e}", 2.0 * m.beta));
+            lines.push(format!("B{n}_bn {inn} {vn} I = {tail}*(1-{t})/{:e}", 2.0 * m.beta));
+            continue;
+        }
+        if line.to_ascii_lowercase().starts_with(".end") {
+            continue;
+        }
+        lines.push(line.to_string());
+    }
+    for l in lines {
+        deck.push_str(&l);
+        deck.push('\n');
+    }
+    let step = 1.0 / rate;
+    deck.push_str(SPICE_OPTIONS[0]);
+    deck.push('\n');
+    deck.push_str(&format!(".tran {step:e} {dur:e} 0 {:e}\n", step / 4.0));
+    deck.push_str(".control\nset wr_singlescale\nset wr_vecnames\noption numdgt=10\nrun\n");
+    deck.push_str(&format!("wrdata {out_file} v({})\n", net.output));
+    deck.push_str(".endc\n.end\n");
+    deck
+}
+
+/// Burst envelope for attack/release tests: 0 outside `on..off`, unity
+/// inside, with linear ramps of `BURST_RAMP` seconds at each edge.
+const BURST_RAMP: f64 = 2e-3;
+
+fn gate(t: f64, on: f64, off: f64) -> f64 {
+    ((t - on) / BURST_RAMP).clamp(0.0, 1.0) * ((off - t) / BURST_RAMP).clamp(0.0, 1.0)
+}
+
+fn spice_gate(on: f64, off: f64) -> String {
+    format!("min(max((time-{on:e})/{r:e},0),1)*min(max(({off:e}-time)/{r:e},0),1)", r = BURST_RAMP)
+}
+
+/// `--burst on:off[:floor]`: the signal is at full level between `on` and
+/// `off` seconds and at `floor` (a fraction, default 0) elsewhere, so a quiet
+/// probe tone after the burst shows the gain recovering.
+fn burst_arg(args: &Args) -> Option<(f64, f64, f64)> {
+    args.flags.get("burst").map(|b| {
+        let parts: Vec<f64> = b.split(':').map(|x| x.parse().expect("burst is on:off[:floor]")).collect();
+        (parts[0], parts[1], parts.get(2).copied().unwrap_or(0.0))
+    })
+}
+
+/// ngspice's own timestep control occasionally gives up on stiff JFET
+/// stages ("timestep too small"). Try progressively more forgiving option
+/// sets; every one of them is far tighter than the realtime solver's error.
+const SPICE_OPTIONS: [&str; 3] = [
+    ".options reltol=1e-5 abstol=1e-12 vntol=1e-7 method=trap itl4=200",
+    ".options reltol=1e-5 abstol=1e-12 vntol=1e-7 method=gear itl4=200",
+    ".options reltol=1e-4 abstol=1e-11 vntol=1e-6 method=trap itl4=200",
+];
+
+fn run_ngspice(deck: &str) -> Result<Vec<(f64, f64)>, String> {
+    let mut last = String::new();
+    for options in SPICE_OPTIONS {
+        let deck = deck
+            .lines()
+            .map(|l| if l.starts_with(".options") { options } else { l })
+            .collect::<Vec<_>>()
+            .join("\n");
+        match run_ngspice_once(&deck) {
+            Ok(data) => return Ok(data),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
+fn run_ngspice_once(deck: &str) -> Result<Vec<(f64, f64)>, String> {
+    let dir = std::env::temp_dir().join(format!("circuit-tool-{}", std::process::id()));
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let deck_path = dir.join("deck.cir");
+    let out_path = dir.join("out.txt");
+    let _ = fs::remove_file(&out_path);
+    let deck = deck.replace("__OUT__", out_path.to_str().unwrap());
+    fs::write(&deck_path, &deck).map_err(|e| e.to_string())?;
+    let result = Command::new("ngspice").arg("-b").arg(&deck_path).output().map_err(|e| e.to_string())?;
+    let log = format!("{}{}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr));
+    if log.contains("simulation(s) aborted") || log.contains("Timestep too small") {
+        return Err(format!("ngspice aborted:\n{log}"));
+    }
+    let text = fs::read_to_string(&out_path).map_err(|_| format!("ngspice produced no output:\n{log}"))?;
+    let mut data = Vec::new();
+    for line in text.lines().skip(1) {
+        let cols: Vec<f64> = line.split_whitespace().filter_map(|c| c.parse().ok()).collect();
+        if cols.len() >= 2 {
+            data.push((cols[0], cols[1]));
+        }
+    }
+    Ok(data)
+}
+
+fn interp(data: &[(f64, f64)], t: f64) -> f64 {
+    let idx = data.partition_point(|(x, _)| *x < t);
+    if idx == 0 {
+        return data[0].1;
+    }
+    if idx >= data.len() {
+        return data[data.len() - 1].1;
+    }
+    let (t0, y0) = data[idx - 1];
+    let (t1, y1) = data[idx];
+    if t1 == t0 {
+        y1
+    } else {
+        y0 + (y1 - y0) * (t - t0) / (t1 - t0)
+    }
+}
+
+fn load(path: &str) -> (String, Netlist) {
+    let source = fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    let net = Netlist::parse(&source).unwrap_or_else(|e| panic!("{path}: {e}"));
+    (source, net)
+}
+
+fn cmd_op(args: &Args) {
+    let (source, net) = load(&args.positional[1]);
+    let controls = controls_arg(args, &net);
+    let switches = switches_arg(args, &net);
+    let ov = overrides(&net, &controls, &switches);
+    let circuit = Circuit::build(&net, &be_elements(&source)).unwrap();
+    let names = circuit.node_names.clone();
+    let solver = Solver::new(circuit, 48_000.0, ov.clone()).unwrap();
+    let dc = solver.dc_nodes();
+
+    // ngspice .op for the same netlist
+    let aux = lfo_waveforms(&net, &controls, &lfo_initial(&net), 1e-4);
+    let mut deck = spice_deck(&source, &net, &ov, &[(1000.0, 0.0)], None, &aux, 48_000.0, 1e-4, "__OUT__");
+    deck = deck.replace(&format!("wrdata __OUT__ v({})\n", net.output), "");
+    deck = deck.replace("run\n", "op\nprint all > __OUT__\n");
+    let dir = std::env::temp_dir().join(format!("circuit-tool-op-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let out_path = dir.join("op.txt");
+    let deck_path = dir.join("op.cir");
+    fs::write(&deck_path, deck.replace("__OUT__", out_path.to_str().unwrap())).unwrap();
+    let _ = Command::new("ngspice").arg("-b").arg(&deck_path).output();
+    let text = fs::read_to_string(&out_path).unwrap_or_default();
+    let mut spice: HashMap<String, f64> = HashMap::new();
+    for line in text.lines() {
+        if let Some((k, v)) = line.split_once('=') {
+            if let Ok(x) = v.trim().parse::<f64>() {
+                spice.insert(k.trim().to_ascii_lowercase(), x);
+            }
+        }
+    }
+    println!("{:<16} {:>12} {:>12} {:>10}", "node", "engine V", "ngspice V", "diff mV");
+    let mut worst: f64 = 0.0;
+    for (i, name) in names.iter().enumerate() {
+        let key = name.to_ascii_lowercase().replace('#', "_");
+        let s = spice.get(&key).copied();
+        let diff = s.map(|s| (dc[i] - s) * 1e3);
+        if let Some(d) = diff {
+            if !name.contains('#') {
+                worst = worst.max(d.abs());
+            }
+        }
+        println!(
+            "{:<16} {:>12.5} {:>12} {:>10}",
+            name,
+            dc[i],
+            s.map(|x| format!("{x:.5}")).unwrap_or("-".into()),
+            diff.map(|d| format!("{d:.3}")).unwrap_or("-".into())
+        );
+    }
+    println!("worst external-node difference: {worst:.3} mV");
+}
+
+fn cmd_compare(args: &Args) {
+    let (source, mut net) = load(&args.positional[1]);
+    if let Some(node) = args.flags.get("node") {
+        net.output = node.clone();
+    }
+    let controls = controls_arg(args, &net);
+    let switches = switches_arg(args, &net);
+    let ov = overrides(&net, &controls, &switches);
+    let signal = signal_arg(args);
+    let rate: f64 = flag(args, "rate", 192_000.0);
+    let dur: f64 = flag(args, "dur", 0.1);
+    let skip: f64 = flag(args, "skip", 0.04);
+
+    let burst = burst_arg(args);
+    let mut aux = lfo_waveforms(&net, &controls, &lfo_initial(&net), dur);
+    aux.extend(bbd_waveforms(args, &net, dur));
+    let deck = spice_deck(&source, &net, &ov, &signal, burst, &aux, rate, dur, "__OUT__");
+    if let Some(p) = args.flags.get("deck") {
+        fs::write(p, &deck).unwrap();
+    }
+    let t0 = Instant::now();
+    let reference = run_ngspice(&deck).unwrap_or_else(|e| panic!("{e}"));
+    let spice_time = t0.elapsed();
+
+    let circuit = Circuit::build(&net, &be_elements(&source)).unwrap();
+    let mut solver = Solver::new(circuit, rate, ov).unwrap();
+    let n = (dur * rate) as usize;
+    let mut engine = Vec::with_capacity(n);
+    for k in 0..n {
+        let t = k as f64 / rate;
+        let mut u: f64 = signal.iter().map(|(f, a)| a * (2.0 * PI * f * t).sin()).sum();
+        if let Some((on, off, floor)) = burst {
+            u *= floor + (1.0 - floor) * gate(t, on, off);
+        }
+        for (i, (_, points)) in aux.iter().enumerate() {
+            solver.set_aux(i, interp(points, t));
+        }
+        engine.push(solver.step(u));
+    }
+    let start = (skip * rate) as usize;
+    let mut err2 = 0.0;
+    let mut ref2 = 0.0;
+    let mut mean_r = 0.0;
+    let mut mean_e = 0.0;
+    let count = (n - start) as f64;
+    for k in start..n {
+        mean_r += interp(&reference, k as f64 / rate);
+        mean_e += engine[k];
+    }
+    mean_r /= count;
+    mean_e /= count;
+    let mut peak: f64 = 0.0;
+    for k in start..n {
+        let r = interp(&reference, k as f64 / rate) - mean_r;
+        let e = engine[k] - mean_e;
+        err2 += (r - e) * (r - e);
+        ref2 += r * r;
+        peak = peak.max(r.abs());
+    }
+    let nrmse = (err2 / ref2.max(1e-30)).sqrt();
+    let (samples, iters, fails) = (solver.samples, solver.iterations, solver.failures);
+    let substeps = solver.substeps;
+    println!(
+        "{}: controls {:?} signal {:?}\n  ref AC rms {:.4} V peak {:.4} V | DC ref {:.4} V engine {:.4} V\n  NRMSE {:.3}% ({:.1} dB) | newton {:.2} it/sample, {} substepped, {} failures | ngspice {:.1}s",
+        net.name,
+        controls,
+        signal,
+        (ref2 / count).sqrt(),
+        peak,
+        mean_r,
+        mean_e,
+        nrmse * 100.0,
+        20.0 * nrmse.max(1e-12).log10(),
+        iters as f64 / samples as f64,
+        substeps,
+        fails,
+        spice_time.as_secs_f64()
+    );
+    if let Some(p) = args.flags.get("dump") {
+        let mut text = String::from("t ref engine\n");
+        for k in start..n {
+            let t = k as f64 / rate;
+            text.push_str(&format!("{t:.7} {:.6} {:.6}\n", interp(&reference, t), engine[k]));
+        }
+        fs::write(p, text).unwrap();
+    }
+}
+
+fn read_wav(path: &str) -> (Vec<f32>, u32) {
+    let bytes = fs::read(path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    let mut pos = 12;
+    let mut channels = 1usize;
+    let mut rate = 48_000;
+    let mut bits = 16;
+    let mut format = 1;
+    let mut data: &[u8] = &[];
+    while pos + 8 <= bytes.len() {
+        let id = &bytes[pos..pos + 4];
+        let size = u32::from_le_bytes(bytes[pos + 4..pos + 8].try_into().unwrap()) as usize;
+        let body = &bytes[pos + 8..(pos + 8 + size).min(bytes.len())];
+        if id == b"fmt " {
+            format = u16::from_le_bytes([body[0], body[1]]);
+            channels = u16::from_le_bytes([body[2], body[3]]) as usize;
+            rate = u32::from_le_bytes(body[4..8].try_into().unwrap());
+            bits = u16::from_le_bytes([body[14], body[15]]);
+        } else if id == b"data" {
+            data = body;
+        }
+        pos += 8 + size + (size & 1);
+    }
+    let frame = channels * bits as usize / 8;
+    let mut out = Vec::with_capacity(data.len() / frame.max(1));
+    for f in data.chunks_exact(frame) {
+        let s = match (format, bits) {
+            (3, 32) | (65534, 32) => f32::from_le_bytes(f[0..4].try_into().unwrap()),
+            (_, 16) => i16::from_le_bytes([f[0], f[1]]) as f32 / 32768.0,
+            (_, 24) => ((i32::from_le_bytes([0, f[0], f[1], f[2]])) >> 8) as f32 / 8_388_608.0,
+            (_, 32) => i32::from_le_bytes(f[0..4].try_into().unwrap()) as f32 / 2_147_483_648.0,
+            _ => panic!("unsupported wav format {format}/{bits}"),
+        };
+        out.push(s);
+    }
+    (out, rate)
+}
+
+fn write_wav(path: &str, samples: &[f32], rate: u32) {
+    let mut out = Vec::with_capacity(44 + samples.len() * 4);
+    let data_len = (samples.len() * 4) as u32;
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + data_len).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());
+    out.extend_from_slice(&3u16.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&rate.to_le_bytes());
+    out.extend_from_slice(&(rate * 4).to_le_bytes());
+    out.extend_from_slice(&4u16.to_le_bytes());
+    out.extend_from_slice(&32u16.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data_len.to_le_bytes());
+    for s in samples {
+        out.extend_from_slice(&s.to_le_bytes());
+    }
+    fs::write(path, out).unwrap();
+}
+
+fn make_pedal(args: &Args, source: &str, net: Netlist, rate: f64) -> Pedal {
+    let controls = controls_arg(args, &net);
+    let switches = switches_arg(args, &net);
+    let os = args.flags.get("os").and_then(|v| v.parse().ok());
+    let mut pedal = Pedal::with_netlist(net, &be_elements(source), rate, os).unwrap();
+    // Offline analysis wants exact results, not the real-time work cap.
+    pedal.set_realtime(false);
+    for (i, c) in controls.iter().enumerate() {
+        pedal.set_control(i, *c);
+    }
+    for (i, s) in switches.iter().enumerate() {
+        pedal.set_switch(i, *s);
+    }
+    pedal.commit();
+    pedal
+}
+
+fn cmd_render(args: &Args) {
+    let (source, net) = load(&args.positional[1]);
+    let (mut samples, rate) = read_wav(&args.positional[2]);
+    let gain = 10f32.powf(flag(args, "gain-db", 0.0f32) / 20.0);
+    for s in samples.iter_mut() {
+        *s *= gain;
+    }
+    let mut pedal = make_pedal(args, &source, net, rate as f64);
+    let t0 = Instant::now();
+    for block in samples.chunks_mut(128) {
+        pedal.process(block);
+    }
+    let elapsed = t0.elapsed().as_secs_f64();
+    let audio = samples.len() as f64 / rate as f64;
+    let (n, it, fails) = pedal.stats();
+    let peak = samples.iter().fold(0f32, |m, s| m.max(s.abs()));
+    write_wav(&args.positional[3], &samples, rate);
+    println!(
+        "rendered {:.2}s in {:.2}s ({:.1}x realtime) | peak {:.3} | newton {:.2} it/step, {} failures",
+        audio,
+        elapsed,
+        audio / elapsed,
+        peak,
+        it as f64 / n as f64,
+        fails
+    );
+}
+
+fn cmd_bench(args: &Args) {
+    let (source, net) = load(&args.positional[1]);
+    let rate: f64 = flag(args, "rate", 48_000.0);
+    let mut pedal = make_pedal(args, &source, net, rate);
+    let seconds = 3.0;
+    let n = (rate * seconds) as usize;
+    let mut buf: Vec<f32> = (0..n)
+        .map(|k| {
+            let t = k as f64 / rate;
+            let env = (-3.0 * (t % 1.0)).exp();
+            (0.4 * env * ((2.0 * PI * 110.0 * t).sin() + 0.5 * (2.0 * PI * 164.8 * t).sin())) as f32
+        })
+        .collect();
+    let t0 = Instant::now();
+    for block in buf.chunks_mut(128) {
+        pedal.process(block);
+    }
+    let elapsed = t0.elapsed().as_secs_f64();
+    let (s, it, fails) = pedal.stats();
+    println!(
+        "{}: {:.1}x realtime at {} Hz (os {}x) | newton {:.2} it/step, {:.2} refactors/step | {} failures | latency {:.1} samples",
+        pedal.netlist.name,
+        seconds / elapsed,
+        rate,
+        args.flags.get("os").cloned().unwrap_or(pedal.netlist.oversample.to_string()),
+        it as f64 / s as f64,
+        pedal.refactors() as f64 / s as f64,
+        fails,
+        pedal.latency()
+    );
+}
+
+fn cmd_sweep(args: &Args) {
+    let (source, net) = load(&args.positional[1]);
+    let rate = 48_000.0;
+    let amp: f64 = flag(args, "amp", 0.001);
+    println!("{:>8} {:>9}", "Hz", "dB");
+    for &f in &[40.0, 80.0, 160.0, 315.0, 630.0, 1000.0, 1250.0, 2500.0, 5000.0, 10000.0] {
+        let mut pedal = make_pedal(args, &source, net.clone(), rate);
+        let n = (rate * 0.25) as usize;
+        let mut buf: Vec<f32> = (0..n).map(|k| (amp * (2.0 * PI * f * k as f64 / rate).sin()) as f32).collect();
+        for block in buf.chunks_mut(128) {
+            pedal.process(block);
+        }
+        let tail = &buf[n / 2..];
+        let rms = (tail.iter().map(|x| (*x as f64).powi(2)).sum::<f64>() / tail.len() as f64).sqrt();
+        println!("{:>8} {:>9.2}", f, 20.0 * (rms / (amp / 2f64.sqrt())).log10());
+    }
+}
+
+fn fft(re: &mut [f64], im: &mut [f64]) {
+    let n = re.len();
+    let mut j = 0;
+    for i in 1..n {
+        let mut bit = n >> 1;
+        while j & bit != 0 {
+            j ^= bit;
+            bit >>= 1;
+        }
+        j |= bit;
+        if i < j {
+            re.swap(i, j);
+            im.swap(i, j);
+        }
+    }
+    let mut len = 2;
+    while len <= n {
+        let ang = -2.0 * PI / len as f64;
+        for start in (0..n).step_by(len) {
+            for k in 0..len / 2 {
+                let (wr, wi) = ((ang * k as f64).cos(), (ang * k as f64).sin());
+                let (a, b) = (start + k, start + k + len / 2);
+                let tr = re[b] * wr - im[b] * wi;
+                let ti = re[b] * wi + im[b] * wr;
+                re[b] = re[a] - tr;
+                im[b] = im[a] - ti;
+                re[a] += tr;
+                im[a] += ti;
+            }
+        }
+        len <<= 1;
+    }
+}
+
+/// Aliasing: drive a bin-centred sine and report energy outside the
+/// harmonic series relative to the harmonic energy.
+fn cmd_alias(args: &Args) {
+    let (source, net) = load(&args.positional[1]);
+    let rate = 48_000.0;
+    let n = 1 << 16;
+    let bin: usize = flag(args, "bin", 3413); // ~2.5 kHz
+    let amp: f64 = flag(args, "amp", 0.3);
+    let f = bin as f64 * rate / n as f64;
+    let mut pedal = make_pedal(args, &source, net, rate);
+    // Half a second lets long coupling-cap time constants settle so their
+    // transient does not leak into the non-harmonic measurement.
+    let warm = 24_000;
+    let mut buf: Vec<f32> = (0..n + warm).map(|k| (amp * (2.0 * PI * f * k as f64 / rate).sin()) as f32).collect();
+    for block in buf.chunks_mut(128) {
+        pedal.process(block);
+    }
+    let mut re: Vec<f64> = buf[warm..].iter().map(|x| *x as f64).collect();
+    let mut im = vec![0.0; n];
+    fft(&mut re, &mut im);
+    let mut harmonic = 0.0;
+    let mut other = 0.0;
+    for k in 1..n / 2 {
+        let p = re[k] * re[k] + im[k] * im[k];
+        if k % bin == 0 {
+            harmonic += p;
+        } else {
+            other += p;
+        }
+    }
+    println!(
+        "{}: {:.0} Hz @ {amp} V, os {}x -> non-harmonic energy {:.1} dB re harmonics",
+        pedal.netlist.name,
+        f,
+        args.flags.get("os").map(String::as_str).unwrap_or("default"),
+        10.0 * (other / harmonic).log10()
+    );
+}
+
+/// Modulation-pedal spectrum check: a bin-centred sine through the pedal,
+/// reporting the clock / delay range seen by every `*@bbd`, the LFO rate,
+/// the RMS width of the sidebands around the tone and its harmonics, and the
+/// energy outside those bands (images, aliasing, clock artefacts) relative
+/// to the tonal energy.
+fn cmd_chorus(args: &Args) {
+    let (source, net) = load(&args.positional[1]);
+    let rate = 48_000.0;
+    let n = 1 << 17;
+    let bin: usize = flag(args, "bin", 2731); // ~1 kHz
+    let amp: f64 = flag(args, "amp", 0.2);
+    let band: f64 = flag(args, "band", 80.0);
+    let f0 = bin as f64 * rate / n as f64;
+    let mut pedal = make_pedal(args, &source, net, rate);
+    let warm = 48_000;
+    let mut buf: Vec<f32> = (0..n + warm).map(|k| (amp * (2.0 * PI * f0 * k as f64 / rate).sin()) as f32).collect();
+    let (mut fmin, mut fmax, mut dmin, mut dmax) = (f64::MAX, 0.0f64, f64::MAX, 0.0f64);
+    for block in buf.chunks_mut(128) {
+        pedal.process(block);
+        for (f, d) in pedal.bbd_clocks() {
+            fmin = fmin.min(f);
+            fmax = fmax.max(f);
+            dmin = dmin.min(d);
+            dmax = dmax.max(d);
+        }
+    }
+    let seg = &buf[warm..];
+    // Blackman-Harris window keeps leakage below the levels of interest.
+    let w = |k: usize| {
+        let x = 2.0 * PI * k as f64 / n as f64;
+        0.35875 - 0.48829 * x.cos() + 0.14128 * (2.0 * x).cos() - 0.01168 * (3.0 * x).cos()
+    };
+    let mut re: Vec<f64> = seg.iter().enumerate().map(|(k, x)| *x as f64 * w(k)).collect();
+    let mut im = vec![0.0; n];
+    fft(&mut re, &mut im);
+    let df = rate / n as f64;
+    let (mut tonal, mut other, mut spread, mut carrier_band) = (0.0, 0.0, 0.0, 0.0);
+    for k in 1..n / 2 {
+        let f = k as f64 * df;
+        if !(20.0..=20_000.0).contains(&f) {
+            continue;
+        }
+        let p = re[k] * re[k] + im[k] * im[k];
+        let h = (f / f0).round().max(1.0);
+        let off = f - h * f0;
+        if off.abs() <= band * h {
+            tonal += p;
+            if h == 1.0 {
+                spread += p * off * off;
+                carrier_band += p;
+            }
+        } else {
+            other += p;
+        }
+    }
+    let (s_, it, fails) = pedal.stats();
+    println!(
+        "{}: {:.1} Hz @ {amp} | LFO {:?} Hz | clock {:.1}-{:.1} kHz, delay {:.2}-{:.2} ms\n  sideband RMS width {:.2} Hz ({:.1} cents) | non-tonal energy {:.1} dB re tonal | newton {:.2} it/step, {} failures",
+        pedal.netlist.name,
+        f0,
+        pedal.lfo_frequencies().iter().map(|f| (f * 1000.0).round() / 1000.0).collect::<Vec<_>>(),
+        fmin / 1e3,
+        fmax / 1e3,
+        dmin * 1e3,
+        dmax * 1e3,
+        (spread / carrier_band).sqrt(),
+        1200.0 * ((f0 + (spread / carrier_band).sqrt()) / f0).log2(),
+        10.0 * (other / tonal).log10(),
+        it as f64 / s_ as f64,
+        fails
+    );
+}
+
+fn main() {
+    let args = parse_args();
+    if std::env::var("DEBUG_NEWTON").is_ok() {
+        sonic_board_circuit::solver::DEBUG_NEWTON.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    match args.positional.first().map(String::as_str) {
+        Some("op") => cmd_op(&args),
+        Some("compare") => cmd_compare(&args),
+        Some("render") => cmd_render(&args),
+        Some("bench") => cmd_bench(&args),
+        Some("sweep") => cmd_sweep(&args),
+        Some("alias") => cmd_alias(&args),
+        Some("chorus") => cmd_chorus(&args),
+        _ => eprintln!("usage: circuit-tool op|compare|render|bench|sweep <file.cir> ..."),
+    }
+}

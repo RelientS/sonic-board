@@ -1,0 +1,94 @@
+* ProCo RAT 2 distortion
+*@name ProCo RAT 2
+*@input Vin
+*@output out 1
+*@oversample 4
+*@pot volume RvolA RvolB 100k log
+*@pot filter RfiltA - 100k log
+*@pot dist RdistA - 100k log
+*@control Volume volume default=0.5
+*@control Filter filter default=0.4
+*@control Distortion dist default=0.6
+*
+* Sources:
+*  - beavisaudio.com "ProCo Rat II Distortion Schematic" (RAT2-specific, FET
+*    bypass switching omitted): values below follow this drawing.
+*  - ElectroSmash "Pro Co Rat Analysis" (electrosmash.com/proco-rat): same
+*    topology; differs on input bias (1M/1M), 30pF comp cap, no R13.
+*  - tagboardeffects "Proco Rat 2" (mirosol) vero layout: agrees with
+*    Beavis (2M2 bias, 33pF, 10k across the volume pot) except R10 = 1.6k.
+* All three give the three pots as 100k log (A). Rotation 1.0 = fully
+* clockwise on every knob:
+*  - Distortion: rheostat lug1-wiper, CW raises feedback resistance (gain).
+*  - Filter: lug1 at the clipper, lugs 2+3 to R10; CW adds series resistance
+*    in front of C12, i.e. darker, exactly as on the pedal.
+*  - Volume: lug1 ground, lug3 from C14, wiper to the jack.
+* Bypass switching, LED, supply R1/D1/C1 and the op-amp decoupling cap C9 are
+* omitted; the 9V rail is ideal.
+
+Vcc vcc 0 9
+
+* 4.5V reference (R2/R3 divider, C2 47u)
+R2 vcc vref 100k
+R3 vref 0 100k
+C2 vref 0 47u
+
+* Guitar pickup source impedance (DI samples act as pickup EMF).
+Vin src 0 0
+Rpu src pu 6.5k
+Lpu pu jack 2.3
+
+* Input: pulldown, coupling cap, bias to 4.5V, 1k + 1nF RF/treble shunt
+R4 jack 0 2.2meg
+C3 jack n3 22n
+R5 n3 vref 2.2meg
+R6 n3 inp 1k
+C4 inp 0 1n
+
+* LM308 non-inverting gain stage. Gain = 1 + Rdist / (47R+2.2u || 560R+4.7u)
+X1 inp inn opout LM308
+RdistA inn opout 100k
+C5 inn opout 100p
+R8 inn n8 47
+C7 n8 0 2.2u
+R7 inn n7 560
+C6 n7 0 4.7u
+
+* Hard clipper: 1k + 4.7u into a 1N914 antiparallel pair to ground
+R9 opout n9 1k
+C11 n9 clip 4.7u
+D2 clip 0 D1N914
+D3 0 clip D1N914
+
+* Filter: pot (rheostat) + R10 1.5k into C12 3.3n
+RfiltA clip nf 100k
+R10 nf filt 1.5k
+C12 filt 0 3.3n
+
+* 2N5458 source follower
+C13 filt gate 22n
+R11 gate 0 1meg
+J1 vcc gate src5 J2N5458
+R12 src5 0 10k
+C14 src5 vol_top 1u
+R13 vol_top 0 10k
+
+* Volume
+RvolA 0 out 50k
+RvolB out vol_top 50k
+* Amplifier input load
+Rload out 0 1meg
+
+* LM308 with the 30pF compensation used in the RAT (datasheet typ. and the
+* ElectroSmash GBW plot: 67 dB at ~500 Hz -> ~1.1 MHz; 0.3 V/us slew).
+* Beavis/tagboard show 33pF, which would give ~0.9 MHz / 0.27 V/us - inside
+* the part-to-part spread. aol 300 V/mV typ; output swings to ~1V of either
+* rail (+-14V typ on +-15V supplies).
+*@opamp LM308 gbw=1e6 slew=0.3e6 aol=3e5 vlo=1 vhi=8 rout=75
+
+* 1N914: RS (0.57 ohm) is negligible against the 1k series resistor and is
+* omitted so the pair solves as a single port.
+.model D1N914 D(IS=2.52n N=1.752)
+* 2N5458 (common vendor library model: VTO -2.882, BETA 488.9u -> Idss ~4 mA).
+.model J2N5458 NJF(VTO=-2.882 BETA=488.9u LAMBDA=3.167m IS=1e-14)
+.end

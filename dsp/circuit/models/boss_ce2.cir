@@ -1,0 +1,152 @@
+* Boss CE-2 Chorus
+*@name Boss CE-2 Chorus
+*@input Vin
+*@output out 1
+*@oversample 2
+*@opamp UPC4558 gbw=3e6 slew=1e6 aol=1e5 vlo=1.0 vhi=8.0 rout=75
+*@pot depth RdA RdB 100k lin
+*@control Rate default=0.3
+*@control Depth depth default=0.5
+*@lfo Vlfo tri rate=Rate lo=2.92 hi=6.08 hzmax=3.56 r=10k pot=100k:lin
+*@bbd Vbbd in=bbdin stages=1024 clk=clk r=150k c=52p vcc=9 vth=4.5 vf=0.55 vmin=0.1 tdis=0.3u div=2 cti=1e-4 clip=1.6
+*
+* Source: Boss CE-2 service schematic (reproduced at hobby-hour.com, "Boss
+* CE-2 chorus pedal schematic"), reference designators as drawn there;
+* values cross-checked against the ElectroSmash "Boss CE-2 Analysis" part
+* list and block descriptions (pre/de-emphasis shelves at 410 Hz / 2.34 kHz,
+* 3rd-order Sallen-Key anti-alias and reconstruction filters at ~6.6 kHz,
+* 50/50 dry/wet summing, TL022 triangle LFO at up to 3.56 Hz).
+*
+* Signal path: Q1 emitter follower -> IC1a inverting pre-emphasis shelf
+* (gain 1 below 410 Hz, 5.7 above 2.34 kHz) -> R8/C5 high-pass -> R9/C6 +
+* Sallen-Key around Q2 (anti-alias) -> R13 -> MN3007 (IC3) -> C10/R15
+* high-pass -> R16/C11 + Sallen-Key around Q3 (reconstruction) -> C14 ->
+* R22 -> Q9 (FET switch, on) -> IC1b summing de-emphasis shelf, which also
+* takes the pre-emphasised dry signal through R21, so the dry path is flat
+* and the wet path loses the BBD's hiss. Output: R25, C17, R26.
+*
+* BBD (IC3 MN3007, 1024 stages) and clock (IC4 MN3101): the *@bbd element
+* samples node bbdin once per clock period and drives Vbbd (through Rbo, the
+* chip's source-follower output) 512 periods later. The clock follows the
+* CE-2's modulation network: the LFO (through the Depth pot, R35/C21) drives
+* emitter follower Q4, R36/R37 halve its emitter voltage at node clk, and
+* after every discharge by Q5 the timing capacitor C22 (47p + ~5p of pin and
+* junction capacitance) restarts one diode drop (D1) below clk and charges
+* through R38 150k from 9 V to the MN3101's CMOS threshold (~Vcc/2). The
+* MN3101 halves that rate for the two-phase clock. With these values the
+* clock idles near 110 kHz (4.7 ms delay) and full depth sweeps it about
+* 94-134 kHz (5.5-3.8 ms). Discharge time (Q5 + gate delays) is taken as
+* 0.3 us. Charge-transfer inefficiency 1e-4 per transfer and a 1.6 V
+* saturation level (from the service adjustment: a +3 dBm 200 Hz sine
+* clips symmetrically at Q3 when VR3 is centred) are typical values.
+*
+* LFO: IC2 (TL022) Schmitt trigger + integrator. Its triangle at IC2 pin 1
+* is the *@lfo source Vlfo: amplitude = comparator swing x R29/R30 with the
+* TL022 output swinging 2.25 V from either rail on 9 V (+-1.58 V around the
+* 4.5 V LFO bias), frequency R30 / (4 C19 R29 R32) = 3.56 Hz scaled by the
+* fraction of the comparator swing at the RATE wiper, (R31 + VR1 part) /
+* (R31 + VR1): 0.32 Hz (CCW) to 3.56 Hz (CW). The 1M integrator input
+* loads the 110k divider by under 3%, ignored.
+*
+* Simplifications: battery supply (9 V; the adapter's R53/D5 drop and the
+* R52/C29/C30 supply filter are ideal), trimmer VR3 centred (VB 4.5 V), the
+* Q9 JFET switch is its ~400 ohm on-resistance, the Q6/Q7 flip-flop, Q8 LED
+* driver and bypass are omitted. 2SC732TM-GR / 2SC945-P use generic
+* hFE 300 models; uPC4558 as the usual 4558 macro.
+
+Vcc vcc 0 9
+
+* VB: R27, VR3 10k B (centred), R28, C18
+R27 vcc t1 4.7k
+RvrA t1 vb 5k
+RvrB vb t2 5k
+R28 t2 0 4.7k
+C18 vb 0 47u
+
+* LFO bias: R33/R34, C20
+R33 vcc vbl 10k
+R34 vbl 0 10k
+C20 vbl 0 47u
+
+* Guitar pickup source impedance (DI samples act as pickup EMF).
+Vin src 0 0
+Rpu src pu 6.5k
+Lpu pu jack 2.3
+
+* Q1 input buffer (Zin ~ 407k)
+C1 jack n1 0.047u
+R1 n1 q1b 1k
+R2 q1b vb 470k
+Q1 vcc q1b q1e Q2SC732
+R3 q1e 0 10k
+
+* IC1a pre-emphasis shelf
+C2 q1e pa 0.47u
+R4 pa inv1 47k
+C3 pa p35 0.0068u
+R5 p35 inv1 10k
+R6 inv1 pre 47k
+C4 inv1 pre 100p
+R7 np1 vb 10k
+X1A np1 inv1 pre UPC4558
+
+* Anti-aliasing filter (R8/C5 high-pass, R9/C6, Sallen-Key around Q2)
+C5 pre b5 0.033u
+R8 b5 vb 100k
+R9 b5 f1 10k
+C6 f1 0 0.0033u
+R10 f1 f2 10k
+C7 f2 q2e 0.0082u
+R11 f2 f3 10k
+C8 f3 0 470p
+Q2 vcc f3 q2e Q2SC732
+R12 q2e 0 10k
+R13 q2e bbdin 4.7k
+
+* MN3007 output (driven by the *@bbd element), R14 pull-up
+Vbbd bbdo 0 DC 3.6
+Rbo bbdo bo 1k
+R14 bo vcc 56k
+
+* Reconstruction filter (C10/R15 high-pass, R16/C11, Sallen-Key around Q3)
+C10 bo g 0.033u
+R15 g vb 330k
+R16 g h1 10k
+C11 h1 0 0.0033u
+R17 h1 h2 10k
+C12 h2 q3e 0.0082u
+R18 h2 h3 10k
+C13 h3 0 470p
+Q3 vcc h3 q3e Q2SC732
+R19 q3e 0 10k
+C14 q3e k 0.033u
+R20 k vb 1meg
+R22 k j9 47k
+Rq9 j9 sum 400
+
+* IC1b summing de-emphasis shelf: dry (R21) + wet (R22), 50/50
+R21 pre sum 47k
+R24 sum mix 47k
+C16 sum mix 100p
+C15 sum d15 0.0068u
+R23 d15 mix 10k
+X1B vb sum mix UPC4558
+R25 mix o1 470
+C17 o1 out 1u
+R26 out 0 100k
+Rload out 0 1meg
+
+* Clock modulation: Depth pot (lug 1 = LFO bias, lug 3 = LFO), R35/C21,
+* Q4 emitter follower, R36/R37 divider to the clock node
+Vlfo lfo 0 DC 4.5
+RdA vbl dw 50k
+RdB dw lfo 50k
+R35 dw q4b 220k
+C21 q4b 0 0.01u
+Q4 vcc q4b q4e Q2SC945
+R36 q4e clk 4.7k
+R37 clk 0 4.7k
+
+.model Q2SC732 NPN(IS=2.04f BF=300 BR=3.377 VAF=100)
+.model Q2SC945 NPN(IS=2.04f BF=300 BR=3.377 VAF=100)
+.end

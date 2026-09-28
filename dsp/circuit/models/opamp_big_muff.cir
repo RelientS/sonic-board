@@ -1,0 +1,145 @@
+* Electro-Harmonix Op-Amp Big Muff Pi (2017 reissue of the 1978 V4/V5 op-amp Big Muff)
+*@name Op-Amp Big Muff Pi
+*@input Vin
+*@output out 1
+*@oversample 4
+*@pot volume RvolA RvolB 100k log
+*@pot tone RtoneA RtoneB 10k lin
+*@pot sustain RsusA RsusB 10k lin
+*@control Volume volume default=0.5
+*@control Tone tone default=0.5
+*@control Sustain sustain default=0.6
+*@switch ToneBypass Rtbyp 1 100meg default=0
+*
+* Sources:
+*  - Aion FX "Corvus" (EHX Big Muff Pi, 1978 op-amp version), legacy and
+*    current (v1.0.2, 2024) build docs: aionfx.com/app/files/docs/
+*    corvus_legacy_documentation.pdf and corvus_documentation.pdf. Values and
+*    topology below follow these; the current doc gives the "stock" sustain
+*    wiring used here (pot lug 3 direct to IC1B out, lug 1 via 47R to ground).
+*  - tagboardeffects.blogspot.com "EHX IC Big Muff" ('77 and '78 layouts by
+*    IvIark): identical values, except C6 = 150p on the '77 (V4) and 330p on
+*    the '78 tone-bypass (V5) board, and 1M/1M for the IC2 bias divider.
+*  - Kit Rae, kitrae.net/music/big_muff_op_amp_history.html: RC4558 + 741
+*    op-amps, 10k tone/sustain, 100k volume, V5 tone bypass = cap + two 47k
+*    resistors (he quotes .22uF; Aion/tagboard show 150n); the 2017 reissue
+*    (PCB EC-D156rA, engineer Gino Maisano) was built from Howard Davis'
+*    original 4/6/1978 schematic, which already had the tone bypass.
+* No trace of the reissue PCB itself is published; the reissue is modelled
+* as the 1978 V5 circuit. Uncertain values: C6 (330p here; 150p on V4),
+* C10 (150n here; 220n per Kit Rae), volume taper (A here; Kit Rae saw
+* linear pots on vintage units), IC2 bias 820k/1M (1M/1M on tagboard),
+* reissue op-amp types (JRC4558 + 741 assumed).
+*
+* Knobs (rotation 1.0 = fully clockwise, as on the pedal):
+*  - Volume: lug 1 ground, lug 3 from the tone/bypass selector, wiper out.
+*  - Tone: lug 3 = C8/R11 high-pass leg, so CW is brighter.
+*  - Sustain: lug 3 = IC1B out, lug 1 = 47R to ground; CW feeds more signal
+*    to the IC2 clipper.
+*
+* Tone Bypass (SPDT toggle on the pedal): throw 1 = tone wiper, throw 3 =
+* C10/R12/R13 fixed network, common = volume lug 3. A *@switch changes only
+* one element, so it cannot be modelled as a true SPDT. Here the bypass network
+* is hard-wired to volume lug 3 and Rtbyp lifts the tone wiper
+* (1 ohm = tone active, 100meg = bypassed). The bypass state is therefore exact
+* (tone stack still loads IC2, tone wiper open, as on the pedal). In normal
+* state the 47k/47k network stays on the volume pot, which leaks a little of
+* the flat signal into the tone output: small-signal AC vs an exact SPDT
+* shows <= 0.65 dB error at tone min, 1.3 dB (mid-scoop about 1.3 dB shallower
+* around 300-700 Hz) at noon, and 1.8 dB (below 150 Hz) at tone max. An exact
+* model needs a ganged switch (one toggle setting several elements).
+*
+* Omitted: bypass footswitch, LED, supply filter (47R/100u/1N4002) and IC
+* decoupling; the 9V rail is ideal. The op-amp macro has fixed absolute output
+* limits and no supply pins.
+
+Vcc vcc 0 9
+
+* Bias: VA = 4.5V for IC1 (220k/220k, 10u), VB = 4.95V for IC2 (820k/1M, 220n)
+R16 vcc va 220k
+R17 va 0 220k
+C13 va 0 10u
+R18 vcc vb 820k
+R19 vb 0 1meg
+C14 vb 0 220n
+
+* Guitar pickup source impedance (DI samples act as pickup EMF).
+Vin src 0 0
+Rpu src pu 6.5k
+Lpu pu jack 2.3
+
+* Input pulldown (true-bypass anti-pop, non-original, 2M2 per Aion)
+RPD jack 0 2.2meg
+
+* Op-amp instances: X1B must be declared before X1A. With X1A first the
+* engine's DC source stepping falls into a Newton 2-cycle (op-amp vint port
+* limiting); ngspice is order-independent. Topology is unchanged.
+X1B p2 inv2 o2 JRC4558
+
+* IC1A inverting input stage, gain -330k/56k = -5.9
+C1 jack n1 150n
+R1 n1 inv1 56k
+R2 inv1 o1 330k
+X1A va inv1 o1 JRC4558
+
+* IC1B: Sallen-Key low-pass (R3/R4, C3 to output, C2 to ground) with
+* non-inverting gain 1 + 560k/62k = 10 (DC gain 1 via C4)
+R3 o1 n3 10k
+C3 n3 o2 4.7n
+R4 n3 p2 47k
+C2 p2 0 10n
+* X1B is instantiated above (engine DC-solve order, see note there)
+R5 o2 inv2 560k
+R6 inv2 n6 62k
+C4 n6 0 10u
+
+* Sustain pot (stock wiring: DC-coupled across IC1B out, 47R to ground)
+RsusB sus_w o2 5k
+RsusA sus_bot sus_w 5k
+R7 sus_bot 0 47
+
+* IC2 (741) inverting clipper, gain -470k/8.2k = -57, with 330p and two
+* strings of three 1N914 in antiparallel across the feedback. Three identical
+* series diodes without RS are exactly one diode with N x3, so each string is
+* one D3X1N914 and the pair solves as a single port.
+C5 sus_w n5 1u
+R8 n5 inv3 8.2k
+X2 vb inv3 o3 LM741
+R9 inv3 o3 470k
+C6 inv3 o3 330p
+Dclip1 inv3 o3 D3X1N914
+Dclip2 o3 inv3 D3X1N914
+
+* Tone stack: C8/R11 high-pass (lug 3), C7/R10/C9 low-pass (lug 1)
+C8 o3 t3 100n
+R11 t3 0 1.2k
+C7 o3 n7 1u
+R10 n7 t1 5.6k
+C9 t1 0 120n
+RtoneA t1 tw 5k
+RtoneB tw t3 5k
+
+* Tone bypass network (C10, R12/R13 divider) on volume lug 3; Rtbyp lifts the
+* tone wiper when bypassed (see header).
+C10 o3 n10 150n
+R12 n10 vol_top 47k
+R13 vol_top 0 47k
+Rtbyp tw vol_top 1
+
+* Volume and output
+RvolA 0 out 50k
+RvolB out vol_top 50k
+R14 out 0 100k
+* Amplifier input load
+Rload out 0 1meg
+
+* JRC4558D: 3 MHz GBW, 1 V/us slew, 100 dB Aol. On a single 9V rail the
+* output swings to ~1.2V of either rail (+-13.5V typ on +-15V at 10k).
+*@opamp JRC4558 gbw=3e6 slew=1e6 aol=1e5 vlo=1.2 vhi=7.8 rout=75
+* LM741: 1 MHz GBW, 0.5 V/us slew, 200 V/mV Aol, slightly worse swing. The
+* diode strings keep IC2 within ~+-2V of VB, so its limits rarely engage.
+*@opamp LM741 gbw=1e6 slew=0.5e6 aol=2e5 vlo=1.5 vhi=7.5 rout=75
+
+* 1N914 (same fit as rams_head_muff), three in series: N = 3 x 1.752.
+.model D3X1N914 D(IS=2.52n N=5.256)
+.end

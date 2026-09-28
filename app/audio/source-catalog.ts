@@ -117,3 +117,121 @@ export function formatSourceConfig(value: SourceConfig) {
   const performance = getPerformanceSpec(value.performance).name;
   return `${guitar} · ${performance}`;
 }
+
+/**
+ * A loop region inside the source, in seconds. `null` loops the whole
+ * source. Regions shorter than MIN_LOOP_SECONDS are widened.
+ */
+export type LoopRegion = { start: number; end: number };
+export const MIN_LOOP_SECONDS = 0.25;
+export const INPUT_TRIM_RANGE_DB = 12;
+
+/**
+ * What feeds the board besides the example phrase (`source`): an optional
+ * recorded or uploaded take (kept only in this browser; boards and presets
+ * store its id), the loop region, and an input trim. A missing take falls
+ * back to the example phrase.
+ */
+export type InputSettings = {
+  takeId: string | null;
+  loop: LoopRegion | null;
+  trimDb: number;
+};
+
+export const DEFAULT_INPUT_SETTINGS: InputSettings = { takeId: null, loop: null, trimDb: 0 };
+
+/** The source the engine actually plays. */
+export type PlaybackSource =
+  | { kind: 'example'; config: SourceConfig }
+  | { kind: 'take'; takeId: string };
+
+export function clampTrimDb(value: number) {
+  if (!Number.isFinite(value)) return 0;
+  return Math.round(Math.max(-INPUT_TRIM_RANGE_DB, Math.min(INPUT_TRIM_RANGE_DB, value)) * 10) / 10;
+}
+
+export function trimDbToGain(value: number) {
+  return 10 ** (clampTrimDb(value) / 20);
+}
+
+function normalizeLoopShape(value: unknown): LoopRegion | null {
+  if (!value || typeof value !== 'object') return null;
+  const { start, end } = value as Partial<LoopRegion>;
+  if (typeof start !== 'number' || typeof end !== 'number' || !Number.isFinite(start) || !Number.isFinite(end)) return null;
+  if (end - start <= 0) return null;
+  return { start: Math.max(0, start), end };
+}
+
+export function normalizeInputSettings(value: unknown): InputSettings {
+  if (!value || typeof value !== 'object') return { ...DEFAULT_INPUT_SETTINGS };
+  const candidate = value as Partial<Record<keyof InputSettings, unknown>>;
+  const takeId = typeof candidate.takeId === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(candidate.takeId) ? candidate.takeId : null;
+  return {
+    takeId,
+    loop: normalizeLoopShape(candidate.loop),
+    trimDb: typeof candidate.trimDb === 'number' ? clampTrimDb(candidate.trimDb) : 0,
+  };
+}
+
+/**
+ * The loop actually played for a source of `duration` seconds: clamped into
+ * the source and at least MIN_LOOP_SECONDS long (or the whole source when it
+ * is shorter than that).
+ */
+export function effectiveLoop(loop: LoopRegion | null, duration: number): LoopRegion {
+  if (!(duration > 0)) return { start: 0, end: 0 };
+  if (!loop || duration <= MIN_LOOP_SECONDS) return { start: 0, end: duration };
+  let start = Math.min(Math.max(0, loop.start), duration - MIN_LOOP_SECONDS);
+  let end = Math.min(duration, Math.max(loop.end, start + MIN_LOOP_SECONDS));
+  if (end - start < MIN_LOOP_SECONDS) start = Math.max(0, end - MIN_LOOP_SECONDS);
+  start = Math.round(start * 1000) / 1000;
+  end = Math.round(end * 1000) / 1000;
+  return start <= 0 && end >= duration ? { start: 0, end: duration } : { start, end };
+}
+
+/** Where the playhead sits `elapsed` seconds after it entered the loop at its start. */
+export function loopPosition(loop: LoopRegion, elapsed: number) {
+  const length = loop.end - loop.start;
+  if (!(length > 0) || !Number.isFinite(elapsed)) return loop.start;
+  return loop.start + (((elapsed % length) + length) % length);
+}
+
+/** Maps an absolute playhead position into `loop` (positions outside wrap to its start). */
+export function positionInLoop(loop: LoopRegion, position: number) {
+  if (position >= loop.start && position < loop.end) return position;
+  return loop.start;
+}
+
+/** The loop edited by dragging one handle or the whole region by `delta` seconds. */
+export function dragLoop(loop: LoopRegion, part: 'start' | 'end' | 'region', delta: number, duration: number): LoopRegion {
+  if (part === 'region') {
+    const length = loop.end - loop.start;
+    const start = Math.min(Math.max(0, loop.start + delta), Math.max(0, duration - length));
+    return effectiveLoop({ start, end: start + length }, duration);
+  }
+  if (part === 'start') {
+    return effectiveLoop({ start: Math.min(loop.start + delta, loop.end - MIN_LOOP_SECONDS), end: loop.end }, duration);
+  }
+  return effectiveLoop({ start: loop.start, end: Math.max(loop.end + delta, loop.start + MIN_LOOP_SECONDS) }, duration);
+}
+
+/**
+ * Level guidance for the input meter. A passive single coil peaks around
+ * −18…−10 dBFS on a typical interface at unity gain, a hot humbucker up to
+ * −6; the pedal models are calibrated for roughly that range.
+ */
+export const INPUT_LEVEL_TARGET = { lowDbfs: -24, highDbfs: -4 } as const;
+
+export function inputLevelVerdict(peakDbfs: number): '偏小' | '合适' | '偏大' | null {
+  if (!Number.isFinite(peakDbfs) || peakDbfs < -80) return null;
+  if (peakDbfs < INPUT_LEVEL_TARGET.lowDbfs) return '偏小';
+  if (peakDbfs > INPUT_LEVEL_TARGET.highDbfs) return '偏大';
+  return '合适';
+}
+
+export function formatSeconds(value: number) {
+  const safe = Math.max(0, Number.isFinite(value) ? value : 0);
+  const minutes = Math.floor(safe / 60);
+  const seconds = safe - minutes * 60;
+  return `${minutes}:${seconds.toFixed(1).padStart(4, '0')}`;
+}

@@ -40,7 +40,7 @@ function makeWallChain(wide: boolean): PresetChainItem[] {
   if (wide) {
     return [
       { specId: 'studio-comp', lane: 'A', settings: { sustain: 42 } },
-      { specId: 'analog-chorus', lane: 'A', settings: { rate: 21, depth: 38 } },
+      { specId: 'analog-chorus', lane: 'A', settings: { rate: 5, depth: 60 } },
       { specId: 'digital-delay', lane: 'A', settings: { time: 35, feedback: 27, mix: 23, tone: 62, width: 78 } },
       { specId: 'reverse-space', lane: 'B', settings: { mix: 54, decay: 55, preDelay: 15, lowCut: 24, highCut: 57, density: 84 } },
       { specId: 'wall-fuzz', lane: 'B', settings: { volume: 57, tone: 48, sustain: 76 } },
@@ -59,8 +59,8 @@ function makeWallChain(wide: boolean): PresetChainItem[] {
 
 function makeCleanChain(wide: boolean): PresetChainItem[] {
   const chain: PresetChainItem[] = [
-    { specId: 'studio-comp', lane: 'A', settings: { sustain: 52, level: 59 } },
-    { specId: 'analog-chorus', lane: wide ? 'A' : undefined, settings: { rate: 23, depth: 41 } },
+    { specId: 'studio-comp', lane: 'A', settings: { sustain: 52, level: 85 } },
+    { specId: 'analog-chorus', lane: wide ? 'A' : undefined, settings: { rate: 7, depth: 62 } },
     { specId: 'tape-echo', lane: wide ? 'B' : undefined, settings: { time: 43, repeats: 29, mix: 25, wow: 19, tone: 42 } },
     { specId: 'cloud-hall', lane: wide ? 'B' : undefined, settings: { mix: 41, decay: 60, preDelay: 20, tone: 61, motion: 28 } },
   ];
@@ -80,7 +80,7 @@ function makeNoiseChain(): PresetChainItem[] {
 
 function makeVintageChain(): PresetChainItem[] {
   return [
-    { specId: 'studio-comp', settings: { sustain: 46, level: 58 } },
+    { specId: 'studio-comp', settings: { sustain: 46, level: 85 } },
     { specId: 'slow-phase', settings: { rate: 13, depth: 34, res: 17, mix: 34 } },
     { specId: 'tape-vibrato', settings: { rate: 18, depth: 26, rise: 28, tone: 43 } },
     { specId: 'tape-echo', settings: { time: 51, repeats: 37, mix: 28, wow: 31, tone: 34 } },
@@ -90,7 +90,7 @@ function makeVintageChain(): PresetChainItem[] {
 
 function makeMotionChain(wide: boolean): PresetChainItem[] {
   return [
-    { specId: 'studio-comp', lane: 'A', settings: { sustain: 43, level: 58 } },
+    { specId: 'studio-comp', lane: 'A', settings: { sustain: 43, level: 85 } },
     { specId: 'slow-phase', lane: 'A', settings: { rate: 11, depth: 39, res: 18, mix: 37 } },
     { specId: 'soft-detune', lane: wide ? 'B' : undefined, settings: { cents: 30, blend: 25, spread: 77, tone: 57 } },
     { specId: 'analog-delay', lane: wide ? 'B' : undefined, settings: { time: 52, feedback: 31, mix: 27 } },
@@ -111,10 +111,10 @@ export function planToneRequest(input: string): ToneAgentPlan {
 
   const config = character === 'noise' ? {
     name: '门限噪音机器', summary: '高增益双失真配中频修正，并用门限空间迅速收尾。', chain: makeNoiseChain(),
-    amp: makeAmpCabConfig('dark-stack', 'closed-4x12', { gain: 44, bass: 53, mid: 61, treble: 51, presence: 43, master: 64 }), output: 57,
+    amp: makeAmpCabConfig('dark-stack', 'mesa-2x12-v30', { gain: 44, bass: 53, mid: 61, treble: 51, presence: 43, master: 64 }), output: 57,
   } : character === 'wall' ? {
     name: wide ? '立体反向音墙' : '反向音墙', summary: '反向空间先进法兹，中频由图示均衡补回，避免只剩低频轰鸣。', chain: makeWallChain(wide),
-    amp: makeAmpCabConfig('brit-20', 'closed-4x12', { gain: 29, bass: 49, mid: 66, treble: 52, presence: 49, master: 65 }), output: 63,
+    amp: makeAmpCabConfig('brit-20', 'marshall-4x12-greenback', { gain: 29, bass: 49, mid: 66, treble: 52, presence: 49, master: 65 }), output: 63,
   } : character === 'vintage' ? {
     name: '复古漂移', summary: '慢相位、轻颤音和磁带回声形成温暖的不稳定感。', chain: makeVintageChain(),
     amp: makeAmpCabConfig('class-a-30', 'blue-2x12', { gain: 24, bass: 49, mid: 57, treble: 52, presence: 45, master: 68 }), output: 68,

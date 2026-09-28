@@ -5,6 +5,7 @@ import {
   buildToneAgentInput,
   normalizeRemoteTonePlan,
   parseResponsesText,
+  parseToneAgentJson,
 } from '../agent/tone-agent-api.ts';
 
 test('agent prompt exposes the bounded catalog and requires strict JSON', () => {
@@ -13,7 +14,9 @@ test('agent prompt exposes the bounded catalog and requires strict JSON', () => 
   assert.match(input, /reverse-space/);
   assert.match(input, /gpt-5\.6-terra/);
   assert.match(input, /只输出 JSON/);
-  assert.match(input, /PedalKernel WDF/);
+  // Every former PedalKernel pedal now runs on the circuit engine.
+  assert.match(input, /SPICE netlist \+ DK circuit solver/);
+  assert.doesNotMatch(input, /PedalKernel WDF/);
   assert.match(input, /phase90/);
   assert.doesNotMatch(input, /legacy-fallback/);
   assert.match(input, /verifiedScore[^}]*null/);
@@ -63,4 +66,24 @@ test('remote plans are accepted only when every model and control is valid', () 
     output: 64,
     chain: [{ specId: 'reverse-space', settings: { mix: 101 } }, { specId: 'wall-fuzz' }, { specId: 'graphic-eq' }],
   }), null);
+});
+
+test('remote plan parsing bounds provider text and preserves explicit amp bypass', () => {
+  assert.equal(parseToneAgentJson('x'.repeat(65 * 1024)), null);
+  const plan = normalizeRemoteTonePlan({
+    name: '可逆方案',
+    summary: '保留箱头旁通状态',
+    decisions: ['保留当前输出模拟旁通'],
+    source: { guitar: 'single-neck', performance: 'chords', progression: 'dream-open' },
+    routing: { mode: 'serial', blend: 50, spread: 0 },
+    amp: { ampId: 'brit-20', cabId: 'closed-4x12', ampValues: {}, cabValues: {}, bypassed: true },
+    output: 64,
+    chain: [
+      { specId: 'reverse-space', settings: {} },
+      { specId: 'wall-fuzz', settings: {} },
+      { specId: 'graphic-eq', settings: {} },
+    ],
+  });
+  assert.ok(plan);
+  assert.equal(plan.preset.amp.bypassed, true);
 });

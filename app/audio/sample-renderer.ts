@@ -2,17 +2,54 @@ import { SOURCE_DURATION_SECONDS } from './audio-core.ts';
 import { REAL_GUITAR_SAMPLE_BANKS, applySampleInputHeadroom, makeSamplePlaybackPlan } from './sample-library.ts';
 import { type SourceConfig } from './source-catalog.ts';
 
-const encodedSampleCache = new Map<string, Promise<ArrayBuffer>>();
+// A render uses at most eleven roots; retain a little room without keeping all 48 files.
+export const MAX_ENCODED_SAMPLE_CACHE_ENTRIES = 16;
 
-async function fetchSample(url: string) {
-  let pending = encodedSampleCache.get(url);
-  if (!pending) {
-    pending = fetch(url).then(async (response) => {
+const encodedSampleCache = new Map<string, ArrayBuffer>();
+const inFlightSampleFetches = new Map<string, Promise<ArrayBuffer>>();
+
+function rememberEncodedSample(url: string, encoded: ArrayBuffer) {
+  encodedSampleCache.delete(url);
+  encodedSampleCache.set(url, encoded);
+  while (encodedSampleCache.size > MAX_ENCODED_SAMPLE_CACHE_ENTRIES) {
+    const oldest = encodedSampleCache.keys().next().value;
+    if (oldest === undefined) break;
+    encodedSampleCache.delete(oldest);
+  }
+}
+
+export function getEncodedSampleCacheSize() {
+  return encodedSampleCache.size;
+}
+
+function fetchSample(url: string) {
+  const cached = encodedSampleCache.get(url);
+  if (cached !== undefined) {
+    rememberEncodedSample(url, cached);
+    return Promise.resolve(cached);
+  }
+
+  const inFlight = inFlightSampleFetches.get(url);
+  if (inFlight) return inFlight;
+
+  const pending = fetch(url)
+    .then(async (response) => {
       if (!response.ok) throw new Error(`采样加载失败：${response.status} ${url}`);
       return response.arrayBuffer();
+    })
+    .then((encoded) => {
+      rememberEncodedSample(url, encoded);
+      return encoded;
     });
-    encodedSampleCache.set(url, pending);
-  }
+  inFlightSampleFetches.set(url, pending);
+  void pending.then(
+    () => {
+      if (inFlightSampleFetches.get(url) === pending) inFlightSampleFetches.delete(url);
+    },
+    () => {
+      if (inFlightSampleFetches.get(url) === pending) inFlightSampleFetches.delete(url);
+    },
+  );
   return pending;
 }
 
@@ -22,8 +59,10 @@ export async function renderSampledSourceBuffer(
 ) {
   const plan = makeSamplePlaybackPlan(sourceConfig);
   const bank = REAL_GUITAR_SAMPLE_BANKS[sourceConfig.guitar];
+  // A guitar is a mono source; stereo width belongs to the time-based
+  // effects and lane panning after the drives, as on a real pedalboard.
   const offline = new OfflineAudioContext(
-    2,
+    1,
     Math.ceil(SOURCE_DURATION_SECONDS * context.sampleRate),
     context.sampleRate,
   );
@@ -41,7 +80,6 @@ export async function renderSampledSourceBuffer(
     const player = offline.createBufferSource();
     const envelope = offline.createGain();
     const tone = offline.createBiquadFilter();
-    const panner = offline.createStereoPanner();
     const start = event.time;
     const end = Math.min(SOURCE_DURATION_SECONDS, start + event.duration);
     const attackEnd = Math.min(end, start + 0.008);
@@ -50,15 +88,15 @@ export async function renderSampledSourceBuffer(
     player.buffer = buffer;
     player.playbackRate.value = event.playbackRate;
     envelope.gain.setValueAtTime(0.0001, start);
-    const peak = Math.max(0.0001, event.velocity * 0.32);
+    // SQRT1_2 keeps the level the old equal-power centre pan produced.
+    const peak = Math.max(0.0001, event.velocity * 0.32 * Math.SQRT1_2);
     envelope.gain.exponentialRampToValueAtTime(peak, attackEnd);
     envelope.gain.setValueAtTime(peak, releaseStart);
     envelope.gain.exponentialRampToValueAtTime(0.0001, end);
     tone.type = 'lowpass';
     tone.frequency.value = bank.highCutHz;
     tone.Q.value = 0.42;
-    panner.pan.value = event.pan;
-    player.connect(envelope).connect(tone).connect(panner).connect(offline.destination);
+    player.connect(envelope).connect(tone).connect(offline.destination);
     player.start(start);
     player.stop(Math.min(SOURCE_DURATION_SECONDS, end + 0.02));
   });
