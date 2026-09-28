@@ -22,12 +22,14 @@ import {
   PX_PER_MM,
   rectsOverlap,
   signalPoint,
+  skinSwitchBox,
   snap,
   UTILITY_SIZE,
   viewRect,
   viewX,
   type FlowDirection,
   type Guide,
+  type PedalSkin,
   type Rect,
   type Size,
 } from './board-geometry.ts';
@@ -72,7 +74,8 @@ export type BoardNodeProps = {
 export type FreeBoardProps = BoardNodeProps & {
   direction: FlowDirection;
   /** Optional top-down photos by spec id (owner only); drawn pedals otherwise. */
-  skins?: Record<string, string>;
+  /** Owner-only photos by spec id, with where the footswitch and LED sit on them. */
+  skins?: Record<string, PedalSkin>;
   onPlace: (id: string, x: number, y: number) => void;
   onPatch: (cables: Cable[]) => void;
   onInsertOnCable: (cable: Cable) => void;
@@ -396,6 +399,7 @@ export function Board(props: FreeBoardProps) {
     const selected = state.selected === item.instanceId;
     const chip = engineChip(spec, engineStatus(item.instanceId), namLoaded(spec));
     const skin = skins?.[spec.id];
+    const skinSwitch = skin?.switch ? skinSwitchBox(skin.switch, view.w, view.h) : null;
     const style = { left: px(view.x), top: px(view.y), width: px(view.w), height: px(view.h), '--accent': spec.accent } as CSSProperties;
     return (
       <div
@@ -417,13 +421,20 @@ export function Board(props: FreeBoardProps) {
         >
           {/* Photo skins are small private WebPs drawn at the pedal's real size; next/image adds nothing here. */}
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          {skin ? <img className="pedal-skin" src={skin} alt="" draggable={false} /> : <PedalArt spec={spec} values={values[item.instanceId] ?? {}} />}
-          {skin && <span className={'skin-led' + (bypassed ? '' : ' on')} aria-hidden="true" />}
+          {skin ? <img className="pedal-skin" src={skin.url} alt="" draggable={false} /> : <PedalArt spec={spec} values={values[item.instanceId] ?? {}} />}
+          {skin?.led && <span className={'skin-led' + (bypassed ? '' : ' on')} style={{ left: px(skin.led.x * view.w), top: px(skin.led.y * view.h) }} aria-hidden="true" />}
           {chip && <span className={'engine-chip ' + chip.tone} title={chip.title}>{chip.text}</span>}
           {parked && <span className="parked-chip">未接入</span>}
         </button>
         {!parked && <span className="order-badge" aria-hidden="true">{index + 1}</span>}
-        <button type="button" className="footswitch" aria-label={(bypassed ? '启用' : '旁通') + spec.name} aria-pressed={!bypassed} onClick={() => onBypass(item.instanceId)}>
+        <button
+          type="button"
+          className={'footswitch' + (skinSwitch ? ' on-skin' + (skinSwitch.round ? ' round' : '') + (skin?.led ? '' : ' glow') : '')}
+          style={skinSwitch ? { left: px(skinSwitch.left), top: px(skinSwitch.top), width: px(skinSwitch.width), height: px(skinSwitch.height) } : undefined}
+          aria-label={(bypassed ? '启用' : '旁通') + spec.name}
+          aria-pressed={!bypassed}
+          onClick={() => onBypass(item.instanceId)}
+        >
           {!skin && <span className={'led' + (bypassed ? '' : ' on')} aria-hidden="true" />}
           {!skin && <span className="metal-switch" aria-hidden="true" />}
         </button>

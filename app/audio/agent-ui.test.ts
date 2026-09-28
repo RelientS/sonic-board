@@ -35,7 +35,7 @@ test('pedals, playback, and presets expose keyboard and loading state', () => {
   // Parked (uncabled) pedals say so instead of a chain number.
   assert.match(page, /className="pedal-face"[\s\S]*?aria-label=\{`\$\{parked \? '未接入' : `\$\{index \+ 1\}\.`\} \$\{spec\.name\}/);
   assert.match(page, /aria-current=\{selected \? 'true' : undefined\}/);
-  assert.match(page, /className="footswitch"[\s\S]*?aria-pressed=\{!bypassed\}/);
+  assert.match(page, /className=\{'footswitch'[\s\S]*?aria-pressed=\{!bypassed\}/);
   assert.match(page, /if \(playbackLoading \|\| playbackLoadingRef\.current\) return/);
   assert.match(page, /disabled=\{playbackLoading\}/);
   assert.match(page, /正在加载试听，请稍候；重复点击不会中断加载/);

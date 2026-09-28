@@ -102,3 +102,15 @@ test('auto layout: serial rows wrap without overlaps; parallel lanes sit between
   assert.ok(parallel[SPLITTER_NODE].x < Math.min(...[...laneA, ...laneB].map((point) => point.x)));
   assert.ok(parallel[MIXER_NODE].x > Math.max(...[...laneA, ...laneB].map((point) => point.x)));
 });
+
+test('photo footswitch hit areas follow the annotated switch on each photo', async () => {
+  const { skinSwitchBox } = await import('../studio/board-geometry.ts');
+  // A round MXR-style switch at 53% / 72% with radius 11% of the width, on a 64×111 mm pedal.
+  const round = skinSwitchBox({ shape: 'circle', x: 0.53, y: 0.72, r: 0.11 }, 64, 111);
+  assert.ok(Math.abs(round.width - 14.08) < 1e-9 && round.width === round.height && round.round);
+  assert.ok(Math.abs(round.left + round.width / 2 - 0.53 * 64) < 1e-9);
+  assert.ok(Math.abs(round.top + round.height / 2 - 0.72 * 111) < 1e-9);
+  // A Boss rubber pad: a rectangle across the lower third.
+  const pad = skinSwitchBox({ shape: 'rect', x: 0.5, y: 0.785, w: 0.84, h: 0.33 }, 73, 130);
+  assert.ok(!pad.round && Math.abs(pad.left - 0.08 * 73) < 1e-9 && Math.abs(pad.top + pad.height - 0.95 * 130) < 1e-9);
+});

@@ -33,6 +33,7 @@ import { AMP_SPECS, getAmpSpec, isNamAmp, listNamAmps, NAM_AMP_PREFIX, registerN
 import { FACTORY_PRESETS, instantiatePreset, type EffectSpec } from '../effects/catalog';
 import { captureUserPreset, instantiateUserPreset, parseUserPresets, type UserPreset } from '../effects/user-presets';
 import { Board } from './Board';
+import type { PedalSkin, SkinSwitch } from './board-geometry';
 import {
   boardFromPreset,
   captureLayout,
@@ -114,7 +115,7 @@ export default function Studio() {
   // A '+' on a patch cable: the picked pedal goes into that cable.
   const [pickerCable, setPickerCable] = useState<Cable | null>(null);
   // Top-down photos by spec id, only for the owner account (licensed for personal use).
-  const [pedalSkins, setPedalSkins] = useState<Record<string, string>>({});
+  const [pedalSkins, setPedalSkins] = useState<Record<string, PedalSkin>>({});
   // Built-in pedal NAM captures (owner only) and the one chosen per NAM slot.
   const [privatePedalModels, setPrivatePedalModels] = useState<PrivatePedalModel[]>([]);
   const [privateNam, setPrivateNam] = useState<Record<string, NamModelRecord>>({});
@@ -202,10 +203,14 @@ export default function Studio() {
       })
       .catch(() => { /* offline: the built-in amps still work */ });
     void fetch('/api/private-assets', { credentials: 'same-origin' })
-      .then((response): Promise<{ skins?: Array<{ specId: string }>; pedalModels?: PrivatePedalModel[] }> => (response.ok ? response.json() : Promise.resolve({})))
+      .then((response): Promise<{ skins?: Array<{ specId: string; switch?: SkinSwitch; led?: { x: number; y: number } }>; pedalModels?: PrivatePedalModel[] }> => (response.ok ? response.json() : Promise.resolve({})))
       .then((payload) => {
         const skins = Array.isArray(payload.skins) ? payload.skins : [];
-        setPedalSkins(Object.fromEntries(skins.map((skin) => [skin.specId, '/api/private-assets?skin=' + encodeURIComponent(skin.specId)])));
+        setPedalSkins(Object.fromEntries(skins.map((skin) => [skin.specId, {
+          url: '/api/private-assets?skin=' + encodeURIComponent(skin.specId),
+          switch: skin.switch,
+          led: skin.led,
+        }])));
         const models = Array.isArray(payload.pedalModels) ? payload.pedalModels : [];
         setPrivatePedalModels(models);
         if (!models.length) setPrivateNam({});

@@ -8,7 +8,7 @@ import { getAccountService } from './service.ts';
 import { readCookie, SESSION_COOKIE } from './session.ts';
 import { resolveDataDir } from './store.ts';
 
-export type PrivateSkinEntry = { specId: string; file: string; widthIn?: number; heightIn?: number };
+export type PrivateSkinEntry = { specId: string; file: string; widthIn?: number; heightIn?: number; switch?: unknown; led?: unknown };
 export type PrivatePedalModelEntry = { id: string; file: string; slotId: string; name: string; setting: string; author?: string; url?: string; loudness?: number | null };
 
 const ID = /^[a-z0-9][a-z0-9-]{0,63}$/;

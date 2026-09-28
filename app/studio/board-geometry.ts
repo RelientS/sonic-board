@@ -260,3 +260,15 @@ export function autoLayout(chain: AudioChainItem[], mode: RoutingMode, parked: A
   if (parked.length) placeRow(parked, EDGE_MARGIN + 6, true);
   return positions;
 }
+
+export type SkinSwitch = { shape: 'circle'; x: number; y: number; r: number } | { shape: 'rect'; x: number; y: number; w: number; h: number };
+export type PedalSkin = { url: string; switch?: SkinSwitch; led?: { x: number; y: number } };
+
+/** Footswitch hit area on a photo, in px within a pedal drawn `w`×`h` px. */
+export function skinSwitchBox(sw: SkinSwitch, w: number, h: number) {
+  if (sw.shape === 'circle') {
+    const size = sw.r * 2 * w;
+    return { left: sw.x * w - size / 2, top: sw.y * h - size / 2, width: size, height: size, round: true };
+  }
+  return { left: (sw.x - sw.w / 2) * w, top: (sw.y - sw.h / 2) * h, width: sw.w * w, height: sw.h * h, round: false };
+}

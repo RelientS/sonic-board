@@ -17,7 +17,7 @@ export async function GET(request: Request) {
   const pedalModel = params.get('pedalModel');
   if (!skin && !pedalModel) {
     if (role !== 'owner') return jsonResponse({ skins: [], pedalModels: [] }, 200, PRIVATE);
-    const skins = (await listPrivateSkins()).map(({ specId, widthIn, heightIn }) => ({ specId, widthIn, heightIn }));
+    const skins = (await listPrivateSkins()).map(({ specId, widthIn, heightIn, switch: footswitch, led }) => ({ specId, widthIn, heightIn, switch: footswitch, led }));
     const pedalModels = (await listPrivatePedalModels()).map(({ id, slotId, name, setting, author, url, loudness }) => ({ id, slotId, name, setting, author, url, loudness }));
     return jsonResponse({ skins, pedalModels }, 200, PRIVATE);
   }
