@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
+import { studioSource } from './studio-sources.ts';
+
 import { EFFECT_SPECS, formatControlValue } from '../effects/catalog.ts';
 import { getEffectFidelity } from '../effects/fidelity.ts';
 
-const page = readFileSync(new URL('../studio/page.tsx', import.meta.url), 'utf8');
+const page = studioSource;
 const styles = readFileSync(new URL('../globals.css', import.meta.url), 'utf8');
 
 test('knobs drag vertically with fine mode, reset on double-click and announce their value', () => {
@@ -36,7 +38,7 @@ test('two-position controls render as switches with their silk-screen labels', (
 
 test('A/B snapshots start identical and can be copied across', () => {
   assert.match(page, /return \{ A: cloneValues\(board\.values\), B: cloneValues\(board\.values\) \};/);
-  assert.match(page, /\[other\]: cloneValues\(current\[snapshot\]\)/);
+  assert.match(page, /\[other\]: cloneValues\(state\.snapshots\[state\.snapshot\]\)/);
 });
 
 test('library marks and filters circuit-level pedals', () => {

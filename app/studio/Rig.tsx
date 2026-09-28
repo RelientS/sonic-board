@@ -1,6 +1,6 @@
 'use client';
 
-import { forwardRef, useEffect, useRef, type CSSProperties, type ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 
 import { isNamAmp, type AmpSpec, type CabSpec } from '../amps/catalog.ts';
 import { combosIn, headsIn, speakerCount, speakerOf, type RigMode } from './rig-model.ts';
@@ -17,28 +17,32 @@ function Grille({ speakers, className }: { speakers: number; className?: string 
  * The amp at the end of the signal chain, drawn as the physical object: a
  * combo (one cabinet, control strip over the grille) or a head on a cab.
  */
-export const RigObject = forwardRef<HTMLButtonElement, {
+export function RigObject({ nodeId, amp, cab, bypassed, lit, selected, expanded, compact = false, onOpen }: {
+  nodeId: string;
   amp: AmpSpec;
   cab: CabSpec;
   bypassed: boolean;
   lit: boolean;
+  selected: boolean;
   expanded: boolean;
-  onOpen: () => void;
-}>(function RigObject({ amp, cab, bypassed, lit, expanded, onOpen }, ref) {
+  compact?: boolean;
+  onOpen: (fromKeyboard: boolean) => void;
+}) {
   const combo = amp.format === 'combo' && amp.speakerCab === cab.id;
   const speakers = speakerCount(cab);
   const style = { '--amp-plate': amp.finish, '--amp-logo': amp.accent } as CSSProperties;
-  const label = `音箱：${amp.name}${combo ? '（单体）' : `，箱体 ${cab.name}`}${bypassed ? '，已旁通' : ''}。打开音箱设置`;
+  const label = `音箱：${amp.name}${combo ? '（单体）' : `，箱体 ${cab.name}`}${bypassed ? '，已旁通' : ''}。打开音箱面板`;
   return (
     <button
-      ref={ref}
       type="button"
-      className={'rig-object' + (combo ? ' is-combo' : ' is-stack') + (bypassed ? ' is-bypassed' : '') + (lit ? ' is-lit' : '')}
+      data-node-id={nodeId}
+      className={'rig-object' + (combo ? ' is-combo' : ' is-stack') + (bypassed ? ' is-bypassed' : '') + (lit ? ' is-lit' : '') + (selected ? ' is-selected' : '') + (compact ? ' is-compact' : '')}
       style={style}
       aria-label={label}
+      aria-current={selected ? 'true' : undefined}
       aria-expanded={expanded}
-      aria-controls="rig-drawer"
-      onClick={onOpen}
+      aria-controls="focus-deck"
+      onClick={(event) => onOpen(event.detail === 0)}
     >
       {combo ? (
         <span className="rig-cabinet rig-combo" data-speakers={speakers}>
@@ -60,7 +64,7 @@ export const RigObject = forwardRef<HTMLButtonElement, {
       )}
     </button>
   );
-});
+}
 
 function ModelButton({ model, active, marker, onPick }: { model: AmpSpec | CabSpec; active: boolean; marker?: string; onPick: () => void }) {
   const isAmp = 'accent' in model;
@@ -76,14 +80,13 @@ function ModelButton({ model, active, marker, onPick }: { model: AmpSpec | CabSp
 }
 
 /**
- * Side sheet (bottom sheet on phones) for the amp section. Non-modal: the
- * board stays usable, Escape and the close button return focus to the rig.
+ * The rig's panel in the focus deck: combo or head+cab, the amp's knobs and
+ * the cab/speaker with its mic knobs. Measured cabs show their credit.
  */
-export function RigDrawer({
-  open, view, amps, amp, cab, bypassed, cabs, ampKnobs, cabKnobs,
-  onViewChange, onPickCombo, onPickHead, onPickCab, onToggleBypass, onClose,
+export function RigDeck({
+  view, amps, amp, cab, bypassed, cabs, ampKnobs, cabKnobs,
+  onViewChange, onPickCombo, onPickHead, onPickCab, onToggleBypass,
 }: {
-  open: boolean;
   view: RigMode;
   amps: AmpSpec[];
   amp: AmpSpec;
@@ -97,23 +100,7 @@ export function RigDrawer({
   onPickHead: (ampId: string) => void;
   onPickCab: (cabId: string) => void;
   onToggleBypass: () => void;
-  onClose: () => void;
 }) {
-  const heading = useRef<HTMLHeadingElement | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    heading.current?.focus();
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
-
-  if (!open) return null;
   const combos = combosIn(amps);
   const heads = headsIn(amps);
   const showingCombo = view === 'combo';
@@ -121,18 +108,8 @@ export function RigDrawer({
   const speakerIsBuiltIn = amp.format === 'combo' && speakerOf(amp)?.id === cab.id;
 
   return (
-    <aside id="rig-drawer" className="rig-drawer" aria-labelledby="rig-drawer-title">
-      <header>
-        <h2 id="rig-drawer-title" ref={heading} tabIndex={-1}>音箱</h2>
-        <button type="button" className="rig-close" onClick={onClose}>关闭</button>
-      </header>
-      <div className="rig-drawer-body">
-        <button
-          type="button"
-          className={'amp-bypass' + (bypassed ? ' active' : '')}
-          aria-pressed={bypassed}
-          onClick={onToggleBypass}
-        >{bypassed ? '音箱模拟已关闭，点这里打开' : '音箱模拟已打开'}</button>
+    <div className="rig-deck">
+      <section className="rig-column rig-choose" aria-label="选择音箱">
         <div className="rig-view" role="radiogroup" aria-label="音箱形式">
           {(['combo', 'head'] as const).map((entry) => (
             <button key={entry} type="button" role="radio" aria-checked={view === entry} className={view === entry ? 'active' : ''} onClick={() => onViewChange(entry)}>
@@ -141,46 +118,47 @@ export function RigDrawer({
             </button>
           ))}
         </div>
+        <div className="model-list" role="radiogroup" aria-label={showingCombo ? '单体音箱' : '箱头'}>
+          {(showingCombo ? combos : heads).map((model) => (
+            <ModelButton
+              key={model.id}
+              model={model}
+              active={amp.id === model.id}
+              marker={isNamAmp(model.id) ? '实采' : undefined}
+              onPick={() => (showingCombo ? onPickCombo(model.id) : onPickHead(model.id))}
+            />
+          ))}
+        </div>
+      </section>
 
-        <section className="output-section">
-          <div className="section-heading"><h3>{showingCombo ? '选择音箱' : '选择箱头'}</h3></div>
-          <div className="model-list" role="radiogroup" aria-label={showingCombo ? '单体音箱' : '箱头'}>
-            {(showingCombo ? combos : heads).map((model) => (
-              <ModelButton
-                key={model.id}
-                model={model}
-                active={amp.id === model.id}
-                marker={isNamAmp(model.id) ? '实采' : undefined}
-                onPick={() => (showingCombo ? onPickCombo(model.id) : onPickHead(model.id))}
-              />
-            ))}
-          </div>
-        </section>
+      <section className="rig-column" aria-label={`${amp.name} 面板`}>
+        <div className="section-heading">
+          <h3>{amp.name}</h3>
+          <button type="button" role="switch" aria-checked={!bypassed} className={'amp-bypass' + (bypassed ? ' active' : '')} onClick={onToggleBypass}>
+            {bypassed ? '音箱模拟已关闭' : '音箱模拟已打开'}
+          </button>
+        </div>
+        {ampKnobs}
+        <span className="model-method">{amp.modeling}</span>
+        <p className="model-description">{amp.description}</p>
+      </section>
 
-        <section className="output-section">
-          <div className="section-heading"><h3>面板</h3><span>{amp.name}</span></div>
-          <span className="model-method">{amp.modeling}</span>
-          <p className="model-description">{amp.description}</p>
-          {ampKnobs}
-        </section>
-
-        <section className="output-section cab-section">
-          {showingCombo && speakerIsBuiltIn ? (
-            <div className="section-heading"><h3>内置喇叭</h3><span>{cab.name}</span></div>
-          ) : (
-            <>
-              <div className="section-heading"><h3>箱体</h3><span>{cab.format}</span></div>
-              <div className="cab-list" role="radiogroup" aria-label="箱体">
-                {cabs.map((model) => <ModelButton key={model.id} model={model} active={cab.id === model.id} onPick={() => onPickCab(model.id)} />)}
-              </div>
-            </>
-          )}
-          <span className="model-method">{cab.modeling}</span>
-          <p className="model-description">{cab.description}</p>
-          {cab.ir && <p className="model-credit">{cab.ir.credit}</p>}
-          {cabKnobs}
-        </section>
-      </div>
-    </aside>
+      <section className="rig-column" aria-label={showingCombo && speakerIsBuiltIn ? '内置喇叭' : '箱体'}>
+        {showingCombo && speakerIsBuiltIn ? (
+          <div className="section-heading"><h3>内置喇叭</h3><span>{cab.name}</span></div>
+        ) : (
+          <>
+            <div className="section-heading"><h3>箱体</h3><span>{cab.format}</span></div>
+            <div className="cab-list" role="radiogroup" aria-label="箱体">
+              {cabs.map((model) => <ModelButton key={model.id} model={model} active={cab.id === model.id} onPick={() => onPickCab(model.id)} />)}
+            </div>
+          </>
+        )}
+        {cabKnobs}
+        <span className="model-method">{cab.modeling}</span>
+        <p className="model-description">{cab.description}</p>
+        {cab.ir && <p className="model-credit">{cab.ir.credit}</p>}
+      </section>
+    </div>
   );
 }

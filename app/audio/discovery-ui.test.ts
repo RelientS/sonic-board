@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
+import { studioSource } from './studio-sources.ts';
+
 import {
   EFFECT_SPECS,
   FACTORY_PRESETS,
@@ -11,7 +13,7 @@ import {
   getPresetSearchText,
 } from '../effects/catalog.ts';
 
-const page = readFileSync(new URL('../studio/page.tsx', import.meta.url), 'utf8');
+const page = studioSource;
 const styles = readFileSync(new URL('../globals.css', import.meta.url), 'utf8');
 
 test('effect discovery text matches English and Chinese style terms', () => {
@@ -42,7 +44,11 @@ test('style controls filter effects and presets and preset cards expose their ta
   assert.match(page, /function StyleFilters/);
   assert.match(page, /STYLE_TAGS\.map\(\(tag\) =>/);
   assert.match(page, /STYLE_TAG_LABELS\[tag\]/);
-  assert.equal(page.match(/<StyleFilters value=\{styleFilter\} onChange=\{setStyleFilter\} \/>/g)?.length, 2);
+  // Both the pedal picker and the tone library filter by style.
+  const picker = readFileSync(new URL('../studio/PedalPicker.tsx', import.meta.url), 'utf8');
+  const presets = readFileSync(new URL('../studio/PresetBrowser.tsx', import.meta.url), 'utf8');
+  assert.match(picker, /<StyleFilters value=\{styleFilter\} onChange=/);
+  assert.match(presets, /<StyleFilters value=\{styleFilter\} onChange=\{setStyleFilter\} \/>/);
   assert.match(page, /getPresetSearchText\(preset\)\.toLowerCase\(\)\.includes\(query\)/);
   assert.match(page, /className="preset-style-tags"/);
   assert.match(page, /preset\.styleTags\?\.map\(\(tag\) =>/);

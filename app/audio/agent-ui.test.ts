@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
-const page = readFileSync(new URL('../studio/page.tsx', import.meta.url), 'utf8');
+import { studioSource, studioStyles } from './studio-sources.ts';
+
+const page = studioSource;
 const agent = readFileSync(new URL('../agent/ToneAgentDock.tsx', import.meta.url), 'utf8');
 const styles = readFileSync(new URL('../globals.css', import.meta.url), 'utf8');
 const layout = readFileSync(new URL('../layout.tsx', import.meta.url), 'utf8');
@@ -29,8 +31,10 @@ test('agent uses a persistent desktop dock and a mobile full-height workspace', 
 });
 
 test('pedals, playback, and presets expose keyboard and loading state', () => {
-  assert.match(page, /aria-label=\{String\(index \+ 1\)[\s\S]*?aria-current=\{selected \? 'true' : undefined\}/);
-  assert.match(page, /event\.key !== 'Enter' && event\.key !== ' '/);
+  // Every board node is a real button with a descriptive, numbered label.
+  assert.match(page, /className="pedal-face"[\s\S]*?aria-label=\{`\$\{index \+ 1\}\. \$\{spec\.name\}/);
+  assert.match(page, /aria-current=\{selected \? 'true' : undefined\}/);
+  assert.match(page, /className="footswitch"[\s\S]*?aria-pressed=\{!bypassed\}/);
   assert.match(page, /if \(playbackLoading \|\| playbackLoadingRef\.current\) return/);
   assert.match(page, /disabled=\{playbackLoading\}/);
   assert.match(page, /正在加载试听，请稍候；重复点击不会中断加载/);
@@ -54,15 +58,17 @@ test('agent modal traps focus, restores its opener, and makes background inert',
   assert.match(agent, /event\.shiftKey \? last : first/);
 });
 
-test('mobile board hands vertical gestures to the page and clears transport overlay', () => {
-  assert.match(styles, /--mobile-transport-clearance:\s*264px/);
-  assert.match(styles, /touch-action:\s*pan-x/);
-  assert.match(styles, /overscroll-behavior-y:\s*auto/);
-  assert.match(styles, /overflow-y:\s*clip/);
-  assert.match(styles, /\.board-stage \{ display: block;/);
-  assert.match(styles, /scroll-margin-top:\s*-64px/);
-  assert.match(styles, /padding: 14px 14px calc\(var\(--mobile-transport-clearance\)/);
-  assert.match(styles, /\.board-pan-hint/);
+test('phones get a vertical signal flow with a fixed transport and sheets', () => {
+  assert.match(page, /return useSyncExternalStore\(subscribePhone/);
+  assert.match(page, /\{isPhone \? <FlowList \{\.\.\.nodeProps\} \/> : <Board \{\.\.\.nodeProps\} \/>\}/);
+  assert.match(studioStyles, /--mobile-transport-clearance:\s*\d+px/);
+  const phone = studioStyles.slice(studioStyles.indexOf('@media (max-width: 720px)'));
+  assert.match(phone, /\.studio \{ display: block;[^}]*padding-bottom: calc\(var\(--mobile-transport-clearance\)/);
+  assert.match(phone, /\.transport \{ position: fixed;/);
+  // The page scrolls vertically; only the drag handle captures touch.
+  assert.match(phone, /\.flow-handle \{[^}]*touch-action: none/);
+  assert.match(phone, /\.focus-deck \{ position: fixed;/);
+  assert.match(phone, /\.picker-dialog \{ position: fixed; inset: 0;/);
 });
 
 test('layout points browsers at the existing favicon asset', () => {

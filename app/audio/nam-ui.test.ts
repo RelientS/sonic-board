@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
-const page = readFileSync(new URL('../studio/page.tsx', import.meta.url), 'utf8');
+import { studioSource } from './studio-sources.ts';
+
+const page = studioSource;
 const styles = readFileSync(new URL('../globals.css', import.meta.url), 'utf8');
 
 test('the Fuzz War card imports and removes an A1 NAM from private browser storage', () => {
@@ -30,6 +32,9 @@ test('local model controls remain usable on a narrow mobile library card', () =>
   assert.match(styles, /\.nam-local-actions[\s\S]{0,800}(flex-wrap|grid-template-columns)/);
 });
 
-test('desktop NAM cards expand to contain their local model controls', () => {
-  assert.match(styles, /\.library-item\.has-nam\s*\{[^}]*height:\s*max-content/s);
+test('a NAM pedal manages its local model from its own deck', () => {
+  assert.match(page, /\{spec\.nam && props\.namSection\(spec\)\}/);
+  assert.match(page, /function namSection\(spec: EffectSpec\)/);
+  // The picker flags NAM pedals that need a local model.
+  assert.match(page, /\{spec\.nam && <em className="picker-nam">/);
 });

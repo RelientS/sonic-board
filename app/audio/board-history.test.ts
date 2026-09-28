@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { BoardHistory } from '../board-history.ts';
+import { studioSource } from './studio-sources.ts';
 
 test('undo and redo walk the recorded states', () => {
   const history = new BoardHistory<number>();
@@ -35,16 +35,21 @@ test('a new edit clears redo and the stack is bounded', () => {
   assert.equal(history.undo(2), null);
 });
 
-test('the board wires undo to edits, shortcuts and toolbar buttons', () => {
-  const page = readFileSync(new URL('../studio/page.tsx', import.meta.url), 'utf8');
-  assert.match(page, /function markBoardChanged\(record = true\)/);
-  assert.match(page, /history\.current\.record\(captureCurrentBoardUiState\(\)\)/);
-  // Selecting, switching A/B, monitoring and restoring are not edits.
-  for (const name of ['selectPedal', 'selectSnapshot', 'setMonitorMode', 'restoreBoardUiState']) {
-    const body = page.slice(page.indexOf('function ' + name + '('));
-    assert.match(body.slice(0, body.indexOf('\n  }\n')), /markBoardChanged\(false\)/, name);
-  }
-  assert.match(page, /if \(key === 'z' && !event\.shiftKey\) undoBoard\(\);/);
+test('edits of the same control coalesce; different gestures stay separate steps', () => {
+  const history = new BoardHistory<number>(100, 600);
+  history.record(1, 0, 'value:a:gain');
+  history.record(2, 10, 'value:a:gain');
+  history.record(3, 20, 'value:a:tone');
+  assert.equal(history.undo(4), 3);
+  assert.equal(history.undo(3), 1);
+  assert.equal(history.canUndo, false);
+});
+
+test('the board records undo in one place and exposes it in the top bar and keyboard', () => {
+  const page = studioSource;
+  assert.match(page, /const key = undoKeyFor\(action\);/);
+  assert.match(page, /history\.current\.record\(previous, performance\.now\(\), key === 'discrete'/);
+  assert.match(page, /case 'undo': board\.undo\(\); break;/);
   assert.match(page, /aria-label="撤销"/);
   assert.match(page, /aria-label="重做"/);
 });

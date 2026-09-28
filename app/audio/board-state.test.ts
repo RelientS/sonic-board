@@ -1,20 +1,56 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
-const page = readFileSync(new URL('../studio/page.tsx', import.meta.url), 'utf8');
+import { FACTORY_PRESETS, instantiatePreset } from '../effects/catalog.ts';
+import { boardFromPreset, boardReducer } from '../studio/board-store.ts';
+import { studioSource } from './studio-sources.ts';
 
-test('removing a selected pedal cleans every board state store', () => {
-  assert.match(page, /function removeSelected\(\)[\s\S]*?if \(selectedIndex < 0\) return;/);
-  assert.match(page, /setSnapshots\(\(current\) => \(\{[\s\S]*?A: removeInstanceValues\(current\.A, removedInstanceId\),[\s\S]*?B: removeInstanceValues\(current\.B, removedInstanceId\)/);
-  assert.match(page, /setBypassed\(\(current\) => \{[\s\S]*?next\.delete\(removedInstanceId\)/);
+const page = studioSource;
+
+function startBoard() {
+  const preset = FACTORY_PRESETS.find((entry) => entry.chain.length >= 3) ?? FACTORY_PRESETS[0];
+  return boardFromPreset(instantiatePreset(preset), preset.name);
+}
+
+test('removing a pedal cleans every board state store', () => {
+  let state = startBoard();
+  const [first, second] = state.chain;
+  state = boardReducer(state, { type: 'bypass', instanceId: second.instanceId });
+  state = boardReducer(state, { type: 'focus', id: second.instanceId });
+  const next = boardReducer(state, { type: 'remove', instanceId: second.instanceId });
+  assert.ok(!next.chain.some((item) => item.instanceId === second.instanceId));
+  assert.equal(next.snapshots.A[second.instanceId], undefined);
+  assert.equal(next.snapshots.B[second.instanceId], undefined);
+  assert.equal(next.bypassed.has(second.instanceId), false);
+  // Focus moves to the neighbour rather than disappearing.
+  assert.equal(next.selected, first.instanceId);
 });
 
 test('Agent local updates retain the inactive A/B snapshot while replacements reset both', () => {
-  assert.match(page, /function applyToneAgentBoard\(board: ToneAgentBoardState, replaceSnapshots = false\)/);
-  assert.match(page, /if \(replaceSnapshots\) return \{ A: nextValues, B: cloneValues\(nextValues\) \};/);
-  assert.match(page, /const inactiveSnapshot = snapshot === 'A' \? 'B' : 'A';/);
-  assert.match(page, /return snapshot === 'A'[\s\S]*?\{ A: nextValues, B: preservedInactive \}[\s\S]*?: \{ A: preservedInactive, B: nextValues \};/);
+  let state = startBoard();
+  const target = state.chain[0].instanceId;
+  state = boardReducer(state, { type: 'selectSnapshot', snapshot: 'B' });
+  state = boardReducer(state, { type: 'setValue', instanceId: target, controlId: 'probe', value: 11 });
+  state = boardReducer(state, { type: 'selectSnapshot', snapshot: 'A' });
+  const agentBoard = {
+    name: 'Agent',
+    selectedInstanceId: target,
+    chain: state.chain.map((item) => ({ ...item, lane: item.lane ?? 'A' as const })),
+    values: { ...state.snapshots.A, [target]: { ...state.snapshots.A[target], probe: 99 } },
+    bypassed: [],
+    source: state.source,
+    routing: state.routing,
+    amp: state.amp,
+    output: state.output,
+    monitorMode: 'wet' as const,
+  };
+  const local = boardReducer(state, { type: 'applyAgent', board: agentBoard, replaceSnapshots: false });
+  assert.equal(local.snapshots.A[target].probe, 99);
+  assert.equal(local.snapshots.B[target].probe, 11);
+  const replaced = boardReducer(state, { type: 'applyAgent', board: agentBoard, replaceSnapshots: true });
+  assert.equal(replaced.snapshots.B[target].probe, 99);
+  assert.equal(replaced.snapshot, 'A');
+  assert.match(page, /function applyToneAgentBoard\(nextBoard: ToneAgentBoardState, replaceSnapshots = false\)/);
   assert.match(page, /const replaceSnapshots = plan\.actions\.some\(\(action\) => action\.type === 'replace_board'\);/);
 });
 
@@ -23,6 +59,8 @@ test('Agent requests capture a baseline and reject responses from a changed boar
   assert.match(page, /if \(boardRevision\.current !== requestRevision\)/);
   assert.match(page, /已忽略这次过期结果/);
   assert.match(page, /status: 'failed'/);
+  // Focus changes do not count as edits for the agent's revision check.
+  assert.match(page, /commit\(next, action\.type === 'focus'\)/);
 });
 
 test('Agent undo entries are revision guarded and restore the complete baseline', () => {
