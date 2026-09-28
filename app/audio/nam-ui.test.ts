@@ -20,10 +20,12 @@ test('the Fuzz War card imports and removes an A1 NAM from private browser stora
 
 test('private NAM payloads are included in audio configuration but not user presets', () => {
   assert.match(page, /const \[namModels, setNamModels\]/);
-  assert.match(page, /namModels: activeNamModels,\s*ampModel: ampModel\?\.id === amp\.ampId \? ampModel : undefined,\s*\}\), \[chain/);
+  assert.match(page, /namModels: activeNamModels,\s*ampModel: ampModel\?\.id === amp\.ampId \? ampModel : undefined,\s*input: inputConfig,\s*\}\), \[chain/);
   // A model imported into this browser wins over an owner-only built-in capture.
   assert.match(page, /const activeNamModels = useMemo\(\(\) => \(\{ \.\.\.privateNam, \.\.\.namModels \}\)/);
   assert.doesNotMatch(page, /captureUserPreset\([\s\S]{0,300}privateNam/);
+  // Take audio lives in the take store; presets only get the take id, loop and trim.
+  assert.match(page, /captureUserPreset\(\{ name, chain, parked: state\.parked, layout: captureLayout\(state\), values, bypassed, source, input: state\.input, output, routing, amp \}\)/);
   // Private amp captures are never written into presets either.
   assert.doesNotMatch(page, /captureUserPreset\([\s\S]{0,300}ampModel/);
   assert.doesNotMatch(page, /captureUserPreset\([\s\S]{0,300}namModels/);

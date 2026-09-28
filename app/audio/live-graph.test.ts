@@ -29,6 +29,7 @@ function fakeGraph(log: string[], prefix: string, namNode?: ReturnType<typeof fa
   return {
     source: fakeNode(log, `${prefix}.source`),
     input: fakeNode(log, `${prefix}.input`),
+    trim: fakeNode(log, `${prefix}.trim`),
     level: fakeNode(log, `${prefix}.level`),
     fade: fakeNode(log, `${prefix}.fade`),
     scheduled: [],
@@ -57,6 +58,7 @@ test('stopping a session releases every graph and disposes its worklets so the a
     assert.ok(log.includes(`${prefix}.worklet.dispose`), `${prefix} worklet must be told to dispose`);
     assert.ok(log.includes(`${prefix}.lfo.stop`), `${prefix} LFOs must stop`);
     assert.ok(log.includes(`${prefix}.fade.disconnect`), `${prefix} output must disconnect`);
+    assert.ok(log.includes(`${prefix}.trim.disconnect`), `${prefix} input trim must disconnect`);
   }
   // A NAM node still in the session cache is reused by the next graph.
   assert.ok(!log.includes('cachedNam.dispose'));

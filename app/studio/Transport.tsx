@@ -1,20 +1,12 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 
-import type { BoardAudioConfig, LiveAudioSession } from '../audio/audio-engine.ts';
+import { currentSourcePosition, readInputPeakDbfs, type BoardAudioConfig, type LiveAudioSession } from '../audio/audio-engine.ts';
 import type { LiveSessionController } from '../audio/live-session-controller.ts';
-import {
-  CHORD_PROGRESSIONS,
-  GUITAR_VOICES,
-  PERFORMANCE_SPECS,
-  formatSourceConfig,
-  getChordProgression,
-  type SourceConfig,
-} from '../audio/source-catalog.ts';
+import { dragLoop, effectiveLoop, formatSeconds, type LoopRegion } from '../audio/source-catalog.ts';
+import { peakScale, type WaveformPeaks } from '../audio/waveform.ts';
 import type { MonitorMode, SnapshotId } from './board-store.ts';
-
-const wave = [18, 42, 72, 34, 85, 52, 66, 28, 90, 46, 74, 38, 82, 56, 26, 68, 88, 44, 72, 32, 62, 94, 48, 76, 36, 84, 54, 24, 70, 91, 42, 68, 34, 80, 52, 74, 30, 63, 87, 46];
 
 export function getPlaybackProgress(session: LiveAudioSession | null) {
   if (!session || session.context.state === 'closed' || !Number.isFinite(session.duration) || session.duration <= 0 || !Number.isFinite(session.startedAt)) return null;
@@ -27,117 +19,235 @@ export function getPlaybackProgress(session: LiveAudioSession | null) {
 }
 
 type Playback = LiveSessionController<BoardAudioConfig, LiveAudioSession>;
+type LoopPart = 'start' | 'end' | 'region';
+
+const NUDGE_SECONDS = 0.1;
+
+/** Keeps a canvas's backing store at its CSS size times the pixel ratio. */
+function useCanvasSize(canvas: RefObject<HTMLCanvasElement | null>) {
+  const [size, setSize] = useState({ width: 0, height: 0, ratio: 1 });
+  useEffect(() => {
+    const element = canvas.current;
+    if (!element) return;
+    const measure = () => {
+      const ratio = Math.min(2, window.devicePixelRatio || 1);
+      const width = element.clientWidth;
+      const height = element.clientHeight;
+      setSize((current) => (current.width === width && current.height === height && current.ratio === ratio ? current : { width, height, ratio }));
+    };
+    // The observer reports the initial size too.
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [canvas]);
+  return size;
+}
+
+function drawPeaks(canvas: HTMLCanvasElement, size: { width: number; height: number; ratio: number }, peaks: WaveformPeaks, loop: LoopRegion) {
+  const context = canvas.getContext('2d');
+  if (!context || size.width === 0) return;
+  canvas.width = Math.round(size.width * size.ratio);
+  canvas.height = Math.round(size.height * size.ratio);
+  context.setTransform(size.ratio, 0, 0, size.ratio, 0, 0);
+  context.clearRect(0, 0, size.width, size.height);
+  const scale = peakScale(peaks);
+  const middle = size.height / 2;
+  const columns = peaks.max.length;
+  const step = size.width / columns;
+  const barWidth = Math.max(1, step - 1);
+  for (let i = 0; i < columns; i += 1) {
+    const time = ((i + 0.5) / columns) * peaks.duration;
+    const inside = time >= loop.start && time < loop.end;
+    context.fillStyle = inside ? 'rgba(236, 229, 216, 0.72)' : 'rgba(236, 229, 216, 0.24)';
+    const top = middle - Math.max(0.5, peaks.max[i] * scale * middle * 0.92);
+    const bottom = middle - Math.min(-0.5, peaks.min[i] * scale * middle * 0.92);
+    context.fillRect(i * step, top, barWidth, Math.max(1, bottom - top));
+  }
+}
 
 /**
- * Transport progress, animated from the audio clock with requestAnimationFrame
- * and written straight to the DOM so playback does not re-render the page.
+ * The current source's real waveform with the playhead and the loop region.
+ * Drag the region or its edges (or drag across empty waveform to draw a new
+ * one); double-click for the whole source. The handles are sliders: ←/→
+ * nudge 0.1 s, Shift for 1 s. While the live input plays, a scrolling input
+ * level trace replaces the waveform. Per-frame updates go straight to the DOM.
  */
-export function PlaybackWaveform({ playback, playing, loading }: { playback: Playback; playing: boolean; loading: boolean }) {
+export function SourceWaveform({ playback, playing, loading, liveInputActive, peaks, loop, sourceName, onLoop }: {
+  playback: Playback;
+  playing: boolean;
+  loading: boolean;
+  liveInputActive: boolean;
+  peaks: WaveformPeaks | null;
+  loop: LoopRegion | null;
+  sourceName: string;
+  onLoop: (loop: LoopRegion | null) => void;
+}) {
   const host = useRef<HTMLDivElement | null>(null);
-  const bar = useRef<HTMLElement | null>(null);
+  const canvas = useRef<HTMLCanvasElement | null>(null);
+  const playhead = useRef<HTMLElement | null>(null);
+  const progress = useRef<HTMLSpanElement | null>(null);
+  const size = useCanvasSize(canvas);
+  const duration = peaks?.duration ?? 0;
+  const region = effectiveLoop(loop, duration);
+  const drag = useRef<{ pointerId: number; x: number; part: LoopPart; start: LoopRegion } | null>(null);
 
   useEffect(() => {
+    if (!canvas.current || !peaks || liveInputActive) return;
+    drawPeaks(canvas.current, size, peaks, effectiveLoop(loop, peaks.duration));
+  }, [size, peaks, loop, liveInputActive]);
+
+  // Playhead and the (visually hidden) progress value, from the audio clock.
+  useEffect(() => {
     let shown = -1;
-    const write = (progress: number) => {
-      if (bar.current) bar.current.style.width = String(progress) + '%';
-      const rounded = Math.round(progress);
-      if (rounded === shown || !host.current) return;
-      shown = rounded;
-      host.current.setAttribute('aria-valuenow', String(rounded));
-      host.current.setAttribute('aria-valuetext', '试听进度 ' + String(rounded) + '%');
+    const write = (fraction: number | null) => {
+      if (playhead.current) {
+        playhead.current.style.opacity = fraction === null ? '0' : '1';
+        if (fraction !== null) playhead.current.style.left = `${fraction * 100}%`;
+      }
+      const percent = fraction === null ? 0 : Math.round(fraction * 100);
+      if (percent === shown || !progress.current) return;
+      shown = percent;
+      progress.current.setAttribute('aria-valuenow', String(percent));
+      progress.current.setAttribute('aria-valuetext', '试听进度 ' + String(percent) + '%');
     };
-    write(0);
-    if (!playing) return;
+    write(null);
+    if (!playing || liveInputActive) return;
     let frame = 0;
     const tick = () => {
-      const progress = getPlaybackProgress(playback.current);
-      if (progress !== null) write(progress);
+      const session = playback.current;
+      const position = currentSourcePosition(session);
+      const total = session?.bufferDuration ?? duration;
+      write(position === null || !(total > 0) ? null : position / total);
       frame = window.requestAnimationFrame(tick);
     };
     tick();
     return () => window.cancelAnimationFrame(frame);
-  }, [playback, playing]);
+  }, [playback, playing, liveInputActive, duration]);
+
+  // Live input: a scrolling trace of the input level.
+  useEffect(() => {
+    const element = canvas.current;
+    if (!element || !liveInputActive || size.width === 0) return;
+    const context = element.getContext('2d');
+    if (!context) return;
+    element.width = Math.round(size.width * size.ratio);
+    element.height = Math.round(size.height * size.ratio);
+    context.setTransform(size.ratio, 0, 0, size.ratio, 0, 0);
+    const history = new Float32Array(Math.max(1, Math.floor(size.width / 3)));
+    let frame = 0;
+    const tick = () => {
+      history.copyWithin(0, 1);
+      const level = readInputPeakDbfs(playback.current);
+      history[history.length - 1] = Number.isFinite(level) ? Math.max(0, Math.min(1, (level + 60) / 60)) : 0;
+      context.clearRect(0, 0, size.width, size.height);
+      context.fillStyle = 'rgba(245, 165, 36, 0.7)';
+      const middle = size.height / 2;
+      for (let i = 0; i < history.length; i += 1) {
+        const half = Math.max(0.5, history[i] * middle * 0.92);
+        context.fillRect(i * 3, middle - half, 2, half * 2);
+      }
+      frame = window.requestAnimationFrame(tick);
+    };
+    frame = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(frame);
+  }, [liveInputActive, playback, size]);
+
+  const secondsAt = (clientX: number) => {
+    const rect = host.current?.getBoundingClientRect();
+    if (!rect || rect.width === 0) return 0;
+    return Math.max(0, Math.min(duration, ((clientX - rect.left) / rect.width) * duration));
+  };
+  const beginDrag = (event: ReactPointerEvent<HTMLElement>, part: LoopPart, start: LoopRegion) => {
+    if (event.button !== 0 || !peaks || liveInputActive) return;
+    event.preventDefault();
+    event.stopPropagation();
+    host.current?.setPointerCapture(event.pointerId);
+    drag.current = { pointerId: event.pointerId, x: event.clientX, part, start };
+  };
+  const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const state = drag.current;
+    const rect = host.current?.getBoundingClientRect();
+    if (!state || state.pointerId !== event.pointerId || !rect || rect.width === 0) return;
+    const delta = ((event.clientX - state.x) / rect.width) * duration;
+    onLoop(dragLoop(state.start, state.part, delta, duration));
+  };
+  const endDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (drag.current?.pointerId === event.pointerId) drag.current = null;
+  };
+  const onHandleKey = (event: ReactKeyboardEvent<HTMLElement>, part: 'start' | 'end') => {
+    const step = event.shiftKey ? 1 : NUDGE_SECONDS;
+    const delta = event.key === 'ArrowLeft' || event.key === 'ArrowDown' ? -step : event.key === 'ArrowRight' || event.key === 'ArrowUp' ? step : 0;
+    if (delta === 0) return;
+    event.preventDefault();
+    // The studio's ←/→ shortcuts walk the board; here they move the handle.
+    event.stopPropagation();
+    onLoop(dragLoop(region, part, delta, duration));
+  };
+
+  const left = duration > 0 ? (region.start / duration) * 100 : 0;
+  const width = duration > 0 ? ((region.end - region.start) / duration) * 100 : 100;
+  const whole = !loop || (region.start <= 0 && region.end >= duration);
 
   return (
-    <div ref={host} className={'waveform' + (loading ? ' is-loading' : '')} role="progressbar" aria-label="试听进度" aria-valuemin={0} aria-valuemax={100} aria-busy={loading}>
-      <i ref={bar} />{wave.map((height, index) => <b key={String(height) + '-' + String(index)} style={{ height: String(height) + '%' }} />)}
+    <div
+      ref={host}
+      className={'waveform' + (loading ? ' is-loading' : '') + (liveInputActive ? ' is-live' : '')}
+      role="group"
+      aria-label={liveInputActive ? '实时输入电平' : `音源波形：${sourceName}`}
+      onPointerDown={(event) => {
+        // Drag across the waveform to draw a new loop from that point.
+        const at = secondsAt(event.clientX);
+        beginDrag(event, 'end', { start: at, end: at });
+      }}
+      onPointerMove={onPointerMove}
+      onPointerUp={endDrag}
+      onPointerCancel={endDrag}
+      onDoubleClick={() => { if (!liveInputActive) onLoop(null); }}
+    >
+      <canvas ref={canvas} aria-hidden="true" />
+      {!liveInputActive && peaks && (
+        <div
+          className={'loop-region' + (whole ? ' is-whole' : '')}
+          style={{ left: `${left}%`, width: `${width}%` }}
+          // Over the whole source there is nothing to move: let the waveform draw a new loop.
+          onPointerDown={(event) => { if (!whole) beginDrag(event, 'region', region); }}
+        >
+          <span
+            className="loop-handle is-start"
+            role="slider"
+            tabIndex={0}
+            aria-label="循环起点"
+            aria-valuemin={0}
+            aria-valuemax={Math.round(duration * 10) / 10}
+            aria-valuenow={Math.round(region.start * 10) / 10}
+            aria-valuetext={formatSeconds(region.start)}
+            onPointerDown={(event) => beginDrag(event, 'start', region)}
+            onKeyDown={(event) => onHandleKey(event, 'start')}
+          />
+          <span
+            className="loop-handle is-end"
+            role="slider"
+            tabIndex={0}
+            aria-label="循环终点"
+            aria-valuemin={0}
+            aria-valuemax={Math.round(duration * 10) / 10}
+            aria-valuenow={Math.round(region.end * 10) / 10}
+            aria-valuetext={formatSeconds(region.end)}
+            onPointerDown={(event) => beginDrag(event, 'end', region)}
+            onKeyDown={(event) => onHandleKey(event, 'end')}
+          />
+        </div>
+      )}
+      <i ref={playhead} className="playhead" aria-hidden="true" />
+      <span ref={progress} className="sr-only" role="progressbar" aria-label="试听进度" aria-valuemin={0} aria-valuemax={100} aria-busy={loading} />
+      {!liveInputActive && peaks && !whole && (
+        <span className="loop-readout" aria-hidden="true">{formatSeconds(region.start)}–{formatSeconds(region.end)}</span>
+      )}
+      {!liveInputActive && !whole && (
+        <button type="button" className="loop-reset" onPointerDown={(event) => event.stopPropagation()} onClick={() => onLoop(null)}>整段</button>
+      )}
       {loading && <span className="waveform-status">正在加载试听…</span>}
     </div>
-  );
-}
-
-/** Input: the built-in DI recordings, or a live instrument through the audio interface. */
-export function SourcePickerDialog({ open, source, liveInputActive, liveInputBusy, onChange, onLiveInput, onClose }: {
-  open: boolean;
-  source: SourceConfig;
-  liveInputActive: boolean;
-  liveInputBusy: boolean;
-  onChange: (source: SourceConfig) => void;
-  onLiveInput: () => void;
-  onClose: () => void;
-}) {
-  const dialog = useRef<HTMLDialogElement | null>(null);
-
-  useEffect(() => {
-    const element = dialog.current;
-    if (!element) return;
-    if (open && !element.open) element.showModal();
-    if (!open && element.open) element.close();
-  }, [open]);
-
-  return (
-    <dialog
-      ref={dialog}
-      className="source-picker-dialog"
-      aria-labelledby="source-picker-title"
-      onCancel={(event) => { event.preventDefault(); onClose(); }}
-      onClose={onClose}
-      onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
-    >
-      <div className="source-picker-sheet">
-        <header><div><span>输入</span><h2 id="source-picker-title">选择吉他输入</h2></div><button type="button" onClick={onClose}>完成</button></header>
-        <section>
-          <h3>输入来源</h3>
-          <div className="source-choice-grid" role="radiogroup" aria-label="输入来源">
-            <button type="button" role="radio" aria-checked={!liveInputActive} className={!liveInputActive ? 'active' : ''} disabled={liveInputBusy} onClick={() => { if (liveInputActive) onLiveInput(); }}>
-              <strong>内置 DI 录音</strong><small>真实电吉他直录，循环播放下面选的和弦与演奏方式。</small>
-            </button>
-            <button type="button" role="radio" aria-checked={liveInputActive} className={'live-input' + (liveInputActive ? ' active' : '')} disabled={liveInputBusy} title="用声卡或麦克风输入真实吉他（请戴耳机，避免啸叫）" onClick={() => { if (!liveInputActive) onLiveInput(); }}>
-              <strong>{liveInputActive ? '● 实时输入' : '实时输入'}</strong><small>通过声卡或麦克风弹你自己的琴。请戴耳机，避免啸叫。</small>
-            </button>
-          </div>
-        </section>
-        <section>
-          <h3>电吉他音色</h3>
-          <div className="source-choice-grid guitars" role="radiogroup" aria-label="电吉他音色">
-            {GUITAR_VOICES.map((voice) => (
-              <button key={voice.id} type="button" role="radio" aria-checked={source.guitar === voice.id} className={source.guitar === voice.id ? 'active' : ''} onClick={() => onChange({ ...source, guitar: voice.id })}>
-                <strong>{voice.name}</strong><small>{voice.description}</small>
-              </button>
-            ))}
-          </div>
-          <p className="sample-license-note">
-            真实采样 · 未处理 DI · CC0 · <a href="https://freepats.zenvoid.org/ElectricGuitar/clean-electric-guitar.html" target="_blank" rel="noreferrer">FreePats Direct DI</a>
-          </p>
-        </section>
-        <section>
-          <h3>演奏方式</h3>
-          <div className="source-choice-grid performance" role="radiogroup" aria-label="演奏方式">
-            {PERFORMANCE_SPECS.map((performance) => <button key={performance.id} type="button" role="radio" aria-checked={source.performance === performance.id} className={source.performance === performance.id ? 'active' : ''} onClick={() => onChange({ ...source, performance: performance.id })}><strong>{performance.name}</strong><small>{performance.description}</small></button>)}
-          </div>
-        </section>
-        <section>
-          <h3>和弦进行</h3>
-          <div className="source-choice-grid progressions" role="radiogroup" aria-label="和弦进行">
-            {CHORD_PROGRESSIONS.map((progression) => (
-              <button key={progression.id} type="button" role="radio" aria-checked={source.progression === progression.id} className={source.progression === progression.id ? 'active' : ''} onClick={() => onChange({ ...source, progression: progression.id })}>
-                <strong>{progression.name}</strong><small>{progression.chords}</small>
-              </button>
-            ))}
-          </div>
-        </section>
-      </div>
-    </dialog>
   );
 }
 
@@ -217,14 +327,17 @@ function MoreMenu({ render, output, onExport, onOutput }: {
 }
 
 export function Transport({
-  playback, playing, playbackLoading, source, liveInputActive, mode, dryHeld, snapshot, output, render, audioError, statusText,
-  onTogglePlayback, onOpenInput, onHoldDry, onSnapshot, onCopySnapshot, onOutput, onExport,
+  playback, playing, playbackLoading, sourceName, liveInputActive, peaks, loop, mode, dryHeld, snapshot, output, render, audioError, statusText,
+  onTogglePlayback, onOpenInput, onLoop, onHoldDry, onSnapshot, onCopySnapshot, onOutput, onExport,
 }: {
   playback: Playback;
   playing: boolean;
   playbackLoading: boolean;
-  source: SourceConfig;
+  /** What is feeding the board: an example phrase, a take, or the live input. */
+  sourceName: string;
   liveInputActive: boolean;
+  peaks: WaveformPeaks | null;
+  loop: LoopRegion | null;
   mode: MonitorMode;
   dryHeld: boolean;
   snapshot: SnapshotId;
@@ -234,6 +347,7 @@ export function Transport({
   statusText: string;
   onTogglePlayback: () => void;
   onOpenInput: () => void;
+  onLoop: (loop: LoopRegion | null) => void;
   onHoldDry: (held: boolean) => void;
   onSnapshot: (snapshot: SnapshotId) => void;
   onCopySnapshot: () => void;
@@ -244,12 +358,11 @@ export function Transport({
   return (
     <footer className="transport">
       <button className={'play' + (playing ? ' active' : '') + (playbackLoading ? ' is-loading' : '')} type="button" aria-label={playbackLoading ? '正在加载试听' : playing ? '停止试听' : '开始试听'} title="播放 / 停止（Space）" aria-busy={playbackLoading} disabled={playbackLoading} onClick={onTogglePlayback}>{playbackLoading ? '…' : playing ? '■' : '▶'}</button>
-      <button className={'source-trigger' + (liveInputActive ? ' is-live' : '')} type="button" aria-label="选择清音输入" onClick={onOpenInput}>
+      <button className={'source-trigger' + (liveInputActive ? ' is-live' : '')} type="button" aria-label={`输入：${sourceName}。打开输入面板`} onClick={onOpenInput}>
         <span>{liveInputActive ? '实时输入' : '输入'}</span>
-        <strong>{liveInputActive ? '● 声卡 / 麦克风' : formatSourceConfig(source)}</strong>
-        {!liveInputActive && <small>{getChordProgression(source.progression).name}</small>}
+        <strong>{sourceName}</strong>
       </button>
-      <PlaybackWaveform playback={playback} playing={playing} loading={playbackLoading} />
+      <SourceWaveform playback={playback} playing={playing} loading={playbackLoading} liveInputActive={liveInputActive} peaks={peaks} loop={loop} sourceName={sourceName} onLoop={onLoop} />
       <HoldDryButton held={dryHeld || mode === 'dry'} onHold={onHoldDry} />
       <div className="segments ab" role="group" aria-label="参数快照 A 或 B">
         {(['A', 'B'] as const).map((entry) => <button key={entry} type="button" className={snapshot === entry ? 'active' : ''} aria-pressed={snapshot === entry} onClick={() => onSnapshot(entry)}>快照 {entry}</button>)}

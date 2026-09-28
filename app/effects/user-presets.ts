@@ -1,5 +1,5 @@
 import type { RoutingConfig, SignalLane } from '../audio/audio-core';
-import { normalizeSourceConfig, type SourceConfig } from '../audio/source-catalog.ts';
+import { normalizeInputSettings, normalizeSourceConfig, type InputSettings, type SourceConfig } from '../audio/source-catalog.ts';
 import {
   getAmpSpec,
   getCabSpec,
@@ -14,6 +14,8 @@ export type UserPreset = {
   name: string;
   createdAt: number;
   source: SourceConfig;
+  /** Only the take id, loop and trim; the take audio stays in this browser. */
+  input?: InputSettings;
   output: number;
   routing: RoutingConfig;
   amp: AmpCabConfig;
@@ -40,6 +42,7 @@ type BoardCapture = {
   values: Record<string, Record<string, number>>;
   bypassed: Set<string>;
   source: SourceConfig;
+  input?: InputSettings;
   output: number;
   routing: RoutingConfig;
   amp: AmpCabConfig;
@@ -86,6 +89,7 @@ export function captureUserPreset(board: BoardCapture, id = `preset-${Date.now()
     name: board.name.trim() || '未命名音色',
     createdAt,
     source: board.source,
+    ...(board.input ? { input: normalizeInputSettings(board.input) } : {}),
     output: Math.min(100, Math.max(0, board.output)),
     routing: {
       mode: board.routing.mode,
@@ -127,6 +131,7 @@ export function instantiateUserPreset(preset: UserPreset): InstantiatedPreset {
     values,
     bypassed,
     source: normalizeSourceConfig(preset.source),
+    input: normalizeInputSettings(preset.input),
     output: preset.output,
     routing: preset.routing ? { ...preset.routing } : { mode: 'serial', blend: 50, spread: 0 },
     amp: preset.amp ? cloneAmp(preset.amp) : makeDefaultAmpCabConfig(),
@@ -194,6 +199,7 @@ function normalizeUserPreset(value: unknown): UserPreset | null {
     name: preset.name,
     createdAt: preset.createdAt,
     source: normalizeSourceConfig(preset.source),
+    ...(preset.input ? { input: normalizeInputSettings(preset.input) } : {}),
     output: Math.min(100, Math.max(0, preset.output)),
     routing,
     amp: normalizeAmp(preset.amp),

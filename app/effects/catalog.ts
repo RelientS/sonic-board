@@ -1,5 +1,5 @@
 import type { RoutingConfig, SignalLane, SourceKind } from '../audio/audio-core';
-import { normalizeSourceConfig, type SourceConfig } from '../audio/source-catalog.ts';
+import { normalizeSourceConfig, type InputSettings, type SourceConfig } from '../audio/source-catalog.ts';
 import { makeAmpCabConfig, type AmpCabConfig } from '../amps/catalog.ts';
 
 export type EffectCategory = 'Dynamics' | 'Tone' | 'Drive' | 'Mod' | 'Delay' | 'Space';
@@ -97,6 +97,8 @@ export type InstantiatedPreset = {
   values: Record<string, Record<string, number>>;
   bypassed: string[];
   source: SourceConfig;
+  /** Take / loop / trim (user presets only; the take audio stays in the browser). */
+  input?: InputSettings;
   output: number;
   routing: RoutingConfig;
   amp: AmpCabConfig;

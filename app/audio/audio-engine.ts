@@ -13,7 +13,7 @@ import {
   type RoutingConfig,
   type SourceConfig,
 } from './audio-core.ts';
-import { sourceConfigKey } from './source-catalog.ts';
+import { effectiveLoop, positionInLoop, sourceConfigKey, trimDbToGain, type LoopRegion } from './source-catalog.ts';
 import { renderSampledSourceBuffer } from './sample-renderer.ts';
 import { applySampleInputHeadroom } from './sample-library.ts';
 import { getEffectSpec, mapControlValue } from '../effects/catalog.ts';
@@ -90,6 +90,7 @@ const WORKLET_VERSIONS = {
   nam: 5,
   circuit: 3,
   fx: 2,
+  recorder: 1,
 } as const;
 const fxReady = new WeakSet<BaseAudioContext>();
 const fxLoading = new WeakMap<BaseAudioContext, Promise<void>>();
@@ -316,7 +317,19 @@ export type BoardAudioConfig = {
   namModels?: Record<string, NamModelRecord>;
   /** The capture for a `nam:` amp (owner-only), with its measured loudness. */
   ampModel?: { id: string; modelJson: string; loudness?: number | null };
+  /**
+   * Input trim and loop region (board state) plus the selected take's audio
+   * once loaded from this browser; without `take` the example phrase plays.
+   */
+  input?: {
+    trimDb: number;
+    loop: LoopRegion | null;
+    take?: InputTake;
+  };
 };
+
+/** A recorded or uploaded mono take, played in place of the example phrase. */
+export type InputTake = { id: string; sampleRate: number; channel: Float32Array };
 
 /** Key of the amp's NAM node in the per-graph NAM node map. */
 const AMP_NAM_KEY = '__amp__';
@@ -331,6 +344,12 @@ type LiveGraph = {
   source: AudioBufferSourceNode;
   /** Gate between the source and the effects; closing it lets tails ring out. */
   input: GainNode;
+  /** Input trim, applied to every source before the chain. */
+  trim: GainNode;
+  /** Post-trim tap for the input level meter. */
+  meter: AnalyserNode;
+  /** Loop region actually playing (seconds into the source buffer). */
+  loop: LoopRegion;
   /** Master output level (the "output" control). */
   level: GainNode;
   /** Last master node (the limiter worklet when available). */
@@ -349,8 +368,12 @@ export type LiveAudioSession = {
   retiring: Set<LiveGraph>;
   buffers: Map<string, AudioBuffer>;
   bufferLoads: Map<string, Promise<AudioBuffer>>;
+  /** Context time at which the playhead was at `loopStart`, and the loop length. */
   startedAt: number;
   duration: number;
+  loopStart: number;
+  /** Length of the whole source buffer (the loop is a region inside it). */
+  bufferDuration: number;
   sourceKey: string;
   revision: number;
   /** Structure being rebuilt asynchronously, and the newest config for it. */
@@ -364,6 +387,8 @@ export type LiveAudioSession = {
   liveInput?: LiveInput;
   /** Removes the listeners that resume the context after an interruption. */
   detachResume?: () => void;
+  /** A take being recorded from the live input. */
+  recording?: InputRecording;
 };
 
 type LiveInput = { stream: MediaStream; source: MediaStreamAudioSourceNode; output: GainNode };
@@ -622,12 +647,58 @@ function rememberSessionBuffer(session: LiveAudioSession, key: string, buffer: A
   }
 }
 
-function loadSessionBuffer(session: LiveAudioSession, key: string, source: SourceConfig) {
+/** Cache key of the buffer a config plays: the take, or the example phrase. */
+export function sourceKeyOf(config: Pick<BoardAudioConfig, 'source' | 'input'>) {
+  const take = config.input?.take;
+  return take ? `take:${take.id}:${take.channel.length}` : sourceConfigKey(config.source);
+}
+
+function takeBuffer(context: BaseAudioContext, take: InputTake) {
+  const buffer = context.createBuffer(1, Math.max(1, take.channel.length), take.sampleRate);
+  buffer.getChannelData(0).set(take.channel);
+  return buffer;
+}
+
+async function makeSourceBuffer(context: BaseAudioContext, config: Pick<BoardAudioConfig, 'source' | 'input'>) {
+  const take = config.input?.take;
+  return take ? takeBuffer(context, take) : makeAudioBuffer(context, config.source);
+}
+
+function sourceDurationOf(config: Pick<BoardAudioConfig, 'input'>) {
+  const take = config.input?.take;
+  return take ? take.channel.length / take.sampleRate : SOURCE_DURATION_SECONDS;
+}
+
+const examplePreviews = new Map<string, Promise<{ channel: Float32Array; sampleRate: number }>>();
+
+/**
+ * The example phrase as mono samples, for drawing its waveform while nothing
+ * is playing (the same rendering the engine plays).
+ */
+export function loadExampleSourceChannel(source: SourceConfig) {
+  const key = sourceConfigKey(source);
+  let pending = examplePreviews.get(key);
+  if (!pending) {
+    const OfflineContext = window.OfflineAudioContext;
+    pending = makeAudioBuffer(new OfflineContext(1, 1, 48_000), source)
+      .then((buffer) => ({ channel: buffer.getChannelData(0), sampleRate: buffer.sampleRate }));
+    pending.catch(() => examplePreviews.delete(key));
+    examplePreviews.set(key, pending);
+    while (examplePreviews.size > MAX_SOURCE_BUFFER_ENTRIES) {
+      const oldest = examplePreviews.keys().next().value;
+      if (oldest === undefined) break;
+      examplePreviews.delete(oldest);
+    }
+  }
+  return pending;
+}
+
+function loadSessionBuffer(session: LiveAudioSession, key: string, config: Pick<BoardAudioConfig, 'source' | 'input'>) {
   const cached = cachedSessionBuffer(session, key);
   if (cached) return Promise.resolve(cached);
   let pending = session.bufferLoads.get(key);
   if (!pending) {
-    pending = makeAudioBuffer(session.context, source);
+    pending = makeSourceBuffer(session.context, config);
     session.bufferLoads.set(key, pending);
     void pending.then(
       () => { if (session.bufferLoads.get(key) === pending) session.bufferLoads.delete(key); },
@@ -1854,7 +1925,7 @@ function structureKey(config: BoardAudioConfig) {
   return JSON.stringify({
     chain: config.chain.map((item) => [item.instanceId, item.specId, item.lane ?? null]),
     bypassed: [...config.bypassed].sort(),
-    source: sourceConfigKey(config.source),
+    source: sourceKeyOf(config),
     mode: config.mode,
     routing: config.routing,
     amp: config.amp,
@@ -1888,12 +1959,15 @@ function buildLiveGraph(
   session: LiveAudioSession,
   config: BoardAudioConfig,
   buffer: AudioBuffer,
-  offsetSeconds: number,
+  loop: LoopRegion,
+  positionSeconds: number,
   namNodes: Map<string, AudioWorkletNode>,
 ): LiveGraph {
   const context = session.context;
   const source = context.createBufferSource();
   const input = context.createGain();
+  const trim = context.createGain();
+  const meter = context.createAnalyser();
   const fade = context.createGain();
   const scheduled: AudioScheduledSourceNode[] = [];
   const slots = new Map<string, EffectSlot>();
@@ -1902,10 +1976,15 @@ function buildLiveGraph(
   try {
     source.buffer = buffer;
     source.loop = true;
-    source.loopEnd = buffer.duration;
+    source.loopStart = loop.start;
+    source.loopEnd = loop.end;
     if (session.liveInput) session.liveInput.output.connect(input);
     else source.connect(input);
-    const effected = connectBoardGraph(context, input, config, scheduled, namNodes, slots);
+    trim.gain.value = trimDbToGain(config.input?.trimDb ?? 0);
+    meter.fftSize = 2048;
+    input.connect(trim);
+    trim.connect(meter);
+    const effected = connectBoardGraph(context, trim, config, scheduled, namNodes, slots);
     const master = connectMaster(context, effected, config.output);
     level = master.level;
     masterOutput = master.output;
@@ -1913,12 +1992,13 @@ function buildLiveGraph(
     fade.gain.setValueAtTime(0, now);
     fade.gain.linearRampToValueAtTime(1, now + SWAP_FADE_SECONDS);
     master.output.connect(fade).connect(context.destination);
-    source.start(0, offsetSeconds % buffer.duration);
+    source.start(0, positionSeconds);
   } catch (error) {
     stopScheduled(scheduled);
     slots.forEach((slot) => disposeSlotInstance(slot.upstream, slot.current));
     try { source.stop(); } catch { /* not started */ }
     source.disconnect();
+    trim.disconnect();
     level?.disconnect();
     if (masterOutput && masterOutput !== level) disposeWorklet(masterOutput as AudioWorkletNode);
     fade.disconnect();
@@ -1929,6 +2009,9 @@ function buildLiveGraph(
     structureKey: structureKey(config),
     source,
     input,
+    trim,
+    meter,
+    loop,
     level,
     masterOutput: masterOutput ?? level,
     fade,
@@ -1945,6 +2028,7 @@ function disposeGraph(session: LiveAudioSession, graph: LiveGraph) {
   try { graph.source.stop(); } catch { /* already stopped */ }
   try { graph.source.disconnect(); } catch { /* already detached */ }
   try { graph.input.disconnect(); } catch { /* already detached */ }
+  try { graph.trim.disconnect(); } catch { /* already detached */ }
   try { session.liveInput?.output.disconnect(graph.input); } catch { /* was not connected */ }
   stopScheduled(graph.scheduled);
   graph.slots.forEach((slot) => {
@@ -1993,27 +2077,104 @@ function pruneNamCache(session: LiveAudioSession, active: ReadonlyMap<string, Au
   });
 }
 
+/**
+ * Builds and swaps in a graph that continues from `positionSeconds` (an
+ * absolute position in the source; outside the loop it restarts the loop).
+ */
 function installGraph(
   session: LiveAudioSession,
   config: BoardAudioConfig,
   buffer: AudioBuffer,
-  offsetSeconds: number,
+  positionSeconds: number,
   namNodes: Map<string, AudioWorkletNode>,
 ) {
-  const next = buildLiveGraph(session, config, buffer, offsetSeconds, namNodes);
+  const loop = effectiveLoop(config.input?.loop ?? null, buffer.duration);
+  const position = positionInLoop(loop, positionSeconds);
+  const next = buildLiveGraph(session, config, buffer, loop, position, namNodes);
   const previous = session.graph;
   session.graph = next;
   if (previous) retireGraph(session, previous);
   pruneNamCache(session, namNodes);
-  session.startedAt = session.context.currentTime - (offsetSeconds % buffer.duration);
-  session.duration = buffer.duration;
-  session.sourceKey = sourceConfigKey(config.source);
+  session.startedAt = session.context.currentTime - (position - loop.start);
+  session.duration = loop.end - loop.start;
+  session.loopStart = loop.start;
+  session.bufferDuration = buffer.duration;
+  session.sourceKey = sourceKeyOf(config);
   publishStatus(session);
+}
+
+/** Absolute playhead position in the source buffer, or null when not playing. */
+export function currentSourcePosition(session: LiveAudioSession | null) {
+  if (!session || isClosedAudioContext(session.context) || !(session.duration > 0) || !Number.isFinite(session.startedAt)) return null;
+  const elapsed = session.context.currentTime - session.startedAt;
+  if (!Number.isFinite(elapsed)) return null;
+  return session.loopStart + (((elapsed % session.duration) + session.duration) % session.duration);
+}
+
+/**
+ * Moves the playing loop without rebuilding the graph. Inside the new region
+ * the playhead just keeps going; outside it, playback jumps to the new start
+ * behind a short dip so it does not click.
+ */
+function applyLoop(session: LiveAudioSession, graph: LiveGraph, loop: LoopRegion) {
+  const context = session.context;
+  const now = context.currentTime;
+  const position = currentSourcePosition(session) ?? loop.start;
+  graph.loop = loop;
+  if (position >= loop.start && position < loop.end) {
+    // Widen before narrowing so the source never sees start >= end.
+    graph.source.loopEnd = Math.max(graph.source.loopEnd, loop.end);
+    graph.source.loopStart = loop.start;
+    graph.source.loopEnd = loop.end;
+    session.startedAt = now - (position - loop.start);
+  } else {
+    const at = now + 0.015;
+    const gain = graph.input.gain;
+    gain.cancelScheduledValues(now);
+    gain.setValueAtTime(gain.value, now);
+    gain.linearRampToValueAtTime(0, at);
+    gain.linearRampToValueAtTime(1, at + 0.015);
+    const next = context.createBufferSource();
+    next.buffer = graph.source.buffer;
+    next.loop = true;
+    next.loopStart = loop.start;
+    next.loopEnd = loop.end;
+    if (!session.liveInput) next.connect(graph.input);
+    next.start(at, loop.start);
+    const previous = graph.source;
+    try { previous.stop(at); } catch { /* already stopped */ }
+    setTimeout(() => { try { previous.disconnect(); } catch { /* already detached */ } }, 200);
+    graph.source = next;
+    session.startedAt = at;
+  }
+  session.loopStart = loop.start;
+  session.duration = loop.end - loop.start;
+}
+
+const meterScratch = new WeakMap<AnalyserNode, Float32Array<ArrayBuffer>>();
+
+/** Post-trim input peak over the last ~40 ms, in dBFS (-Infinity when silent or stopped). */
+export function readInputPeakDbfs(session: LiveAudioSession | null) {
+  const meter = session?.graph?.meter;
+  if (!meter) return Number.NEGATIVE_INFINITY;
+  let block = meterScratch.get(meter);
+  if (!block) {
+    block = new Float32Array(meter.fftSize);
+    meterScratch.set(meter, block);
+  }
+  meter.getFloatTimeDomainData(block);
+  let peak = 0;
+  for (let i = 0; i < block.length; i += 1) peak = Math.max(peak, Math.abs(block[i]));
+  return peak > 0 ? 20 * Math.log10(peak) : Number.NEGATIVE_INFINITY;
 }
 
 function applyParameterChanges(session: LiveAudioSession, graph: LiveGraph, config: BoardAudioConfig) {
   const now = session.context.currentTime;
   graph.level.gain.setTargetAtTime(masterLevel(config.output, graph.masterOutput !== graph.level), now, 0.015);
+  graph.trim.gain.setTargetAtTime(trimDbToGain(config.input?.trimDb ?? 0), now, 0.02);
+  const duration = graph.source.buffer?.duration ?? session.bufferDuration;
+  const loop = effectiveLoop(config.input?.loop ?? null, duration);
+  if (loop.start !== graph.loop.start || loop.end !== graph.loop.end) applyLoop(session, graph, loop);
   graph.slots.forEach((slot, instanceId) => {
     updateEffectSlot(session, slot, config.values[instanceId] ?? {}, graph.namNodes);
   });
@@ -2064,7 +2225,9 @@ export async function createLiveSession(config: BoardAudioConfig) {
     bufferLoads: new Map(),
     startedAt: 0,
     duration: SOURCE_DURATION_SECONDS,
-    sourceKey: sourceConfigKey(config.source),
+    loopStart: 0,
+    bufferDuration: SOURCE_DURATION_SECONDS,
+    sourceKey: sourceKeyOf(config),
     revision: 0,
     namCache: new Map(),
     status: new Map(),
@@ -2075,9 +2238,9 @@ export async function createLiveSession(config: BoardAudioConfig) {
     await context.resume();
     await prepareProcessorsFor(context, config);
     const namNodes = await prepareNamNodes(context, config, session.namCache);
-    const buffer = await loadSessionBuffer(session, session.sourceKey, config.source);
+    const buffer = await loadSessionBuffer(session, session.sourceKey, config);
     rememberSessionBuffer(session, session.sourceKey, buffer);
-    installGraph(session, config, buffer, 0, namNodes);
+    installGraph(session, config, buffer, effectiveLoop(config.input?.loop ?? null, buffer.duration).start, namNodes);
     return session;
   } catch (error) {
     stopLiveGraph(session);
@@ -2113,14 +2276,13 @@ export async function refreshLiveSession(session: LiveAudioSession, config: Boar
   try {
     await prepareProcessorsFor(session.context, config);
     const namNodes = await prepareNamNodes(session.context, config, session.namCache);
-    const sourceKey = sourceConfigKey(config.source);
-    const offset = sourceKey === session.sourceKey
-      ? (session.context.currentTime - session.startedAt) % session.duration
-      : 0;
-    const buffer = await loadSessionBuffer(session, sourceKey, config.source);
+    const sourceKey = sourceKeyOf(config);
+    const buffer = await loadSessionBuffer(session, sourceKey, config);
     if (session.revision !== revision || isClosedAudioContext(session.context)) return;
     rememberSessionBuffer(session, sourceKey, buffer);
-    installGraph(session, session.pendingConfig ?? config, buffer, offset, namNodes);
+    // The same source keeps its playhead through a rebuild; a new one starts at its loop.
+    const position = sourceKey === session.sourceKey ? currentSourcePosition(session) ?? 0 : -1;
+    installGraph(session, session.pendingConfig ?? config, buffer, position, namNodes);
   } finally {
     if (session.revision === revision) {
       session.pendingConfig = undefined;
@@ -2139,6 +2301,8 @@ export function setLiveInput(session: LiveAudioSession, stream: MediaStream | nu
   const graph = session.graph;
   const previous = session.liveInput;
   if (previous) {
+    // A recording of the old input keeps what it has captured.
+    void session.recording?.stop();
     if (graph) try { previous.output.disconnect(graph.input); } catch { /* not connected */ }
     closeLiveInput(previous);
     session.liveInput = undefined;
@@ -2165,6 +2329,112 @@ export function setLiveInput(session: LiveAudioSession, stream: MediaStream | nu
   }
 }
 
+export type RecordingProgress = { seconds: number; peakDbfs: number };
+export type RecordingResult = { channel: Float32Array; sampleRate: number; reason: 'user' | 'full' | 'cancelled' };
+
+/** A take being captured from the live input. */
+export type InputRecording = {
+  sampleRate: number;
+  /** Stops recording; resolves with everything captured so far. */
+  stop: () => Promise<RecordingResult>;
+  /** Drops the recording (input switched off, session closed). */
+  cancel: () => void;
+  /** Resolves when the recording ends for any reason (including hitting the limit). */
+  finished: Promise<RecordingResult>;
+};
+
+const recorderReady = new WeakSet<BaseAudioContext>();
+
+async function prepareRecorderProcessor(context: BaseAudioContext) {
+  if (recorderReady.has(context)) return;
+  const worklet = (context as BaseAudioContext & {
+    audioWorklet?: { addModule: (moduleUrl: string) => Promise<void> };
+  }).audioWorklet;
+  if (!worklet || typeof AudioWorkletNode === 'undefined') throw new Error('当前浏览器不支持录音');
+  await worklet.addModule(`/audio/recorder-processor.js?v=${WORKLET_VERSIONS.recorder}`);
+  recorderReady.add(context);
+}
+
+function joinChunks(chunks: Float32Array[], length: number) {
+  const channel = new Float32Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    channel.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return channel;
+}
+
+/**
+ * Records the dry live input (before trim and effects) so it can be looped
+ * through the board later — the re-amping workflow. Needs live input on.
+ */
+export async function startInputRecording(
+  session: LiveAudioSession,
+  { maxSeconds, onProgress }: { maxSeconds: number; onProgress?: (progress: RecordingProgress) => void },
+): Promise<InputRecording> {
+  const live = session.liveInput;
+  if (!live) throw new Error('先打开实时输入，才能录音。');
+  if (session.recording) throw new Error('已经在录音了。');
+  const context = session.context;
+  await prepareRecorderProcessor(context);
+  if (session.liveInput !== live) throw new Error('实时输入已关闭。');
+  const sampleRate = context.sampleRate;
+  const node = new AudioWorkletNode(context, 'sonic-recorder', {
+    numberOfInputs: 1,
+    numberOfOutputs: 1,
+    outputChannelCount: [1],
+    channelCount: 1,
+    channelCountMode: 'explicit',
+    processorOptions: { maxSamples: Math.floor(maxSeconds * sampleRate) },
+  });
+  // A silent path to the destination keeps the recorder in the render graph.
+  const sink = context.createGain();
+  sink.gain.value = 0;
+  live.output.connect(node);
+  node.connect(sink).connect(context.destination);
+  const chunks: Float32Array[] = [];
+  let length = 0;
+  let settle: (result: RecordingResult) => void = () => {};
+  const finished = new Promise<RecordingResult>((resolve) => { settle = resolve; });
+  let done = false;
+  const finish = (reason: RecordingResult['reason']) => {
+    if (done) return;
+    done = true;
+    try { live.output.disconnect(node); } catch { /* input already closed */ }
+    try { node.port.postMessage({ type: 'dispose' }); } catch { /* worklet gone */ }
+    try { node.disconnect(); } catch { /* already detached */ }
+    try { sink.disconnect(); } catch { /* already detached */ }
+    if (session.recording === recording) session.recording = undefined;
+    settle({ channel: joinChunks(chunks, length), sampleRate, reason });
+  };
+  node.port.onmessage = (event: MessageEvent<{ type?: string; samples?: Float32Array; peak?: number; reason?: 'user' | 'full' }>) => {
+    const message = event.data;
+    if (message?.type === 'chunk' && message.samples) {
+      chunks.push(message.samples);
+      length += message.samples.length;
+      const peak = message.peak ?? 0;
+      onProgress?.({ seconds: length / sampleRate, peakDbfs: peak > 0 ? 20 * Math.log10(peak) : Number.NEGATIVE_INFINITY });
+    } else if (message?.type === 'stopped') {
+      finish(message.reason === 'full' ? 'full' : 'user');
+    }
+  };
+  node.port.postMessage({ type: 'start' });
+  const recording: InputRecording = {
+    sampleRate,
+    stop: () => {
+      if (!done) node.port.postMessage({ type: 'stop' });
+      // If the worklet never answers (context closed), finish with what we have.
+      setTimeout(() => finish('user'), 1_000);
+      return finished;
+    },
+    cancel: () => finish('cancelled'),
+    finished,
+  };
+  session.recording = recording;
+  return recording;
+}
+
 function closeLiveInput(input: LiveInput) {
   try { input.source.disconnect(); } catch { /* already detached */ }
   try { input.output.disconnect(); } catch { /* already detached */ }
@@ -2185,6 +2455,7 @@ export async function disposeLiveSession(session: LiveAudioSession | null) {
   session.revision += 1;
   session.detachResume?.();
   session.detachResume = undefined;
+  session.recording?.cancel();
   if (session.liveInput) {
     closeLiveInput(session.liveInput);
     session.liveInput = undefined;
@@ -2203,18 +2474,21 @@ export async function renderBoardToWav(config: BoardAudioConfig) {
     mode: config.mode,
     routing: config.routing,
   });
-  const totalSeconds = SOURCE_DURATION_SECONDS + tail;
+  // The export plays the loop region once, then lets the tails ring out.
+  const loop = effectiveLoop(config.input?.loop ?? null, sourceDurationOf(config));
+  const totalSeconds = loop.end - loop.start + tail;
   const offline = new OfflineAudioContext(2, Math.ceil(totalSeconds * sampleRate), sampleRate);
   await prepareProcessorsFor(offline, config);
   const namNodes = await prepareNamNodes(offline, config);
   const source = offline.createBufferSource();
   const input = offline.createGain();
   const scheduled: AudioScheduledSourceNode[] = [];
-  source.buffer = await makeAudioBuffer(offline, config.source);
+  source.buffer = await makeSourceBuffer(offline, config);
+  input.gain.value = trimDbToGain(config.input?.trimDb ?? 0);
   source.connect(input);
   const effected = connectBoardGraph(offline, input, config, scheduled, namNodes);
   connectMaster(offline, effected, config.output).output.connect(offline.destination);
-  source.start(0);
+  source.start(0, loop.start, loop.end - loop.start);
   let rendered: AudioBuffer;
   try {
     rendered = await offline.startRendering();

@@ -12,12 +12,12 @@ const layout = readFileSync(new URL('../layout.tsx', import.meta.url), 'utf8');
 test('workbench exposes an accessible tone agent and clean input picker', () => {
   assert.match(page, /<ToneAgentDock/);
   assert.match(page, /captureToneAgentBoard/);
-  assert.match(page, /function SourcePickerDialog/);
+  // The input node's deck replaced the source picker dialog.
+  assert.match(page, /export function InputDeck\(/);
   assert.match(page, /className=\{'agent-open-button'/);
   assert.match(page, /aria-label=\{agentOpen \? '关闭音色 Agent' : '打开音色 Agent'\}/);
-  assert.match(page, /aria-label="选择清音输入"/);
-  assert.match(page, /真实采样 · 未处理 DI · CC0/);
-  assert.match(page, /FreePats Direct DI/);
+  assert.match(page, /aria-label=\{`输入：\$\{sourceName\}。打开输入面板`\}/);
+  assert.match(page, /FreePats Direct DI<\/a>（CC0），未经处理的直录信号/);
   assert.match(page, /performance\.description/);
   assert.doesNotMatch(page, /Black & Green Guitars/);
 });
@@ -41,8 +41,8 @@ test('pedals, playback, and presets expose keyboard and loading state', () => {
   assert.match(page, /正在加载试听，请稍候；重复点击不会中断加载/);
   assert.match(page, /aria-busy=\{playbackLoading\}/);
   assert.match(page, /role="progressbar"/);
-  assert.match(page, /setAttribute\('aria-valuenow', String\(rounded\)\)/);
-  assert.match(page, /<PlaybackWaveform playback=\{playback\} playing=\{playing\} loading=\{playbackLoading\} \/>/);
+  assert.match(page, /setAttribute\('aria-valuenow', String\(percent\)\)/);
+  assert.match(page, /<SourceWaveform playback=\{playback\} playing=\{playing\} loading=\{playbackLoading\}/);
   assert.match(page, /aria-label=\{'载入 ' \+ preset\.name\}/);
   assert.match(page, /aria-current=\{isCurrent \? 'true' : undefined\}/);
   assert.doesNotMatch(page, /className="waveform" aria-label=\{'试听进度/);
@@ -84,7 +84,8 @@ test('playback progress follows the active session clock and refresh failures re
   assert.match(page, /session\.duration/);
   assert.match(page, /const offset = \(\(elapsed % session\.duration\) \+ session\.duration\) % session\.duration/);
   assert.match(page, /const watchSession = \(\) => \{/);
-  assert.match(page, /const progress = getPlaybackProgress\(playback\.current\)/);
+  // The playhead is the absolute position in the source (the loop is a region inside it).
+  assert.match(page, /const position = currentSourcePosition\(session\)/);
   // Progress is animated outside React state so playback does not re-render the page.
   assert.doesNotMatch(page, /setProgress/);
   assert.match(page, /window\.requestAnimationFrame\(tick\)/);
